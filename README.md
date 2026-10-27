@@ -120,6 +120,14 @@ are released for non-commercial use only.
 Python, FastAPI, rawpy/LibRaw, OpenCV, ONNX Runtime, SQLite, React, Vite and
 Tailwind CSS. Developed with a lot of help from Claude Code.
 
+## Support and thanks
+
+Photool is free. If it saves you time and you'd like to say thanks, you can
+[buy me a coffee on Ko-fi](https://ko-fi.com/forju).
+
+Thanks to [@antVRC](https://github.com/antVRC) for reports and ideas that
+improved the gradient tool, the slideshow's look, and masking.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
