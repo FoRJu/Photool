@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+*.egg-info/
+
+# Config (contains local paths)
+backend/config.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# App data
+*.db
+# Run logs. Starting the servers by hand leaves uvicorn.log and vite.log next to
+# them; they are useful while a problem is being chased and never afterwards.
+*.log
+# Anchored on purpose: unanchored, this also hid the backend/thumbnails source
+# package, which then never got committed.
+/thumbnails/
+.photomanager/
+# Face models. 39 MB of ONNX that is fetched on demand and checked against a
+# known hash, so there is nothing here to version.
+/models/
+
+# Camera profiles written by "python -m tools.camera_profile learn" when pointed inside the project
+photool-profiles/

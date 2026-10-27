@@ -1,0 +1,147 @@
+# Photool — Configuration
+# Copy this to config.yaml and edit to match your setup. setup.bat / setup.sh
+# makes the copy. Paths take forward slashes on every system, Windows too.
+
+# The folder that holds your photographs: the one with the year folders in it.
+# If you used Lightroom, it's the folder Lightroom imported into.
+#
+#   Windows:  "D:/Photos"   or   "C:/Users/you/Pictures/Photos"
+#   macOS:    "/Users/you/Pictures/Photos"            (in your home folder)
+#             "/Volumes/PhotoDrive/Photos"            (on an external drive: its name as Finder shows it)
+#   Linux:    "/home/you/Pictures/Photos"   or   "/media/you/PhotoDrive/Photos"
+#
+# On a Mac, find the path by dragging the folder from Finder into a Terminal
+# window: Terminal types its path. A name with spaces is fine inside the quotes.
+# Don't use the Photos app's library ("Photos Library.photoslibrary"): Photool
+# reads ordinary folders of files.
+library_root: "D:/Photos"
+
+# How imports from a memory card are filed under library_root.
+# Supports: {year}, {month}, {day}
+# This default matches Lightroom's date-based layout: 2025/2025-05-10.
+folder_pattern: "{year}/{year}-{month}-{day}"
+
+# Memory cards are found without any setting: every drive letter on Windows,
+# every volume under /Volumes on a Mac, and /media/<you> and /run/media/<you> on
+# Linux are checked for a DCIM folder, which every camera writes. On a Mac a
+# card is named by whoever formatted it: a Canon's is EOS_DIGITAL, a Nikon's
+# usually its model (NIKON D750), many others NO NAME or Untitled, and a card
+# formatted on a computer whatever was typed. Any name works, because only the
+# DCIM folder counts.
+#
+# List a place here only when a card shows up somewhere else (a card reader
+# mounted inside a folder, a camera connected as a network share):
+#   sd_mount_paths: ["/Volumes/Camera Card", "/mnt/sd"]
+sd_mount_paths: []
+
+# File extensions to import from the SD card.
+# ".cr3" is the R-series RAW, ".cr2" the older Canon RAW (5D Mark II, 40D, …).
+# ".dng" is the Ricoh GR's RAW (and other makers').
+# Dropping a RAW extension here silently ignores those files while the JPEGs
+# beside them still import, so the card looks almost empty.
+import_extensions:
+  - ".cr3"
+  - ".cr2"
+  - ".dng"
+  - ".jpg"
+  - ".jpeg"
+  - ".mp4"
+  # Other makers' RAWs, for an older camera; videos (GoPro, DJI Pocket) are
+  # copied off the card but not shown in the library.
+  - ".mov"
+  - ".nef"
+  - ".arw"
+  - ".orf"
+  - ".rw2"
+  - ".raf"
+  - ".pef"
+
+# How to handle files that already exist at the destination.
+# Options: skip | rename | overwrite
+duplicate_strategy: "skip"
+
+# Where the SQLite catalog and thumbnail cache live. They default to
+# library_root/.photomanager/, which is fine as long as that volume accepts
+# writes. If it goes read-only the app still browses, but ratings, imports and
+# thumbnails are not saved — /api/health and the UI banner say so.
+# db_path: "D:/PhotoData/catalog.db"
+# thumbnail_cache: "D:/PhotoData/thumbnails"
+
+# Upper bound on the thumbnail cache in MB. 0 = unlimited.
+# A 2000px preview at q90 costs ~580 KB, so a 25k-photo library is ~14 GB.
+# Over the budget the least-recently-used previews are evicted first; run
+# POST /api/thumbnails/vacuum afterwards to return the space to the disk.
+thumbnail_cache_max_mb: 0
+
+# Measure each photo (brightness, colour cast, sharpness, perceptual hash) in
+# the background, for culling hints and for matching a set at export. The pass
+# runs on the thumbnail queue — after a folder's thumbnails, and one folder at a
+# time while the queue is idle — so an existing library fills in gradually.
+analysis_auto_enabled: true
+
+# When a CR3 and its JPG are both on disk, export the CR3 rather than the JPG,
+# so a set is developed from the same kind of data instead of the camera's
+# per-shot auto exposure. The capture dates are copied back out of the CR3.
+export_prefer_raw: true
+
+# How far apart two frames may be in time and still count as one burst. The
+# grouping also requires that they look the same, so this only decides when two
+# identical-looking frames become two shots of the same thing rather than one
+# burst. Ten seconds suits a camera firing several frames a second; raise it if
+# the same view gets framed again a minute later and you want that offered as a
+# duplicate. Every burst view and "keep the sharpest" run uses this value.
+burst_max_gap_seconds: 10
+
+# Matching a set — nudging the photos in one export towards a common brightness
+# and colour — is not a setting here. It is a per-export choice in the Export
+# panel, on by default, with a slider for how far the nudge may go. The numbers
+# it works from come from analysis_auto_enabled above.
+
+# Person clustering. Faces are found and described on this machine by OpenCV —
+# no image and no embedding leaves it — and the ONNX models are fetched into
+# models_dir the first time a scan runs, checked against a known SHA-256. Nothing
+# runs until you ask for it on the People tab. A scan reads each frame's 2000px
+# preview, the same rendering the cull view keeps, so it adds little to the
+# thumbnail cache.
+# models_dir defaults to the models/ directory beside the code.
+# models_dir: "D:/PhotoData/models"
+
+# Faces smaller than this in the analysed frame are dropped as soon as they are
+# found, before anything expensive is done with them: at a few dozen pixels the
+# vector is mostly noise, and describing a face is the expensive part of a scan.
+# 40px is a head filling about 4% of the frame's width.
+face_min_px: 40
+
+# Cosine similarity at which two faces are called the same person, for the
+# "sface" model (see face_threshold for ArcFace). Measured on a real library: different people never exceeded 0.41, and one person across a
+# burst sat at 0.83-0.98. The value sits between those and nearer the low end,
+# because a group that splits in two is one click to merge, while a group that
+# swallowed two people is a name on the wrong photographs. Lower it if the same
+# person keeps coming out as several groups; raise it if two people keep landing
+# in one.
+face_match_threshold: 0.5
+
+# Which model describes a face. "arcface" (the default) separates similar faces —
+# siblings, one child over several years — far better than "sface", the original;
+# it is a one-time 290 MB download. "arcface_lite" is a 15 MB download, a little
+# less sure. Changing the model re-describes every frame on the next scan, and
+# the names already given out are kept.
+face_model: arcface
+# The join threshold for the ArcFace models (face_match_threshold above is
+# SFace's). Leave it out for the model's own default, 0.42.
+# face_threshold: 0.42
+# Which rendering a scan reads: "preview" (2000px) or "face" (1024px). At 1024px
+# the faces across a room are 20-35px wide, too small to describe.
+face_scan_size: preview
+
+# Other computers (docs/guide.md, "Other computers"). Off: only this computer can use
+# the app. On: start it with `python serve.py`, and devices on the network can ask
+# to join — each one is approved here after comparing a six-digit code.
+lan_access: false
+# Tailscale logins let in without pairing when they come through `tailscale serve`.
+# lan_trusted_logins: ["you@gmail.com"]
+# HTTPS for serve.py (e.g. from mkcert). Tailscale is the easier way to encrypt.
+# tls_cert: "C:/certs/photool.pem"
+# tls_key: "C:/certs/photool-key.pem"
+# Most pictures a paired device may download in one export (JPEGs only, never originals).
+# remote_export_limit: 200

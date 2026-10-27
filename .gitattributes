@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings to run on macOS and Linux, and batch files
+# CRLF to run on Windows, whatever core.autocrlf the checkout has.
+*.sh  text eol=lf
+*.bat text eol=crlf
