@@ -208,11 +208,24 @@ def list_styles() -> list[dict]:
 
 
 def delete(style_id: str) -> bool:
+    """Put a style aside in ``deleted/``, out of the list but not gone.
+
+    A style is minutes of learning from frames that may since have moved, and a
+    click in the wrong place used to erase it for good. Copying the file back
+    out of ``deleted/`` brings it back, under the same id the edits still name.
+    """
     if not valid_id(style_id) or _DIR is None:
         return False
     path = _DIR / f"{style_id}.npz"
+    if not path.exists():
+        return False
+    aside = _DIR / "deleted"
     try:
-        path.unlink()
+        aside.mkdir(exist_ok=True)
+        target = aside / path.name
+        if target.exists():
+            target = aside / f"{style_id}-{int(time.time())}.npz"
+        path.replace(target)
     except OSError:
         return False
     with _LOCK:

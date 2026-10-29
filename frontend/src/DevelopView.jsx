@@ -2500,8 +2500,13 @@ function StylePicker({ value, onChange, folder, filepath, edit }) {
     } catch { setError("Could not start"); }
   };
 
+  // Deleting a style takes it away from every photo and every folder, so it is
+  // never what the ✕ beside the menu does: that only takes it off this photo.
   const remove = async () => {
-    if (!value) return;
+    const style = list.find((s) => s.id === value);
+    if (!style) return;
+    if (!window.confirm(`Delete the style “${style.name}” from this computer?\n\n`
+      + "It disappears from every folder, and photos using it go back to their camera's own look.")) return;
     try { await fetch(`${API}/styles/${encodeURIComponent(value)}`, { method: "DELETE" }); } catch {}
     onChange("");
     load();
@@ -2521,9 +2526,10 @@ function StylePicker({ value, onChange, folder, filepath, edit }) {
           ))}
           {value && !known && <option value={value}>{value} (not on this computer)</option>}
         </select>
-        {value && known && (
-          <button onClick={remove} title="Delete this style from this computer"
-            className="text-neutral-600 hover:text-red-400">✕</button>
+        {value && (
+          <button onClick={() => onChange("")} data-testid="style-clear"
+            title="Take the style off this photo (back to the camera's own look). The style stays for other photos."
+            className="text-neutral-600 hover:text-neutral-300">✕</button>
         )}
         {list.length > 0 && (
           <button onClick={() => setGallery((g) => !g)} data-testid="style-gallery-toggle"
@@ -2558,6 +2564,11 @@ function StylePicker({ value, onChange, folder, filepath, edit }) {
         {naming && !running && <span className="block mt-0.5 leading-snug" data-testid="style-preview">
           {stylePreviewText(preview)}
         </span>}
+        {value && known && !running && !naming && (
+          <button onClick={remove} data-testid="style-delete"
+            title="Delete this style from this computer, for every photo and folder"
+            className="ml-2 underline decoration-neutral-800 hover:text-red-400">delete style…</button>
+        )}
         {error && <span className="block text-red-400/80">{error}</span>}
       </div>
     </div>

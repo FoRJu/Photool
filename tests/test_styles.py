@@ -157,6 +157,22 @@ class TestStore:
         assert styles.load(style.id).name == "Positive"
         assert styles.delete(style.id)
         assert styles.load(style.id) is None
+        assert styles.list_styles() == []
+
+    def test_a_deleted_style_is_put_aside_and_comes_back(self, store, cameras):
+        _scene_, a_samples, *_ = cameras
+        style = _style(store, a_samples, name="Positive")
+        assert styles.delete(style.id)
+        assert not styles.delete(style.id)                    # already out of the list
+        aside = styles.style_dir() / "deleted" / f"{style.id}.npz"
+        assert aside.exists()
+        aside.replace(styles.style_dir() / aside.name)      # moving it back restores it
+        assert styles.load(style.id).name == "Positive"
+        assert styles.delete(style.id)
+        again = _style(store, a_samples, name="Positive")     # relearned under the same id
+        assert again.id == style.id
+        assert styles.delete(again.id)                      # both deleted copies are kept
+        assert len(list((styles.style_dir() / "deleted").glob("*.npz"))) == 2
 
     def test_learning_is_spread_over_the_whole_shoot(self):
         picked = styles.spread(list(range(100)), limit=5)
