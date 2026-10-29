@@ -256,8 +256,9 @@ function CardEditor({ entry, home, suggestions, onClose, onSaved }) {
         body: JSON.stringify({ title, subtitle, cover, place: place?.place || "", lat: place?.lat ?? null, lon: place?.lon ?? null,
           taken_on: takenOn, kind }),
       });
-      if (!res.ok) { setError((await res.json()).detail || "Not saved"); return; }
-      onSaved();
+      const data = await res.json();
+      if (!res.ok) { setError(data.detail || "Not saved"); return; }
+      onSaved(data.note);
       onClose();
     } catch { setError("The backend is not reachable"); } finally { setBusy(false); }
   };
@@ -688,11 +689,17 @@ export function FolderAbout({ folder, card, onCards, before = null, after = null
       setEditing({ card, home: "", suggestions: [] });
     }
   };
-  const saved = async () => {
+  // A folder still being indexed has no card yet, but its note is saved all
+  // the same: show it until the card arrives with it.
+  const saved = async (note) => {
     try {
       const data = await fetch(`${API}/library/cards`).then((r) => r.json());
-      onCards?.(Object.fromEntries((data.cards || []).map((c) => [c.folder, c])));
-    } catch {}
+      const cards = Object.fromEntries((data.cards || []).map((c) => [c.folder, c]));
+      if (!cards[folder] && note) cards[folder] = { folder, note, pending: true };
+      onCards?.(cards);
+    } catch {
+      if (note) onCards?.((prev) => ({ ...prev, [folder]: { ...(prev[folder] || { folder, pending: true }), note } }));
+    }
   };
 
   const title = cardTitle(card, folder);
@@ -710,14 +717,14 @@ export function FolderAbout({ folder, card, onCards, before = null, after = null
         </div>
         {subtitle ? (
           <p className="text-sm text-neutral-400">{subtitle}</p>
-        ) : card && !card.note?.title && (
+        ) : !card?.note?.title && (
           <button onClick={open} className="text-left text-sm text-neutral-600 italic hover:text-neutral-300">
             What was this? Add a title, a place or a line about it
           </button>
         )}
       </div>
       {after}
-      {card && (
+      {folder && (
         <button onClick={open} title="Title, description, place and cover (E)" aria-label="Edit folder"
           className="shrink-0 px-2.5 py-1 rounded border border-neutral-700 text-sm text-neutral-300 hover:text-white hover:border-neutral-500">
           ✎ About

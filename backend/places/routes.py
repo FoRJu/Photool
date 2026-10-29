@@ -85,13 +85,22 @@ class FolderNote(BaseModel):
 
 @router.put("/library/cards/{folder:path}")
 async def save_folder_note(folder: str, note: FolderNote, request: Request):
-    """A folder's title, subtitle, cover and place, as a person wrote them."""
+    """A folder's title, subtitle, cover and place, as a person wrote them.
+
+    A folder opened for the first time is still being indexed, which for a few
+    hundred RAW files takes minutes; its note can be written meanwhile; the
+    card shows it once the folder is in the catalog. So a folder of the library
+    on disk is enough, not only one the catalog already has.
+    """
+    from api.routes import _resolve_folder
+
     db = _catalog(request).db
     if not db.writable:
         raise HTTPException(status_code=503, detail="The catalog cannot be written")
     with db._connect() as conn:
-        if not conn.execute("SELECT 1 FROM photos WHERE folder = ? LIMIT 1", (folder,)).fetchone():
-            raise HTTPException(status_code=404, detail="No such folder in the catalog")
+        known = conn.execute("SELECT 1 FROM photos WHERE folder = ? LIMIT 1", (folder,)).fetchone()
+    if not known:
+        _resolve_folder(request.app.state.config, folder)   # 400 outside the library, 404 if missing
     saved = await _blocking(store.save_note, db, folder, note.model_dump(),
                             request.app.state.config.library_root)
     # Where it was decides what time it was there (catalog/clock.py).
