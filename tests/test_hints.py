@@ -156,6 +156,13 @@ class TestPeers:
         assert found["c"] == [] and found["d"] == []
         assert sorted(found["e"]) == []
 
+    def test_one_second_with_and_without_a_focal_length_does_not_fail(self):
+        # Sorting the frames used to compare 105.0 with None and raise, so the
+        # folder's hints answered 500.
+        found = peers([self._record("a", 0, focal=""), self._record("b", 0), self._record("c", 1)])
+        assert found["a"] == []
+        assert sorted(found["b"]) == ["c"] and sorted(found["c"]) == ["b"]
+
     def test_a_frame_with_too_few_peers_has_no_peer_median(self):
         rows = {p: _row(sharpness=v) for p, v in (("a", 10.0), ("b", 9.0), ("c", 2.0))}
         assert peer_sharpness(rows, {"a": ["b", "c"], "b": ["a"], "c": ["a", "b"]}) == {

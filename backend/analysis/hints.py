@@ -134,7 +134,9 @@ def peers(records) -> dict[str, list[str]]:
         except ValueError:
             continue
         frames.append((when, r.camera or "", _focal(r.focal_length), r.filepath))
-    frames.sort()
+    # By time, camera and file only: two frames of one second can differ in
+    # whether their focal length is known, and None does not sort against a number.
+    frames.sort(key=lambda f: (f[0], f[1], f[3]))
     out: dict[str, list[str]] = {f[3]: [] for f in frames}
     start = 0
     for i, (when, camera, focal, path) in enumerate(frames):
