@@ -355,12 +355,16 @@ def run(library_root, db, cache, stop_event: Optional[threading.Event] = None) -
 
     from thumbnails import ThumbnailSize, get_thumbnail
 
+    import background as gate
+
     rows = pending(db)
     _job.update(status="running", total=len(rows), done=0, error="", started_at=time.time())
     root = Path(library_root)
     try:
         for start in range(0, len(rows), BATCH * 4):
             if stop_event is not None and stop_event.is_set():
+                break
+            if not gate.wait_turn("Smart search", stop_event and stop_event.is_set):
                 break
             chunk = rows[start:start + BATCH * 4]
             pictures, kept = [], []
