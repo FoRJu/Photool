@@ -313,6 +313,21 @@ class TestApi:
         assert len(covers) == 3
         assert client.put("/api/library/cards/nope", json={"title": "x"}).status_code == 404
 
+    def test_a_note_can_be_written_while_the_folder_is_still_indexing(self, client):
+        # Opened for the first time: on disk, not yet in the catalog.
+        later = "2025/2025-04-01"
+        (client.library / later).mkdir(parents=True)
+        shutil.copy(client.library / FOLDER / "IMG_1.JPG", client.library / later / "IMG_9.JPG")
+        assert later not in [c["folder"] for c in client.get("/api/library/cards").json()["cards"]]
+
+        res = client.put(f"/api/library/cards/{later}", json={"title": "Kite day"})
+        assert res.status_code == 200 and res.json()["note"]["title"] == "Kite day"
+        assert (client.library / later / ".photool-folder.json").is_file()
+
+        assert client.post(f"/api/catalog/index/{later}").status_code == 200
+        cards = {c["folder"]: c for c in client.get("/api/library/cards").json()["cards"]}
+        assert cards[later]["note"]["title"] == "Kite day"
+
     @pytest.mark.skipif(not HAS_EXIFTOOL, reason="exiftool is not installed")
     def test_a_scan_reads_where_photos_were_taken(self, client):
         _wait_auto()

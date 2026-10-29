@@ -3923,6 +3923,25 @@ function PhotoolApp({ access }) {
     }
   }, [applyFilter]);
 
+  // The folders' cards, read again: after indexing puts a new folder in the
+  // catalog, and while waiting for that (see the effect further down).
+  const refreshCards = useCallback(async () => {
+    try {
+      const data = await fetch(`${API}/library/cards`).then((r) => r.json());
+      const fresh = Object.fromEntries((data.cards || []).map((c) => [c.folder, c]));
+      // A note saved while the folder was still indexing stays shown until its
+      // card arrives with it.
+      setFolderCards((prev) => {
+        const next = { ...fresh };
+        for (const [folder, card] of Object.entries(prev)) {
+          if (!next[folder] && card?.pending) next[folder] = card;
+        }
+        return next;
+      });
+      return fresh;
+    } catch { return null; }
+  }, []);
+
   const openFolder = useCallback(
     async (folderPath) => {
       const f = { ...filter, camera: null, matches: null, showDemoted: false,
@@ -3991,6 +4010,7 @@ function PhotoolApp({ access }) {
         // Step 3: Once indexed, reload with full catalog data (ratings, EXIF)
         indexPromise.then(async () => {
           indexedFoldersRef.current.add(folderPath);
+          refreshCards();
           await fetchPhotos(folderPath, f, true);
           const statsRes = await fetch(`${API}/catalog/stats/${folderPath}`);
           setFolderStats(await statsRes.json());
@@ -4001,7 +4021,7 @@ function PhotoolApp({ access }) {
 
       } catch { basePhotosRef.current = []; setPhotos([]); setLoadingPhotos(false); }
     },
-    [filter, fetchPhotos, applyFilter, refreshDerived]
+    [filter, fetchPhotos, applyFilter, refreshDerived, refreshCards]
   );
 
   // Leaving a folder for the folder list, or for a search across all of them:
@@ -4131,19 +4151,21 @@ function PhotoolApp({ access }) {
 
   // A folder opened from a search or the map may not have its card yet; a
   // folder seen for the first time gets one once indexing has put it in the
-  // catalog, so look again a moment later.
+  // catalog. Indexing a big folder of RAWs reads every file's EXIF and can take
+  // minutes, so one look a few seconds later often missed it and the card never
+  // came: openFolder asks again the moment indexing finishes, and this keeps
+  // looking, more slowly, while it has not.
   useEffect(() => {
-    if (!selectedFolder || folderCards[selectedFolder]) return;
-    let cancelled = false;
-    const fetchCards = async () => {
-      try {
-        const data = await fetch(`${API}/library/cards`).then((r) => r.json());
-        if (!cancelled) setFolderCards(Object.fromEntries((data.cards || []).map((c) => [c.folder, c])));
-      } catch {}
+    if (!selectedFolder || (folderCards[selectedFolder] && !folderCards[selectedFolder].pending)) return;
+    let cancelled = false, timer = null, wait = 3000;
+    const look = async () => {
+      const fresh = await refreshCards();
+      if (cancelled || fresh?.[selectedFolder]) return;
+      timer = setTimeout(look, wait);
+      wait = Math.min(wait * 2, 30000);
     };
-    fetchCards();
-    const again = setTimeout(fetchCards, 4000);
-    return () => { cancelled = true; clearTimeout(again); };
+    look();
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [selectedFolder]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A search answers for the whole library, so it takes the grid over from any
