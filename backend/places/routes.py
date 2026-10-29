@@ -236,6 +236,9 @@ def _auto_worker() -> None:
             models_dir, library_root, db, folder = _auto_queue.pop(0)
         if _job["status"] == "running":
             continue                    # the whole-library pass will cover it
+        import background as gate
+
+        gate.wait_turn("Places")
         try:
             rows = store.gps_pending(db, folder)
             if not rows:

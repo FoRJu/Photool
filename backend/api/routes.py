@@ -1759,8 +1759,13 @@ async def activity(request: Request):
     with _import_jobs_lock:
         imports = sorted((dict(j) for j in _import_jobs.values()),
                          key=lambda j: j["started_at"], reverse=True)[:3]
+    import background
+    from analysis import clip
+
     return {
         "coverage": coverage,
+        "background": background.status(),
+        "smart_search": clip.job(),
         "queue": qm.status(),
         "thumbnail_jobs": jobs,
         "imports": imports,
@@ -1772,6 +1777,63 @@ async def activity(request: Request):
         # with who made each.
         "exports": recent(_job_owner(request)),
     }
+
+
+def _background_work(request: Request) -> list[dict]:
+    """The automatic work running now, one entry per kind, for the page's
+    header: what it is, where it has got, and how far."""
+    from analysis import clip
+    from catalog import clock, exif_fill
+    from places import routes as places_routes
+
+    work = []
+    face = _face_job
+    if face.get("status") == "running":
+        work.append({"kind": "Faces", "where": face.get("folder") or face.get("scope", ""),
+                     "done": face.get("done", 0), "total": face.get("total", 0),
+                     "automatic": bool(face.get("automatic"))})
+    for kind, job in (("Smart search", clip.job()), ("Camera data", exif_fill.job()),
+                      ("Camera clocks", clock.job()), ("Places", dict(places_routes._job))):
+        if job.get("status") == "running":
+            work.append({"kind": kind, "where": job.get("folder", ""), "done": job.get("done", 0),
+                         "total": job.get("total", 0), "automatic": kind != "Places"})
+    if not places_routes.auto_idle():
+        work.append({"kind": "Places", "where": "", "done": 0, "total": 0, "automatic": True})
+    queue = _get_queue_manager(request).status()
+    if queue.get("activity") in ("thumbnails", "measuring"):
+        work.append({"kind": "Thumbnails" if queue["activity"] == "thumbnails" else "Measuring",
+                     "where": queue.get("activity_folder", ""), "done": 0, "total": 0,
+                     "automatic": True})
+    return work
+
+
+@router.get("/background")
+async def background_status(request: Request):
+    """Whether background work is paused by hand, or stepping aside because
+    someone is using the app, which kinds are waiting, and what is running.
+    Reads process state only, so it answers at once even while busy."""
+    import background
+
+    return {**background.status(), "work": _background_work(request)}
+
+
+@router.post("/background/pause")
+async def background_pause(request: Request):
+    """Hold all background work (faces, smart search, camera data, places,
+    measuring, thumbnails for unopened folders) until resumed. Work someone
+    started by hand, imports and exports carry on."""
+    import background
+
+    background.pause()
+    return {**background.status(), "work": _background_work(request)}
+
+
+@router.post("/background/resume")
+async def background_resume(request: Request):
+    import background
+
+    background.resume()
+    return {**background.status(), "work": _background_work(request)}
 
 
 @router.post("/thumbnails/queue/enqueue")

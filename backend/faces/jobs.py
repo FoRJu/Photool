@@ -188,6 +188,7 @@ def _scan_one_folder(app, folder: str, min_px: float, index: int, count: int) ->
         progress=_progress,
         recognizer=recognizer(config),
         scan_size=getattr(config, "face_scan_size", "preview"),
+        background=bool(JOB.get("automatic")),
     )
 
 

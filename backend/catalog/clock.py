@@ -391,6 +391,7 @@ def record(db, rows: list[tuple]) -> None:
 def run(library_root, db, stop_event: Optional[threading.Event] = None) -> dict:
     """Read every pending file, a folder at a time, and work out the folder's
     times as each is done."""
+    import background as gate
     from thumbnails.extract import _batch_extract_exif
 
     items = pending(db)
@@ -403,6 +404,10 @@ def run(library_root, db, stop_event: Optional[threading.Event] = None) -> dict:
     try:
         for name, group in groups.items():
             if stop_event is not None and stop_event.is_set():
+                break
+            # Background work: a folder at a time, out of the way of someone
+            # using the app (see background.py).
+            if not gate.wait_turn("Camera clocks", stop_event and stop_event.is_set):
                 break
             _job["folder"] = name
             paths = {root / r["filepath"]: r for r in group}

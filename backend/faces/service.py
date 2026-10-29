@@ -101,6 +101,10 @@ RENDER_CHUNK = 24
 FACE_WORKERS = min(os.cpu_count() or 4, 8)
 
 
+class _Stopped(Exception):
+    """A frame left unread because the scan was stopped while it waited."""
+
+
 def _vector(row: dict) -> Optional[np.ndarray]:
     """One stored face's vector, or None when the row cannot be read."""
     blob = row.get("embedding")
@@ -139,6 +143,7 @@ def scan_folder(
     progress: Optional[Callable[[str, int, int], None]] = None,
     recognizer: str = "arcface",
     scan_size: str = "preview",
+    background: bool = False,
 ) -> dict:
     """Find and describe the faces in every photograph of one folder.
 
@@ -148,13 +153,21 @@ def scan_folder(
     once per half. Faces stored against the other half by an earlier run are
     dropped for the same reason.
 
+    In the ``background`` (the sweep, not a click) every frame waits its turn
+    behind someone using the app (see background.py), so a scan of folders
+    nobody is looking at never slows down the one they are.
+
     Never raises for a single file: a frame that cannot be read is counted and
     the pass continues. A missing model does raise, because that is a fact about
     the installation rather than about one photograph, and every frame after it
     would fail the same way.
     """
+    import background as gate
     from faces.detect import configure, find_faces, model_id
     from thumbnails import generate_thumbnails_batch, get_thumbnail
+
+    def _my_turn() -> bool:
+        return not background or gate.wait_turn("Faces", should_stop)
 
     configure(models_dir, recognizer)
     model = model_id(recognizer)
@@ -213,6 +226,8 @@ def scan_folder(
         for the single SQLite write lock and every face row still lands from
         one place. Returns None when the frame has no usable rendering.
         """
+        if not _my_turn():
+            raise _Stopped()
         jpeg = get_thumbnail(source, cache, rendering)
         if not jpeg:
             return None
@@ -225,6 +240,8 @@ def scan_folder(
     ) as pool:
         for start in range(0, len(todo), RENDER_CHUNK):
             if should_stop and should_stop():
+                break
+            if not _my_turn():
                 break
             chunk = todo[start:start + RENDER_CHUNK]
 
@@ -253,6 +270,8 @@ def scan_folder(
 
                 try:
                     faces = future.result()
+                except _Stopped:
+                    break
                 except Exception as exc:
                     logger.warning("Could not look for faces in %s: %s", photo.filename, exc)
                     result["failed"] += 1

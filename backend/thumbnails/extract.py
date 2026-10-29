@@ -544,6 +544,15 @@ def _extract_source_jpeg(source: Path) -> Optional[bytes]:
     return None
 
 
+# Renders in progress, by file and size. The grid, the face scan, smart search
+# and the measuring pass all ask for the same pictures, often at the same moment:
+# the log showed one preview made four times over, side by side, each taking
+# seventeen seconds because the other three were competing with it. A second
+# caller now waits for the first one's result instead.
+_rendering: dict[tuple[str, str], threading.Event] = {}
+_rendering_lock = threading.Lock()
+
+
 def get_thumbnail(
     source: Path,
     cache: ThumbnailCache,
@@ -554,6 +563,25 @@ def get_thumbnail(
     if cached:
         return cached
 
+    key = (str(source), size.name)
+    with _rendering_lock:
+        running = _rendering.get(key)
+        if running is None:
+            _rendering[key] = threading.Event()
+    if running is not None:
+        # The other caller's result, which is None when the file has no picture
+        # to give: trying again at once would fail the same way.
+        if running.wait(120):
+            return cache.get(source, size)
+        return _render_thumbnail(source, cache, size)
+    try:
+        return _render_thumbnail(source, cache, size)
+    finally:
+        with _rendering_lock:
+            _rendering.pop(key).set()
+
+
+def _render_thumbnail(source: Path, cache: ThumbnailCache, size: ThumbnailSize) -> Optional[bytes]:
     t0 = time.monotonic()
 
     jpeg_data = _extract_source_jpeg(source)

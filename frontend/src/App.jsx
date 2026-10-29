@@ -2647,6 +2647,84 @@ function Meter({ value, total, tone = "bg-blue-500" }) {
   );
 }
 
+// What the library is doing on its own, in the header on every tab. Automatic
+// work (faces, smart search, camera data, places, measuring, thumbnails for
+// folders not yet opened) steps aside while the app is in use and picks up a
+// few seconds after; Pause holds it until Resume. Work started by hand runs on.
+function BackgroundBadge({ onOpen }) {
+  const [state, setState] = useState(null);
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/background`);
+      if (res.ok) setState(await res.json());
+    } catch { /* keep the last answer */ }
+  }, []);
+  useEffect(() => {
+    let stop = false, timer = null;
+    const tick = async () => {
+      await refresh();
+      if (!stop) timer = setTimeout(tick, 3000);
+    };
+    tick();
+    return () => { stop = true; clearTimeout(timer); };
+  }, [refresh]);
+
+  if (!state) return null;
+  const work = state.work || [];
+  if (!work.length && !state.paused) return null;
+  const toggle = async () => {
+    try {
+      const res = await fetch(`${API}/background/${state.paused ? "resume" : "pause"}`, { method: "POST" });
+      if (res.ok) setState(await res.json());
+    } catch { /* the next tick shows the truth */ }
+  };
+  const first = work[0];
+  const what = first
+    ? [first.kind, first.total > 0 ? `${first.done.toLocaleString()}/${first.total.toLocaleString()}` : "",
+       work.length > 1 ? `+${work.length - 1} more` : ""].filter(Boolean).join(" · ")
+    : "Background work";
+  const how = state.paused ? "paused" : state.yielding ? "waiting while you browse" : "running";
+  const tone = state.paused ? "bg-amber-400" : state.yielding ? "bg-neutral-500" : "bg-blue-400 animate-pulse";
+  const detail = work.map((w) => `${w.kind}${w.where ? ` — ${w.where}` : ""}${w.automatic ? "" : " (started by hand: not paused)"}`).join("\n");
+  return (
+    <div className="ml-auto flex items-center gap-2 text-xs" data-testid="background-badge">
+      <button onClick={onOpen} title={`${detail || "Nothing running"}\n\nAutomatic work steps aside while you use the app and resumes a few seconds after. Click for the Activity tab.`}
+        className="flex items-center gap-1.5 text-neutral-400 hover:text-neutral-200 min-w-0">
+        <span className={`w-2 h-2 rounded-full shrink-0 ${tone}`} />
+        <span className="truncate max-w-[16rem]">{what}</span>
+        <span className="text-neutral-600 whitespace-nowrap">{how}</span>
+      </button>
+      <button onClick={toggle} data-testid="background-toggle"
+        title={state.paused ? "Let background work run again" : "Hold all automatic background work until you resume it"}
+        className={`px-2 py-0.5 rounded border ${state.paused ? "border-amber-600 text-amber-300 hover:bg-amber-950" : "border-neutral-700 text-neutral-400 hover:text-neutral-200"}`}>
+        {state.paused ? "Resume" : "Pause"}
+      </button>
+    </div>
+  );
+}
+
+function BackgroundNote({ state, onChange }) {
+  const toggle = async () => {
+    await fetch(`${API}/background/${state.paused ? "resume" : "pause"}`, { method: "POST" }).catch(() => {});
+    onChange();
+  };
+  return (
+    <div className="flex items-center gap-3 text-xs text-neutral-500">
+      <span className="flex-1">
+        {state.paused
+          ? "Automatic work is paused. Imports, exports and scans you start yourself still run."
+          : state.yielding
+            ? `Automatic work is waiting while the app is in use${state.waiting?.length ? ` (${state.waiting.join(", ")})` : ""}. It picks up ${state.quiet_seconds} s after you stop.`
+            : "Automatic work runs when the app is idle and steps aside while you browse."}
+      </span>
+      <button onClick={toggle} data-testid="activity-background-toggle"
+        className={`px-2 py-0.5 rounded border ${state.paused ? "border-amber-600 text-amber-300" : "border-neutral-700 text-neutral-400 hover:text-neutral-200"}`}>
+        {state.paused ? "Resume" : "Pause all"}
+      </button>
+    </div>
+  );
+}
+
 function ActivityPanel({ local }) {
   const [data, setData] = useState(null);
   const [failed, setFailed] = useState(false);
@@ -2723,6 +2801,11 @@ function ActivityPanel({ local }) {
   } else if (data.places_auto) {
     running.push({ key: "pa", label: "Places", detail: "Reading where newly added photos were taken" });
   }
+  const smart = data.smart_search;
+  if (smart?.status === "running") {
+    running.push({ key: "s", label: "Smart search", detail: "Describing photos for searching by what they show",
+      done: smart.done, total: smart.total });
+  }
   const exif = data.exif;
   if (exif?.status === "running") {
     running.push({
@@ -2752,6 +2835,9 @@ function ActivityPanel({ local }) {
     <div className="space-y-6 max-w-3xl">
       <section className="space-y-2">
         <h3 className="text-sm font-medium text-neutral-300">Running now</h3>
+        {data.background && (
+          <BackgroundNote state={data.background} onChange={refresh} />
+        )}
         {running.length === 0 && <p className="text-neutral-500 text-sm">Nothing is running. The app is idle.</p>}
         {running.map((r) => (
           <div key={r.key} className="border border-neutral-800 rounded p-3 text-sm space-y-1.5">
@@ -4783,8 +4869,9 @@ function PhotoolApp({ access }) {
               }`}>{t === "export" ? `Export${basketCount > 0 ? ` (${basketCount})` : ""}` : t}</button>
           ))}
         </nav>
+        <BackgroundBadge onOpen={() => setTab("activity")} />
         {!access.local && access.device && (
-          <span className="ml-auto text-xs text-neutral-500">{access.device}</span>
+          <span className="text-xs text-neutral-500">{access.device}</span>
         )}
       </header>
 

@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from pathlib import Path
 
+import background as gate
 from catalog.database import CatalogDB, ThumbnailJobRecord
 
 from .extract import ThumbnailCache, ThumbnailSize, get_thumbnail
@@ -129,6 +130,9 @@ class ThumbnailQueueManager:
         self._iterations = 0
         self._completed_jobs = 0
         self._measure_attempts = 0
+        # Whether the job in hand was queued by the app rather than by someone:
+        # those wait their turn behind the person using it (background.py).
+        self._gated = False
 
     @property
     def turbo(self) -> bool:
@@ -309,7 +313,13 @@ class ThumbnailQueueManager:
         # Nothing left to do at all — long idle sleep.
         return False
 
+    def _my_turn(self, name: str = "Thumbnails") -> bool:
+        if not self._gated:
+            return not self._stop_event.is_set()
+        return gate.wait_turn(name, self._stop_event.is_set)
+
     def _process_job_guarded(self, job: ThumbnailJobRecord) -> None:
+        self._gated = job.priority > self.low_priority
         self._set_activity("thumbnails", job.folder)
         try:
             self._process_job(job.id)
@@ -408,6 +418,8 @@ class ThumbnailQueueManager:
         """
         if not self.auto_analyze or not self.db.writable:
             return None
+        if not self._my_turn("Measuring"):
+            return None
         try:
             # Deferred: analysis.service imports the thumbnails package, which
             # imports this module, so a top-level import would be circular.
@@ -452,6 +464,12 @@ class ThumbnailQueueManager:
         if not folder:
             self._measure_cursor = ""
             return False
+        # Someone is using the app: not now, but without blocking this thread,
+        # so a folder they queue themselves is still picked up at once.
+        if gate.must_wait():
+            self._stop_event.wait(1.0)
+            return True
+        self._gated = True
         # The cursor moves before the pass, not after: a folder that cannot be
         # measured at all must not stop the ones behind it.
         self._measure_cursor = folder
@@ -471,6 +489,8 @@ class ThumbnailQueueManager:
     def _process_items_normal(self, job_id: int, work_items: list):
         """Single-threaded processing with idle sleep between items."""
         for source, size in work_items:
+            if not self._my_turn():
+                return
             current = self.db.get_thumbnail_job(job_id)
             if not current or current.status in {"paused", "cancelled", "failed"}:
                 return
@@ -496,7 +516,7 @@ class ThumbnailQueueManager:
         batch_size = workers * 4  # process in batches to allow cancellation checks
 
         for i in range(0, len(work_items), batch_size):
-            if self._stop_event.is_set():
+            if not self._my_turn():
                 return
             current = self.db.get_thumbnail_job(job_id)
             if not current or current.status in {"paused", "cancelled", "failed"}:

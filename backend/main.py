@@ -246,6 +246,23 @@ app.add_middleware(
                     "X-Noise-Reduction"],
 )
 
+import background  # noqa: E402
+
+
+@app.middleware("http")
+async def note_use(request, call_next):
+    """Background work steps aside while someone is using the app
+    (background.py). A long request counts from its start to its answer."""
+    using = background.counts_as_use(request.method, request.url.path)
+    if using:
+        background.touch()
+    try:
+        return await call_next(request)
+    finally:
+        if using:
+            background.touch()
+
+
 import access  # noqa: E402
 
 access.install(app)

@@ -94,10 +94,13 @@ def record(db, rows: list[tuple]) -> int:
     return len(filled)
 
 
-def run(library_root, db, folder=None, stop_event: Optional[threading.Event] = None) -> dict:
+def run(library_root, db, folder=None, stop_event: Optional[threading.Event] = None,
+        background: bool = False) -> dict:
     """Read every pending photograph (of ``folder``, or of the library), on this
     thread. Stops between folders when ``stop_event`` is set (the background
-    worker passes the one :func:`stop` sets)."""
+    worker passes the one :func:`stop` sets). In the ``background`` it steps
+    aside, a folder at a time, while someone is using the app."""
+    import background as gate
     from thumbnails.extract import get_exif_batch
 
     rows = pending(db, folder)
@@ -110,6 +113,8 @@ def run(library_root, db, folder=None, stop_event: Optional[threading.Event] = N
     try:
         for name, items in groups.items():
             if stop_event is not None and stop_event.is_set():
+                break
+            if background and not gate.wait_turn("Camera data", stop_event and stop_event.is_set):
                 break
             _job["folder"] = name
             paths = {root / r["filepath"]: r for r in items}
@@ -158,7 +163,7 @@ def _worker(library_root, db) -> None:
                 _thread = None
                 return
             _wanted = False
-        run(library_root, db, stop_event=_stop)
+        run(library_root, db, stop_event=_stop, background=True)
 
 
 def stop() -> None:
