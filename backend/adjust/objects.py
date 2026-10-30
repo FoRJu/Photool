@@ -110,6 +110,10 @@ _mattes_dir: Optional[str] = None
 _sessions: dict = {}
 _failed: dict = {}
 _lock = threading.Lock()
+# DirectML runs one model call at a time per session: two at once (a click made
+# while the last one is being answered) crash the process. Every model call
+# takes this lock.
+_run_lock = threading.Lock()
 _embeds: "OrderedDict[tuple, list]" = OrderedDict()
 _mattes: "OrderedDict[str, np.ndarray]" = OrderedDict()
 _cache_lock = threading.Lock()
@@ -183,6 +187,9 @@ def _session_pair(model: str):
                                      "CoreMLExecutionProvider") if p in have] + ["CPUExecutionProvider"]
             options = ort.SessionOptions()
             options.log_severity_level = 3
+            # As DirectML asks: no memory pattern, one node at a time.
+            options.enable_mem_pattern = False
+            options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             spec = MODELS[model]
             pair = tuple(ort.InferenceSession(str(folder / spec[part]), sess_options=options,
                                               providers=providers)
@@ -231,8 +238,6 @@ def _view_box(view, h: int, w: int) -> tuple:
 
 def _embedding(rgb8: np.ndarray, view: tuple, model: str, key) -> list:
     """The model's reading of one view of the picture, kept by ``key``."""
-    import cv2
-
     model = model_name(model)
     full_key = (key, tuple(round(v, 5) for v in view), model)
     if key is not None:
@@ -241,6 +246,20 @@ def _embedding(rgb8: np.ndarray, view: tuple, model: str, key) -> list:
             if kept is not None:
                 _embeds.move_to_end(full_key)
                 return kept
+    with _run_lock:
+        if key is not None:
+            # A second click on the same view, sent while the first was reading it.
+            with _cache_lock:
+                kept = _embeds.get(full_key)
+            if kept is not None:
+                return kept
+        return _read_view(rgb8, view, model, key, full_key)
+
+
+def _read_view(rgb8: np.ndarray, view: tuple, model: str, key, full_key) -> list:
+    """Run the image encoder over one view. Called with ``_run_lock`` held."""
+    import cv2
+
     spec = MODELS[model]
     h, w = rgb8.shape[:2]
     x0, y0, x1, y1 = _view_box(view, h, w)
@@ -281,8 +300,9 @@ def predict(rgb8: np.ndarray, part: dict, model: str, key=None) -> tuple:
              if box else np.zeros((1, 0, 4), np.float32))
     _, decoder = _session_pair(model)
     feeds = {f"image_embeddings.{i}": f for i, f in enumerate(feats)}
-    scores, masks, _ = decoder.run(None, {**feeds, "input_points": points, "input_labels": labels,
-                                          "input_boxes": boxes})
+    with _run_lock:
+        scores, masks, _ = decoder.run(None, {**feeds, "input_points": points, "input_labels": labels,
+                                              "input_boxes": boxes})
     return masks[0, 0].astype(np.float32), scores[0, 0].astype(np.float32)
 
 

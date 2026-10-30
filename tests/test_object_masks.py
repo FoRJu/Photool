@@ -139,6 +139,42 @@ class TestChoosing:
         assert encoder.runs == 1
 
 
+class TestOneAtATime:
+    def test_the_model_is_never_run_twice_at_once(self, model, monkeypatch):
+        # DirectML crashes the process when one session runs on two threads, as
+        # it does when clicks come faster than the answers.
+        import threading
+        import time
+
+        encoder, decoder = model
+        busy, overlaps = [0], [0]
+
+        def guarded(run):
+            def wrapper(*args):
+                busy[0] += 1
+                overlaps[0] += busy[0] > 1
+                time.sleep(0.01)
+                try:
+                    return run(*args)
+                finally:
+                    busy[0] -= 1
+            return wrapper
+
+        monkeypatch.setattr(encoder, "run", guarded(encoder.run))
+        monkeypatch.setattr(decoder, "run", guarded(decoder.run))
+        rgb8 = _picture()
+        threads = [threading.Thread(target=objects.predict,
+                                    args=(rgb8, {"view": [0, 0, 1, 1], "points": [[0.1 * k + 0.1, 0.5, 1]]},
+                                          "sam2.1", "frame"))
+                   for k in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert overlaps[0] == 0
+        assert encoder.runs == 1                 # the view was read once, for all eight
+
+
 class TestKeeping:
     def test_a_kept_selection_reads_back(self, model):
         matte = np.zeros((40, 60), np.float32)
