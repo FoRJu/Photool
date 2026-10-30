@@ -90,8 +90,22 @@ class TestSkin:
         frame, region = _skin_frame()
         before = _bands(frame.rgb, region)
         after = _bands(skin.retouch(frame, [{"kind": "people", "smooth": 100}], mask_reach), region)
-        assert after[0] < 0.6 * before[0]                         # the middle band: much calmer
+        assert after[0] < 0.75 * before[0]                        # the middle band: calmer
         assert after[1] > 0.8 * before[1]                         # the pores: still there
+
+    def test_smooth_takes_the_dark_spots_and_keeps_the_glow(self):
+        # A blemish is darker than the skin round it; its sheen is brighter.
+        import cv2
+        frame, region = _skin_frame()
+        out = skin.retouch(frame, [{"kind": "people", "smooth": 100}], mask_reach)
+
+        def middle(rgb):
+            lum = np.log2(np.maximum(rgb @ skin._LUMA, 1e-5))[region]
+            return cv2.GaussianBlur(lum, (0, 0), 0.7) - cv2.GaussianBlur(lum, (0, 0), 6.0)
+        was, now = middle(frame.rgb), middle(out)
+        dark, bright = was < -0.1, was > 0.1
+        assert np.abs(now[dark]).mean() < 0.55 * np.abs(was[dark]).mean()
+        assert np.abs(now[bright]).mean() > 0.6 * np.abs(was[bright]).mean()
 
     def test_texture_softens_or_crisps_the_pores(self):
         frame, region = _skin_frame()

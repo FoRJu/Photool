@@ -8,6 +8,7 @@ and the middle band calmed while the finest (the pores, which make skin read as
 skin) is kept:
 
   smooth   0..100   how much of the middle band goes: spots, uneven patches
+                    (the darker fully, the brighter, its sheen, much less)
   texture  -100..100  the finest band: softer pores (left) or crisper (right)
   even     0..100   colour (and broad brightness) pulled toward the skin
                     round it: redness, a blotchy cheek
@@ -33,7 +34,11 @@ SKIN_SLIDERS = ("smooth", "even", "texture")
 SKIN_AREAS = ("face_skin", "body_skin")
 
 # How far each control goes at full deflection.
-SMOOTH_MAX = 0.9          # share of the middle band taken out
+SMOOTH_MAX = 0.9          # share of the middle band's darker spots taken out
+# Of its brighter spots, a share of that: a blemish or a blotch is darker or
+# redder than the skin round it, and what is brighter is the skin's own sheen
+# and glow, which taken out as well leaves a face flat, as under foundation.
+SMOOTH_BRIGHT = 0.35
 TEXTURE_MAX = 0.8         # share of the finest band added or taken away
 EVEN_COLOUR_MAX = 0.75    # share of the way to the skin round about
 EVEN_LIGHT_MAX = 0.15     # likewise for broad brightness: the face keeps its shape
@@ -156,15 +161,22 @@ def _region(rgb: np.ndarray, weight: np.ndarray, face: float, mask: dict) -> np.
     broad = _over_skin(stops, skin, mid_r)
     fine = stops - finer
     middle = finer - broad
-    new = broad + middle * (1.0 - SMOOTH_MAX * smooth) + fine * (1.0 + TEXTURE_MAX * texture)
+    dark = np.minimum(middle, 0.0)
+    bright = middle - dark
+    new = (broad + dark * (1.0 - SMOOTH_MAX * smooth) + bright * (1.0 - SMOOTH_MAX * SMOOTH_BRIGHT * smooth)
+           + fine * (1.0 + TEXTURE_MAX * texture))
     if even:
         far = face * EVEN_FACES
-        new = new + (_over_skin(stops, skin, far) - broad) * EVEN_LIGHT_MAX * even
+        # Darker patches are lifted toward the skin round them; the brighter,
+        # where the light falls and the skin glows, are left as they are.
+        new = new + np.maximum(_over_skin(stops, skin, far) - broad, 0.0) * EVEN_LIGHT_MAX * even
         colour = colour + (_over_skin(colour, skin, far) - colour) * EVEN_COLOUR_MAX * even
     light = np.exp2(new)
     # Smoothing in stops averages in stops, which is darker than the light's own
-    # average: each patch of skin is put back to the brightness it had.
-    light = light * (_over_skin(lum, skin, mid_r) / (_over_skin(light, skin, mid_r) + _EPS))
+    # average: each broad area of skin (a cheek, not a spot, whose being lifted
+    # is the point) is put back to the brightness it had.
+    keep_r = face * EVEN_FACES
+    light = light * (_over_skin(lum, skin, keep_r) / (_over_skin(light, skin, keep_r) + _EPS))
     done = np.maximum(light[..., None] * colour - _EPS, 0.0)
     return (rgb + (done - rgb) * skin[..., None]).astype(np.float32)
 
