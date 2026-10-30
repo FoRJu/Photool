@@ -2443,6 +2443,7 @@ async def default_export_output(request: Request):
 class SavePresetRequest(BaseModel):
     name: str
     settings: dict
+    sections: list = []          # the develop panel's sections it carries ("light", "curve", …)
 
 
 @router.get("/export/develop/presets")
@@ -2454,22 +2455,26 @@ async def list_develop_presets(request: Request):
 
 @router.post("/export/develop/presets")
 async def save_develop_preset(req: SavePresetRequest, request: Request):
-    """Save the edit on screen under a name, so it can be put back later.
+    """Save the edit on screen under a name (a look of your own), so it can be
+    put on other photos, with the panel sections it carries.
 
     The settings are clamped into range on the way in. A preset is read straight
     back into the sliders, so one holding a value no slider can reach would show
-    up as a control the user cannot drag back to where it was.
+    up as a control the user cannot drag back to where it was. What belongs to
+    the frame it was made on is left out: the crop and level, the spots, and the
+    masks, which are drawn on that frame (an object mask is its very picture).
     """
-    from adjust.develop import normalize
+    from adjust.develop import MASKS_KEY, OWN_KEYS, normalize
 
     name = (req.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="A preset needs a name")
-    settings = normalize(req.settings)
+    settings = {k: v for k, v in normalize(req.settings).items() if k not in OWN_KEYS and k != MASKS_KEY}
     if not settings:
         raise HTTPException(status_code=400, detail="There is no edit to save")
+    sections = [s for s in req.sections if isinstance(s, str) and 0 < len(s) <= 32][:24]
     catalog = _get_catalog(request)
-    catalog.db.save_develop_preset(name, settings)
+    catalog.db.save_develop_preset(name[:80], settings, sections)
     return {"ok": True, "name": name, "presets": catalog.db.list_develop_presets()}
 
 

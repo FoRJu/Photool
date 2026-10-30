@@ -190,3 +190,21 @@ class TestPreviewAndAuto:
         })
         assert res.status_code == 200
         assert _mean(res.content) > _mean(self._preview(client, exposure=0.01)) + 40
+
+
+class TestLooksOfYourOwn:
+    def test_a_saved_look_leaves_out_what_belongs_to_its_frame(self, client):
+        res = client.post("/api/export/develop/presets", json={
+            "name": "Stage", "sections": ["light", "curve"],
+            "settings": {"exposure": 0.5, "contrast": 20, "angle": 2.0, "crop_x": 0.1, "crop_y": 0.1,
+                         "crop_w": 0.5, "crop_h": 0.5,
+                         "spots": [{"x": 0.5, "y": 0.5, "r": 0.01, "sx": 0.6, "sy": 0.5}],
+                         "masks": [{"kind": "radial", "cx": 0.5, "cy": 0.5, "rx": 0.2, "ry": 0.2, "exposure": 1}]}})
+        assert res.status_code == 200
+        saved = next(p for p in res.json()["presets"] if p["name"] == "Stage")
+        assert saved["settings"] == {"exposure": 0.5, "contrast": 20}
+        assert saved["sections"] == ["light", "curve"]
+
+    def test_a_look_of_only_its_frame_is_nothing_to_save(self, client):
+        res = client.post("/api/export/develop/presets", json={"name": "Crop", "settings": {"angle": 2.0}})
+        assert res.status_code == 400
