@@ -48,12 +48,15 @@ from typing import Optional, Sequence
 import numpy as np
 
 from adjust.look import (
+    EVEN_MIN,
     CameraLook,
     FrameSamples,
     HUE_TERMS,
     _white_stops,
     apply_look,
+    curve_evenness,
     fit_look,
+    look_error,
 )
 from adjust.render import LUMA, _shoulder, encode, resize_linear
 
@@ -73,6 +76,22 @@ _ANCHOR_QUANTILES = (0.35, 0.5, 0.65)
 # Most frames a style is learned from; spread evenly over what was offered.
 MAX_LEARN_FRAMES = 40
 
+# Improving a style with frames from other folders (see improve()). On real
+# shoots, a style learned from six frames got 40-45% of the way to one learned
+# from twenty-one of the same folder once ten to twenty frames with the same
+# camera settings were added from other folders; frames shot with other
+# settings (Highlight Tone Priority off, another Picture Style) made it nearly
+# three times worse. So only same-settings frames are ever offered, and the
+# result is kept only if it does no worse on the style's own frames.
+MAX_ADDED_FRAMES = 20
+MAX_TOTAL_FRAMES = 80
+# A candidate the current style misses by more than this many times what a fit
+# to that frame alone misses by is left out: an edited JPEG beside the RAW, a
+# frame from a setting the key cannot see. Same-settings frames measured 1.4-4.1.
+SCREEN_MAX = 6.0
+# Folds of the held-out check. A style from two frames is checked frame against frame.
+FOLDS = 5
+
 _DIR: Optional[Path] = None
 _LOCK = threading.Lock()
 _CACHE: dict = {}          # id -> (mtime_ns, Style)
@@ -81,10 +100,13 @@ _CACHE: dict = {}          # id -> (mtime_ns, Style)
 class Style:
     """A named look, with what it was learned from."""
 
-    __slots__ = ("id", "name", "look", "frames", "source", "created", "typical")
+    __slots__ = ("id", "name", "look", "frames", "source", "created", "typical",
+                 "key", "settings", "folders", "improved")
 
     def __init__(self, id: str, name: str, look: CameraLook, frames: int = 0,
-                 source: str = "", created: float = 0.0, typical: float = 0.45):
+                 source: str = "", created: float = 0.0, typical: float = 0.45,
+                 key: str = "", settings: str = "", folders: Sequence[str] = (),
+                 improved: Optional[dict] = None):
         self.id = id
         self.name = name
         self.look = look
@@ -94,10 +116,21 @@ class Style:
         # The median display brightness of the frames it was learned from: the
         # anchor for a frame that has no camera JPEG of its own.
         self.typical = typical
+        # The camera and its rendering settings the frames were shot with: the
+        # pool key, the readable settings string (its first field the model),
+        # and the folders they came from. Frames from other folders are only
+        # ever added when they share the key. Empty for styles learned before.
+        self.key = key
+        self.settings = settings
+        self.folders = list(folders)
+        # The last improvement: what was added and how it measured.
+        self.improved = improved
 
     def summary(self) -> dict:
         return {"id": self.id, "name": self.name, "frames": self.frames,
-                "source": self.source, "created": self.created}
+                "source": self.source, "created": self.created,
+                "folders": len(self.folders), "improvable": bool(self.key),
+                "improved": self.improved, "has_previous": has_previous(self.id)}
 
 
 # ── Storage ──────────────────────────────────────────────────────────
@@ -148,6 +181,8 @@ def save(style: Style, samples: Sequence[FrameSamples] = ()) -> Path:
             "id": style.id, "name": style.name, "frames": style.frames,
             "source": style.source, "created": style.created or time.time(),
             "typical": style.typical, "error": float(look.error),
+            "key": style.key, "settings": style.settings, "folders": style.folders,
+            "improved": style.improved,
         })),
     )
     if samples:
@@ -188,7 +223,9 @@ def load(style_id: str) -> Optional[Style]:
         return None
     style = Style(style_id, meta.get("name") or style_id, look, int(meta.get("frames", 0)),
                   meta.get("source", ""), float(meta.get("created", 0.0)),
-                  float(meta.get("typical", 0.45)))
+                  float(meta.get("typical", 0.45)), key=meta.get("key", ""),
+                  settings=meta.get("settings", ""), folders=meta.get("folders") or [],
+                  improved=meta.get("improved"))
     with _LOCK:
         _CACHE[style_id] = (mtime, style)
     return style
@@ -226,6 +263,9 @@ def delete(style_id: str) -> bool:
         if target.exists():
             target = aside / f"{style_id}-{int(time.time())}.npz"
         path.replace(target)
+        previous = _previous_path(style_id)
+        if previous is not None and previous.exists():
+            previous.unlink()
     except OSError:
         return False
     with _LOCK:
@@ -239,7 +279,15 @@ def rename(style_id: str, name: str) -> bool:
         return False
     style.name = (name or "").strip()[:80] or style.name
     # Re-save keeps the samples: read them back first.
+    save(style, samples_of(style_id))
+    return True
+
+
+def samples_of(style_id: str) -> list:
+    """The per-frame samples a style was fitted to, as stored with it."""
     samples = []
+    if _DIR is None or not valid_id(style_id):
+        return samples
     try:
         with np.load(_DIR / f"{style_id}.npz", allow_pickle=False) as data:
             if "counts" in data.files:
@@ -249,7 +297,42 @@ def rename(style_id: str, name: str) -> bool:
                     samples.append(FrameSamples(linear=data["linear"][a:b], camera=data["camera"][a:b]))
     except Exception:
         samples = []
-    save(style, samples)
+    return samples
+
+
+# ── The version before an improvement ────────────────────────────────
+
+def _previous_path(style_id: str) -> Optional[Path]:
+    return None if _DIR is None else _DIR / "previous" / f"{style_id}.npz"
+
+
+def has_previous(style_id: str) -> bool:
+    path = _previous_path(style_id)
+    return bool(path and path.exists())
+
+
+def keep_previous(style_id: str) -> bool:
+    """Copy the style as it is now aside, so one improvement can be undone."""
+    import shutil
+
+    if _DIR is None or not valid_id(style_id):
+        return False
+    path, aside = _DIR / f"{style_id}.npz", _previous_path(style_id)
+    if not path.exists():
+        return False
+    aside.parent.mkdir(exist_ok=True)
+    shutil.copy2(path, aside)
+    return True
+
+
+def restore_previous(style_id: str) -> bool:
+    """Put back the version kept before the last improvement."""
+    aside = _previous_path(style_id)
+    if not valid_id(style_id) or aside is None or not aside.exists():
+        return False
+    aside.replace(_DIR / f"{style_id}.npz")
+    with _LOCK:
+        _CACHE.pop(style_id, None)
     return True
 
 
@@ -270,6 +353,89 @@ def from_samples(name: str, samples: Sequence[FrameSamples], source: str = "",
         typical = float(np.median(medians)) if medians else 0.45
     return Style(style_id or slug(name), (name or "").strip()[:80] or "Style", look,
                  frames=len(samples), source=source, created=time.time(), typical=typical)
+
+
+def held_out_error(own: Sequence[FrameSamples], added: Sequence[FrameSamples] = (),
+                   folds: int = FOLDS) -> float:
+    """How well a style fitted to ``own`` (and ``added``) renders frames of its
+    own it was not fitted to: each fold of ``own`` is left out in turn, the look
+    is fitted to the rest plus every added frame, and measured on the fold left
+    out. On both cameras tried it followed the error on frames never used at
+    all: down with same-settings frames added, up sharply with other settings.
+    ``inf`` when a fold cannot be fitted; ``nan`` with fewer than two frames."""
+    own = [s for s in own if s is not None and len(s.linear)]
+    if len(own) < 2:
+        return float("nan")
+    folds = max(2, min(folds, len(own)))
+    errors = []
+    for f in range(folds):
+        test = [s for i, s in enumerate(own) if i % folds == f]
+        train = [s for i, s in enumerate(own) if i % folds != f] + list(added)
+        look = fit_look(train)
+        if look is None:
+            return float("inf")
+        errors.append(look_error(look, test, colour=True))
+    return float(np.mean(errors))
+
+
+def screen(look: CameraLook, candidates: Sequence[FrameSamples]) -> list:
+    """``(ratio, sample)`` for each candidate the style could take, best first:
+    how far the style misses the frame, against how far a fit to that frame
+    alone does. Frames over SCREEN_MAX are left out."""
+    kept = []
+    for s in candidates:
+        own = fit_look([s])
+        if own is None:
+            continue
+        ratio = look_error(look, [s], colour=True) / max(look_error(own, [s], colour=True), 1e-4)
+        if ratio <= SCREEN_MAX:
+            kept.append((ratio, s))
+    kept.sort(key=lambda rs: rs[0])
+    return kept
+
+
+def improve(style: Style, own: Sequence[FrameSamples], candidates: Sequence[FrameSamples]):
+    """Try the style with ``candidates`` (same camera and settings, other
+    folders) added. Returns ``(new_style or None, report, added samples)``: a new style only when
+    it does no worse on the style's own frames held out, and its curve is not one
+    of the plateaued curves that posterize faces. All the screened frames are
+    tried first, then the better half, before giving up."""
+    report = {"offered": len(candidates), "screened": 0, "added": 0,
+              "before": None, "after": None, "reason": ""}
+    room = max(0, MAX_TOTAL_FRAMES - len(own))
+    ranked = screen(style.look, candidates)
+    report["screened"] = len(ranked)
+    ranked = ranked[:min(MAX_ADDED_FRAMES, room)]
+    if not ranked:
+        report["reason"] = ("it already has as many frames as a style keeps" if not room else
+                            "none of the frames found is rendered like this style")
+        return None, report, []
+    before = held_out_error(own)
+    report["before"] = before
+    if not np.isfinite(before):
+        report["reason"] = "it was learned from too few frames to check an improvement against"
+        return None, report, []
+    tries = [ranked]
+    if len(ranked) >= 4:
+        tries.append(ranked[:len(ranked) // 2])
+    for added in tries:
+        extra = [s for _, s in added]
+        after = held_out_error(own, extra)
+        report["after"] = after
+        if not after <= before:
+            continue
+        look = fit_look(list(own) + extra)
+        even = curve_evenness(look.curve) if look is not None else None
+        if look is None or (even is not None and even < EVEN_MIN):
+            continue
+        typical = float(np.median([float(np.median(s.camera @ LUMA)) for s in list(own) + extra]))
+        better = Style(style.id, style.name, look, frames=len(own) + len(extra), source=style.source,
+                       created=style.created, typical=typical, key=style.key,
+                       settings=style.settings, folders=style.folders)
+        report["added"] = len(extra)
+        return better, report, extra
+    report["reason"] = "adding them made it worse on its own frames"
+    return None, report, []
 
 
 def spread(items: list, limit: int = MAX_LEARN_FRAMES) -> list:

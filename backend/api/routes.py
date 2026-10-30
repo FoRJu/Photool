@@ -1799,6 +1799,13 @@ def _background_work(request: Request) -> list[dict]:
                          "total": job.get("total", 0), "automatic": kind != "Places"})
     if not places_routes.auto_idle():
         work.append({"kind": "Places", "where": "", "done": 0, "total": 0, "automatic": True})
+    from export import engine
+
+    style = engine.style_job()
+    if style.get("status") == "running":
+        work.append({"kind": "Improving a style" if style.get("kind") == "improve" else "Learning a style",
+                     "where": style.get("name", ""), "done": style.get("done", 0),
+                     "total": style.get("total", 0), "automatic": style.get("kind") == "improve"})
     queue = _get_queue_manager(request).status()
     if queue.get("activity") in ("thumbnails", "measuring"):
         work.append({"kind": "Thumbnails" if queue["activity"] == "thumbnails" else "Measuring",
@@ -2740,6 +2747,67 @@ async def learn_style_status():
     from export import engine
 
     return engine.style_job()
+
+
+def _style_folders(request: Request, settings: str) -> list[Path]:
+    """The library folders with RAW files from the camera a style was learned
+    on (its settings string starts with the model), newest first; every folder
+    with RAW files when the model is not known or matches none."""
+    from export.engine import _RAW_EXTENSIONS
+
+    model = (settings or "").split("|", 1)[0].strip("-")
+    raw = tuple(sorted(_RAW_EXTENSIONS))
+    marks = ",".join("?" * len(raw))
+    db = _get_catalog(request).db
+    with db._connect() as conn:
+        rows = []
+        if model:
+            rows = conn.execute(
+                f"SELECT DISTINCT folder FROM photos WHERE camera = ? AND lower(extension) IN ({marks})",
+                (model, *raw)).fetchall()
+        if not rows:
+            rows = conn.execute(
+                f"SELECT DISTINCT folder FROM photos WHERE lower(extension) IN ({marks})", raw).fetchall()
+    root = Path(request.app.state.config.library_root)
+    return [root / r[0] for r in sorted(rows, key=lambda r: r[0], reverse=True)]
+
+
+@router.post("/styles/{style_id}/improve")
+async def improve_style_route(style_id: str, request: Request):
+    """Look in other folders for frames shot with this style's camera and
+    settings, and keep the style refitted with them only if it does no worse on
+    its own frames (adjust.styles.improve). In the background; the job reads
+    as /styles/learn does, with ``kind`` "improve" and a ``report`` at the end."""
+    from adjust import styles
+    from export import engine
+
+    style = await _run_blocking(styles.load, style_id)
+    if style is None:
+        raise HTTPException(status_code=404, detail="No such style")
+    if not style.key:
+        raise HTTPException(status_code=400, detail=(
+            "This style was learned before styles remembered their camera settings; "
+            "learn it again to improve it from other folders."))
+    job = engine.style_job()
+    if job.get("status") == "running":
+        raise HTTPException(status_code=409, detail=f"Already working on {job.get('name')!r}")
+    folders = await _run_blocking(_style_folders, request, style.settings)
+    threading.Thread(target=engine.improve_style, args=(style_id, folders), daemon=True,
+                     name="style-improve").start()
+    return {"status": "running", "kind": "improve", "name": style.name, "style_id": style_id,
+            "phase": "looking", "done": 0, "total": len(folders)}
+
+
+@router.post("/styles/{style_id}/restore")
+async def restore_style_route(style_id: str):
+    """Undo the last improvement: put back the version kept before it."""
+    from adjust import styles
+    from export import engine
+
+    if not await _run_blocking(styles.restore_previous, style_id):
+        raise HTTPException(status_code=404, detail="No earlier version of this style")
+    engine.clear_preview_cache()
+    return {"ok": True, "style": styles.load(style_id).summary()}
 
 
 @router.patch("/styles/{style_id}")
