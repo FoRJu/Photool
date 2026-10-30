@@ -1861,23 +1861,26 @@ function Fold({ id, title, hint, edited, open, onToggle, extra, summary, childre
   const grip = useContext(FoldGrip);
   return (
     <section id={`fold-${id}`} className="group space-y-2" data-testid={`fold-${id}`}>
-      <div className="flex items-center justify-between text-xs text-neutral-200">
+      {/* The whole title row opens and closes it, not only the word. */}
+      <div onClick={() => onToggle(id)} title={hint} data-testid={`fold-${id}-row`}
+        className={`flex items-center justify-between gap-2 -mx-1.5 px-1.5 py-1 rounded cursor-pointer text-xs
+          hover:bg-neutral-800/60 hover:text-neutral-200 ${open ? "text-neutral-300" : "text-neutral-400"}`}>
         <span className="flex items-center shrink-0">
           {grip && grip(id)}
-          <button onClick={() => onToggle(id)} title={hint} aria-expanded={open}
-            className="flex items-center gap-1.5 font-medium hover:text-white">
-            <span className="w-3 text-left text-neutral-500">{open ? "▾" : "▸"}</span>
+          <button onClick={(e) => { e.stopPropagation(); onToggle(id); }} aria-expanded={open}
+            className="flex items-center gap-1.5">
+            <span className="w-3 text-left text-neutral-600">{open ? "▾" : "▸"}</span>
             {title}
             {edited && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-0.5" title="Changed in this edit" />}
           </button>
         </span>
         {!open && summary && (
-          <button onClick={() => onToggle(id)} data-testid={`fold-${id}-summary`}
-            className="flex-1 min-w-0 truncate text-right text-[11px] text-neutral-400 hover:text-neutral-200 ml-2">
+          <span data-testid={`fold-${id}-summary`}
+            className="flex-1 min-w-0 truncate text-right text-[11px] text-neutral-500">
             {summary}
-          </button>
+          </span>
         )}
-        <span className="flex items-center gap-2 text-[11px]">{extra}</span>
+        <span className="flex items-center gap-2 text-[11px]" onClick={(e) => e.stopPropagation()}>{extra}</span>
       </div>
       {open && children}
     </section>
@@ -1889,10 +1892,80 @@ function Part({ title, hint, extra, children, testid }) {
   return (
     <div className="space-y-2" data-testid={testid}>
       <div className="flex items-center justify-between text-[11px]">
-        <span className="text-neutral-300 font-medium" title={hint}>{title}</span>
+        <span className="text-neutral-400" title={hint}>{title}</span>
         <span className="flex items-center gap-2">{extra}</span>
       </div>
       {children}
+    </div>
+  );
+}
+
+// Every key and gesture the develop view answers, for the ? sheet.
+const SHORTCUTS = [
+  ["Moving about", [
+    ["← →", "Previous or next photo"],
+    ["D", "Close the develop view"],
+    ["Esc", "Back out one step: the crop, the masks, the spots, the loupe, then the view"],
+    ["Z", "Zoom in 3×, or back to the whole frame"],
+    ["Scroll", "Zoom in or out about the pointer"],
+    ["Space + drag", "Move about when zoomed (or drag with the middle button)"],
+    ["L", "The loupe at 1:1 (or click the picture where to look)"],
+  ]],
+  ["Seeing", [
+    ["\\ (hold)", "The original"],
+    ["J", "Clipped highlights and shadows"],
+    ["?", "This list"],
+  ]],
+  ["The edit", [
+    ["A", "Auto light"],
+    ["0", "Reset the tone and colour (the crop stays)"],
+    ["Ctrl+Z", "Undo"],
+    ["Ctrl+Shift+Z, Ctrl+Y", "Redo"],
+    ["Ctrl+C", "Copy the edit"],
+    ["Ctrl+Shift+C", "Choose what Copy carries"],
+    ["Ctrl+V", "Paste"],
+    ["B", "Put this edit on the rest of the burst"],
+    ["Double-click a slider", "Back to zero"],
+  ]],
+  ["Frame", [
+    ["C", "Crop and level; C again or Enter when done"],
+    ["Q", "Spot removal"],
+    ["[ ]", "A smaller or larger spot"],
+    ["Delete", "Take back the selected spot"],
+  ]],
+  ["Masks", [
+    ["[ ]", "A smaller or larger brush"],
+    ["Alt + paint", "Erase with the brush"],
+    ["Click, or drag a box", "Choose an object"],
+    ["Alt + click", "Not this, for an object"],
+    ["Tab", "The model's next guess, for an object"],
+  ]],
+];
+
+function ShortcutSheet({ onClose }) {
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4" onClick={onClose}
+      data-testid="shortcuts">
+      <div className="max-w-3xl w-full max-h-full overflow-y-auto rounded-lg border border-neutral-800 bg-neutral-950 p-5"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm text-neutral-300">Keyboard shortcuts</span>
+          <button onClick={onClose} className="text-xs text-neutral-500 hover:text-white">Esc to close</button>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-x-8 gap-y-4">
+          {SHORTCUTS.map(([group, keys]) => (
+            <div key={group} className="space-y-1">
+              <div className="text-[11px] text-neutral-500">{group}</div>
+              {keys.map(([key, what]) => (
+                <div key={key + what} className="flex items-baseline gap-3 text-xs">
+                  <kbd className="shrink-0 min-w-[5.5rem] font-mono text-[11px] text-neutral-300">{key}</kbd>
+                  <span className="text-neutral-400">{what}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -3632,10 +3705,12 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   // Dragged by a grip on its title: holding the grip lets its section be dragged.
   const grip = useCallback((id) => (
     <span onPointerDown={() => setDragging(id)} onPointerUp={() => setDragging(null)}
+      onClick={(e) => e.stopPropagation()}
       title="Drag to move this section" data-testid={`grip-${id}`}
       className="-ml-3 w-3 cursor-grab select-none text-neutral-600 opacity-0 group-hover:opacity-100 hover:text-neutral-300">⋮</span>
   ), []);
   const [matchPicker, setMatchPicker] = useState(false);
+  const [showKeys, setShowKeys] = useState(false);
   const [folds, setFolds] = useState(readFolds);
   const foldsRef = useRef(folds);
   const setOpen = useCallback((id, open) => {
@@ -4600,7 +4675,8 @@ ${known.license}
       const typing = tag === "INPUT" && e.target.type !== "range";
       // Escape backs out one layer at a time: the crop, then the loupe, then the view.
       if (e.key === "Escape") {
-        if (cropMode) endCrop();
+        if (showKeys) setShowKeys(false);
+        else if (cropMode) endCrop();
         else if (maskMode) endMasks();
         else if (spotMode) setSpotMode(false);
         else if (loupe) placeLoupe(null);
@@ -4637,6 +4713,7 @@ ${known.license}
       if (tag === "INPUT" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) return;
 
       switch (e.key) {
+        case "?": setShowKeys((v) => !v); break;
         case "ArrowLeft": e.preventDefault(); step(-1); break;
         case "ArrowRight": e.preventDefault(); step(1); break;
         case "\\": setShowOriginal(true); break;
@@ -4686,7 +4763,7 @@ ${known.license}
     };
   }, [onClose, copySettings, pasteSettings, step, reset, runAuto, applyToBurst,
     cropMode, endCrop, startCrop, maskMode, endMasks, loupe, placeLoupe, version, setBrush, undo, redo,
-    zoomAbout, maskSel, objectNextGuess,
+    zoomAbout, maskSel, objectNextGuess, showKeys,
     spotMode, spotSel, toggleSpots, removeSpot]);
 
   // Object URLs are the one thing here that leaks if it is forgotten. A save
@@ -5469,7 +5546,10 @@ Number(settings.mono) ? (
         <span>Ctrl+C / Ctrl+V edit</span>
         <span>B to burst</span>
         <span>Esc back out / close</span>
+        <button onClick={() => setShowKeys(true)} className="ml-auto text-neutral-400 hover:text-white"
+          data-testid="shortcuts-open">? all shortcuts</button>
       </footer>
+      {showKeys && <ShortcutSheet onClose={() => setShowKeys(false)} />}
     </div>
   );
 }

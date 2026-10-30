@@ -240,7 +240,8 @@ is its tool: opening it shows the masks on the picture, folding it puts them
 away; then Sharpening, Noise reduction and Effects. **Arrange sections**, at the
 bottom, puts them in your own order (↑ ↓, or drag one by the ⋮ beside its title)
 and leaves out those you do not use, on this device; one left out still shows
-while it holds a change, and *Restore* puts the panel back.
+while it holds a change, and *Restore* puts the panel back. Press `?` in the develop view for every
+shortcut it answers.
 
 **Looks** are starting points for the styling. The built-in ones set contrast,
 colour, toning, grain and vignette and leave the light alone. Your own are saved
