@@ -79,11 +79,13 @@ const GROUPS = [
   {
     id: "light",
     title: "Light",
-    hint: "Exposure is in stops of light. Highlights, shadows, whites and blacks reshape one part of the range each, and Squeeze compresses the whole scene.",
+    hint: "Exposure is in stops of light. Contrast spreads the tones about the middle; highlights, shadows, whites and blacks reshape one part of the range each, and Squeeze compresses the whole scene.",
     sliders: [
       { key: "exposure", label: "Exposure", min: -5, max: 5, step: 0.05,
         format: (v) => `${v > 0 ? "+" : ""}${Number(v).toFixed(2)}`,
         title: "Brighten or darken, in stops of light. Decoded from the RAW file, so a frame shot under can be brought up." },
+      { key: "contrast", label: "Contrast", min: -100, max: 100, step: 1, format: signed,
+        title: "More or less separation about the mid-tones." },
       { key: "highlights", label: "Highlights", min: -100, max: 100, step: 1, format: signed,
         title: "Pull the bright end back (left) to recover sky and windows, or push it further." },
       { key: "shadows", label: "Shadows", min: -100, max: 100, step: 1, format: signed,
@@ -159,8 +161,6 @@ const GROUPS = [
     id: "presence",
     title: "Presence",
     sliders: [
-      { key: "contrast", label: "Contrast", min: -100, max: 100, step: 1, format: signed,
-        title: "More or less separation about the mid-tones." },
       { key: "clarity", label: "Clarity", min: -100, max: 100, step: 1, format: signed,
         title: "Mid-tone local contrast: punch and texture without darkening the shadows or crunching the sky." },
       { key: "vibrance", label: "Vibrance", min: -100, max: 100, step: 1, format: signed,
@@ -431,11 +431,11 @@ const LOOK_KEYS = [
 const COPY_SECTIONS = [
   { id: "profile", label: "Profile", keys: ["mono", "flat", "style", "style_fade"] },
   { id: "wb", label: "White balance", keys: ["temperature", "tint"] },
-  { id: "light", label: "Light", keys: LIGHT_KEYS },
+  { id: "light", label: "Light", keys: [...LIGHT_KEYS, "contrast"] },
   { id: "noise", label: "Noise reduction", keys: ["nr_luma", "nr_color"] },
   { id: "sharpen", label: "Sharpening", keys: ["sharpen", "sharpen_radius", "sharpen_detail", "sharpen_masking"] },
   { id: "lens", label: "Lens corrections", keys: ["lens_profile", "distortion"] },
-  { id: "presence", label: "Presence", keys: ["contrast", "clarity", "vibrance", "saturation"] },
+  { id: "presence", label: "Presence", keys: ["clarity", "vibrance", "saturation"] },
   { id: "curve", label: "Tone curve", keys: CURVE_KEYS },
   { id: "mixer", label: "Colour mixer / B&W mix", keys: [...HSL_KEYS, ...BW_MIX_KEYS] },
   { id: "toning", label: "Fade & toning", keys: ["fade", ...SPLIT_KEYS] },
@@ -447,6 +447,12 @@ const COPY_SECTIONS = [
   { id: "spots", label: "Spots", keys: ["spots"], framing: true },
 ];
 const TONE_SECTIONS = COPY_SECTIONS.filter((s) => !s.framing).map((s) => s.id);
+// What a look of your own can carry: the tone sections. Never the masks, which
+// are drawn on the frame they were made on.
+const LOOK_SECTIONS = COPY_SECTIONS.filter((s) => !s.framing && s.id !== "masks");
+const keysOfSections = (ids) => LOOK_SECTIONS.filter((s) => ids.includes(s.id)).flatMap((s) => s.keys);
+// A look saved before looks said what they carry carries every tone section.
+const lookSections = (preset) => (preset.sections?.length ? preset.sections : LOOK_SECTIONS.map((s) => s.id));
 // Tied to where things are in the frame: not put on a frame turned the other way.
 const PLACED_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "spots"];
 const chosenSections = () => {
@@ -1585,7 +1591,7 @@ function MatchPanel({ filepath, reference, match, busy, error, stale, onPickThis
     <div className="space-y-1.5" data-testid="match-panel">
       <div className="text-[10px] uppercase tracking-wide text-neutral-600"
         title="Give this frame the tone and colour of another picture: best a frame of the same shoot, whose light or exposure differed. The result is ordinary curves and saturation, so it can be changed like any edit.">
-        Match a look
+        Match another photo
       </div>
       {reference ? (
         <div className="flex items-center gap-1 text-[11px]">
@@ -1743,15 +1749,6 @@ function SpotPanel({ spots, selected, spotMode, size, mode, busy, onSize, onMode
   const set = (key, value) => onChange(selected, { ...sp, [key]: value });
   return (
     <div className="space-y-2" data-testid="spot-panel">
-      <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-600">
-        <span title="Paint out dust, a blemish or a wire from a clean place nearby. Done before every other control.">
-          Spot removal{spots.length ? ` · ${spots.length}` : ""}
-        </span>
-        {spotMode && (
-          <button onClick={onToggle} className="normal-case tracking-normal text-amber-400 hover:text-amber-300"
-            title="Back to the picture as framed (Q or Esc)">done</button>
-        )}
-      </div>
       <div className="flex items-center gap-1">
         <button onClick={onToggle} data-testid="spot-toggle"
           title="Click on the picture where a spot is; drag the circle or its source to move them (Q)"
@@ -1799,6 +1796,176 @@ function SpotPanel({ spots, selected, spotMode, size, mode, busy, onSize, onMode
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// The panel's sections fold away. Which are open is kept on this device; at
+// first only the ones most photos need. A closed one that holds changes says so.
+// Frame and Masks are tools on the picture: open is in use, so they start
+// folded and are not kept open.
+const FOLDS_KEY = "photool.develop.open";
+const OPEN_AT_FIRST = ["profile", "wb", "light", "presence"];
+const TOOL_FOLDS = ["frame", "masks"];
+const keepable = (open) => open.filter((id) => !TOOL_FOLDS.includes(id));
+function readFolds() {
+  try {
+    const kept = JSON.parse(localStorage.getItem(FOLDS_KEY));
+    return Array.isArray(kept) ? keepable(kept) : OPEN_AT_FIRST;
+  } catch {
+    return OPEN_AT_FIRST;
+  }
+}
+function keepFolds(open) {
+  try { localStorage.setItem(FOLDS_KEY, JSON.stringify(keepable(open))); } catch { /* this visit only */ }
+}
+
+// The panel's sections in the order they come, and what each is called where
+// they are arranged. The order and the ones left out are kept on this device.
+const PANEL_ORDER = ["frame", "profile", "wb", "light", "presence", "looks", "curve", "mixer", "toning",
+  "masks", "sharpen", "noise", "effects"];
+const PANEL_NAMES = {
+  frame: "Frame", profile: "Profile", wb: "White balance", light: "Light", presence: "Presence",
+  looks: "Looks", curve: "Tone curve", mixer: "Colour mixer / B&W mix", toning: "Fade & toning",
+  masks: "Masks", sharpen: "Sharpening", noise: "Noise reduction", effects: "Effects",
+};
+const ORDER_KEY = "photool.develop.order";
+const HIDDEN_KEY = "photool.develop.hidden";
+function readList(key, fallback) {
+  try {
+    const kept = JSON.parse(localStorage.getItem(key));
+    return Array.isArray(kept) ? kept : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function keepList(key, list) {
+  try { localStorage.setItem(key, JSON.stringify(list)); } catch { /* this visit only */ }
+}
+// A kept order, with any section it does not know of yet put back where it
+// comes by default.
+function readOrder() {
+  const kept = readList(ORDER_KEY, PANEL_ORDER).filter((id) => PANEL_ORDER.includes(id));
+  const out = [...kept];
+  PANEL_ORDER.forEach((id, i) => {
+    if (out.includes(id)) return;
+    const after = PANEL_ORDER.slice(0, i).reverse().find((prev) => out.includes(prev));
+    out.splice(after ? out.indexOf(after) + 1 : 0, 0, id);
+  });
+  return out;
+}
+// The grip a section is dragged by, given by the panel.
+const FoldGrip = createContext(null);
+
+function Fold({ id, title, hint, edited, open, onToggle, extra, summary, children }) {
+  const grip = useContext(FoldGrip);
+  return (
+    <section id={`fold-${id}`} className="group space-y-2" data-testid={`fold-${id}`}>
+      {/* The whole title row opens and closes it, not only the word. */}
+      <div onClick={() => onToggle(id)} title={hint} data-testid={`fold-${id}-row`}
+        className={`flex items-center justify-between gap-2 -mx-1.5 px-1.5 py-1 rounded cursor-pointer text-xs
+          hover:bg-neutral-800/60 hover:text-neutral-200 ${open ? "text-neutral-300" : "text-neutral-400"}`}>
+        <span className="flex items-center shrink-0">
+          {grip && grip(id)}
+          <button onClick={(e) => { e.stopPropagation(); onToggle(id); }} aria-expanded={open}
+            className="flex items-center gap-1.5">
+            <span className="w-3 text-left text-neutral-600">{open ? "▾" : "▸"}</span>
+            {title}
+            {edited && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-0.5" title="Changed in this edit" />}
+          </button>
+        </span>
+        {!open && summary && (
+          <span data-testid={`fold-${id}-summary`}
+            className="flex-1 min-w-0 truncate text-right text-[11px] text-neutral-500">
+            {summary}
+          </span>
+        )}
+        <span className="flex items-center gap-2 text-[11px]" onClick={(e) => e.stopPropagation()}>{extra}</span>
+      </div>
+      {open && children}
+    </section>
+  );
+}
+
+// One part of a section that holds several (Frame's crop, lens, transform and spots).
+function Part({ title, hint, extra, children, testid }) {
+  return (
+    <div className="space-y-2" data-testid={testid}>
+      <div className="flex items-center justify-between text-[11px]">
+        <span className="text-neutral-400" title={hint}>{title}</span>
+        <span className="flex items-center gap-2">{extra}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// Every key and gesture the develop view answers, for the ? sheet.
+const SHORTCUTS = [
+  ["Moving about", [
+    ["← →", "Previous or next photo"],
+    ["D", "Close the develop view"],
+    ["Esc", "Back out one step: the crop, the masks, the spots, the loupe, then the view"],
+    ["Z", "Zoom in 3×, or back to the whole frame"],
+    ["Scroll", "Zoom in or out about the pointer"],
+    ["Space + drag", "Move about when zoomed (or drag with the middle button)"],
+    ["L", "The loupe at 1:1 (or click the picture where to look)"],
+  ]],
+  ["Seeing", [
+    ["\\ (hold)", "The original"],
+    ["J", "Clipped highlights and shadows"],
+    ["?", "This list"],
+  ]],
+  ["The edit", [
+    ["A", "Auto light"],
+    ["0", "Reset the tone and colour (the crop stays)"],
+    ["Ctrl+Z", "Undo"],
+    ["Ctrl+Shift+Z, Ctrl+Y", "Redo"],
+    ["Ctrl+C", "Copy the edit"],
+    ["Ctrl+Shift+C", "Choose what Copy carries"],
+    ["Ctrl+V", "Paste"],
+    ["B", "Put this edit on the rest of the burst"],
+    ["Double-click a slider", "Back to zero"],
+  ]],
+  ["Frame", [
+    ["C", "Crop and level; C again or Enter when done"],
+    ["Q", "Spot removal"],
+    ["[ ]", "A smaller or larger spot"],
+    ["Delete", "Take back the selected spot"],
+  ]],
+  ["Masks", [
+    ["[ ]", "A smaller or larger brush"],
+    ["Alt + paint", "Erase with the brush"],
+    ["Click, or drag a box", "Choose an object"],
+    ["Alt + click", "Not this, for an object"],
+    ["Tab", "The model's next guess, for an object"],
+  ]],
+];
+
+function ShortcutSheet({ onClose }) {
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4" onClick={onClose}
+      data-testid="shortcuts">
+      <div className="max-w-3xl w-full max-h-full overflow-y-auto rounded-lg border border-neutral-800 bg-neutral-950 p-5"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm text-neutral-300">Keyboard shortcuts</span>
+          <button onClick={onClose} className="text-xs text-neutral-500 hover:text-white">Esc to close</button>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-x-8 gap-y-4">
+          {SHORTCUTS.map(([group, keys]) => (
+            <div key={group} className="space-y-1">
+              <div className="text-[11px] text-neutral-500">{group}</div>
+              {keys.map(([key, what]) => (
+                <div key={key + what} className="flex items-baseline gap-3 text-xs">
+                  <kbd className="shrink-0 min-w-[5.5rem] font-mono text-[11px] text-neutral-300">{key}</kbd>
+                  <span className="text-neutral-400">{what}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1930,13 +2097,6 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
   const set = (key, value) => onChange(selected, { ...m, [key]: value });
   return (
     <div className="space-y-2" data-testid="mask-panel">
-      <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-600">
-        <span title="Change part of the picture: a linear gradient (a sky, a foreground), a radial one (a face, a vignette of your own) or a brush, where you paint. Each has its own exposure, tone and colour.">Gradients &amp; brushes</span>
-        {maskMode && (
-          <button onClick={onDone} className="normal-case tracking-normal text-amber-400 hover:text-amber-300"
-            title="Back to the picture as framed (Esc)">done</button>
-        )}
-      </div>
       <div className="flex flex-wrap gap-1">
         {[["linear", "+ Linear", "Whole at one end, fading out to the other: drag its two ends on the picture."],
           ["radial", "+ Radial", "Whole inside an ellipse, fading out at its edge: drag its centre and its edges."],
@@ -3513,6 +3673,62 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   const startCrop = useCallback(() => { setMaskMode(false); setSpotMode(false); enterCrop(); }, [enterCrop]);
   const endCrop = useCallback(() => { setCropMode(false); setDraft(null); }, []);
 
+  // ── The panel's sections ────────────────────────────────────────
+  const [order, setOrder] = useState(readOrder);
+  const [hidden, setHidden] = useState(() => readList(HIDDEN_KEY, []));
+  const [arranging, setArranging] = useState(false);
+  const [dragging, setDragging] = useState(null);
+  const [dropAt, setDropAt] = useState(null);
+  const keepOrder = useCallback((next) => { setOrder(next); keepList(ORDER_KEY, next); }, []);
+  const moveSection = useCallback((id, before) => {
+    setOrder((now) => {
+      if (id === before) return now;
+      const rest = now.filter((x) => x !== id);
+      const at = before == null ? rest.length : rest.indexOf(before);
+      const next = [...rest.slice(0, at), id, ...rest.slice(at)];
+      keepList(ORDER_KEY, next);
+      return next;
+    });
+  }, []);
+  const showSection = useCallback((id, show) => {
+    setHidden((now) => {
+      const next = show ? now.filter((x) => x !== id) : [...now, id];
+      keepList(HIDDEN_KEY, next);
+      return next;
+    });
+  }, []);
+  const restoreArrangement = useCallback(() => {
+    keepOrder(PANEL_ORDER);
+    setHidden([]);
+    keepList(HIDDEN_KEY, []);
+  }, [keepOrder]);
+  // Dragged by a grip on its title: holding the grip lets its section be dragged.
+  const grip = useCallback((id) => (
+    <span onPointerDown={() => setDragging(id)} onPointerUp={() => setDragging(null)}
+      onClick={(e) => e.stopPropagation()}
+      title="Drag to move this section" data-testid={`grip-${id}`}
+      className="-ml-3 w-3 cursor-grab select-none text-neutral-600 opacity-0 group-hover:opacity-100 hover:text-neutral-300">⋮</span>
+  ), []);
+  const [matchPicker, setMatchPicker] = useState(false);
+  const [showKeys, setShowKeys] = useState(false);
+  const [folds, setFolds] = useState(readFolds);
+  const foldsRef = useRef(folds);
+  const setOpen = useCallback((id, open) => {
+    setFolds((now) => {
+      if (now.includes(id) === open) return now;
+      const next = open ? [...now, id] : now.filter((f) => f !== id);
+      foldsRef.current = next;
+      keepFolds(next);
+      return next;
+    });
+  }, []);
+  // A tool taken up (by its key, or a button in its section) opens the section
+  // and brings it into view.
+  const openFold = useCallback((id) => {
+    setOpen(id, true);
+    requestAnimationFrame(() => document.getElementById(`fold-${id}`)?.scrollIntoView({ block: "nearest" }));
+  }, [setOpen]);
+
   // ── Gradients ───────────────────────────────────────────────────
   const enterMasks = useCallback(() => {
     setSpotMode(false);
@@ -3525,7 +3741,35 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   }, []);
   const endMasks = useCallback(() => setMaskMode(false), []);
 
+  // Frame (crop, level, lens, transform, spots) and Masks are their tools:
+  // taking one up opens its section, and putting it down (Done, Esc, the key
+  // again) folds the section away. Opening Masks takes up the masks; folding
+  // either puts its tools down.
+  const framing = cropMode || spotMode;
+  const wasFraming = useRef(false);
+  useEffect(() => {
+    if (framing) openFold("frame");
+    else if (wasFraming.current) setOpen("frame", false);
+    wasFraming.current = framing;
+  }, [framing, openFold, setOpen]);
+  const wasMasking = useRef(false);
+  useEffect(() => {
+    if (maskMode) openFold("masks");
+    else if (wasMasking.current) setOpen("masks", false);
+    wasMasking.current = maskMode;
+  }, [maskMode, openFold, setOpen]);
+  // Another photo starts with the tools folded away.
+  useEffect(() => { setOpen("frame", false); }, [filepath, setOpen]);
+
   // ── Spots ───────────────────────────────────────────────────────
+
+  const toggleFold = useCallback((id) => {
+    const open = !foldsRef.current.includes(id);
+    setOpen(id, open);
+    if (id === "masks") (open ? enterMasks : endMasks)();
+    if (id === "frame" && !open) { endCrop(); setSpotMode(false); }
+  }, [setOpen, enterMasks, endMasks, endCrop]);
+
   const toggleSpots = useCallback(() => {
     setSpotMode((on) => {
       if (!on) {
@@ -4104,38 +4348,54 @@ ${known.license}
 
   useEffect(() => { loadPresets(); }, [loadPresets]);
 
+  // A look of your own sets the sections it carries and leaves the rest.
   const applyPreset = useCallback((name) => {
     const found = presets.find((p) => p.name === name);
     if (!found) return;
+    const keys = keysOfSections(lookSections(found));
+    const values = Object.fromEntries(Object.entries(found.settings).filter(([k]) => keys.includes(k)));
+    applyGroup(keys, values, `Look “${name}”`);
     setActivePreset(name);
-    applySettings(withFramingOf(asSettings(found.settings), settingsRef.current), `Preset “${name}”`);
-  }, [presets, applySettings]);
+  }, [presets, applyGroup]);
 
+  // Saving a look: its name and the sections it carries, ticked to begin with
+  // where this edit has changes.
+  const [lookTicks, setLookTicks] = useState(null);       // null: not saving one
+  const startLook = useCallback(() => {
+    const edit = activeOnly(settingsRef.current, false);
+    setLookTicks(LOOK_SECTIONS.filter((sec) => sec.keys.some((k) => k in edit)).map((sec) => sec.id));
+    setPresetName("");
+  }, []);
   const savePreset = useCallback(async () => {
     const name = presetName.trim();
-    if (!name || !isToneEdited(settingsRef.current)) return;
+    if (!name || !lookTicks?.length) return;
+    const keys = keysOfSections(lookTicks);
+    const edit = activeOnly(settingsRef.current, false);
+    const settings = Object.fromEntries(Object.entries(edit).filter(([k]) => keys.includes(k)));
+    if (!Object.keys(settings).length) { setNote("Nothing is changed in those sections"); return; }
     const res = await fetch(`${API}/export/develop/presets`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, settings: activeOnly(settingsRef.current, false) }),
+      body: JSON.stringify({ name, settings, sections: lookTicks }),
     });
-    if (!res.ok) { setNote("Could not save the preset"); return; }
+    if (!res.ok) { setNote("Could not save the look"); return; }
     const data = await res.json();
     setPresets(data.presets || []);
     setActivePreset(name);
     setPresetName("");
-    setNote(`Saved preset “${name}”`);
-  }, [presetName]);
+    setLookTicks(null);
+    setNote(`Saved the look “${name}”`);
+  }, [presetName, lookTicks]);
 
-  const deletePreset = useCallback(async () => {
-    if (!activePreset) return;
-    await fetch(`${API}/export/develop/presets/${encodeURIComponent(activePreset)}`, {
+  const deletePreset = useCallback(async (name) => {
+    if (!window.confirm(`Forget the look “${name}”? Photos it was put on keep their edit.`)) return;
+    await fetch(`${API}/export/develop/presets/${encodeURIComponent(name)}`, {
       method: "DELETE",
     });
-    setActivePreset("");
+    setActivePreset((now) => (now === name ? "" : now));
     loadPresets();
-    setNote("Preset forgotten");
-  }, [activePreset, loadPresets]);
+    setNote(`Forgot the look “${name}”`);
+  }, [loadPresets]);
 
   // Copy the ticked sections (copyChoice). Each is carried as it is on this
   // frame, untouched ones too: pasting Light from a frame with no Light edit
@@ -4415,7 +4675,8 @@ ${known.license}
       const typing = tag === "INPUT" && e.target.type !== "range";
       // Escape backs out one layer at a time: the crop, then the loupe, then the view.
       if (e.key === "Escape") {
-        if (cropMode) endCrop();
+        if (showKeys) setShowKeys(false);
+        else if (cropMode) endCrop();
         else if (maskMode) endMasks();
         else if (spotMode) setSpotMode(false);
         else if (loupe) placeLoupe(null);
@@ -4452,6 +4713,7 @@ ${known.license}
       if (tag === "INPUT" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) return;
 
       switch (e.key) {
+        case "?": setShowKeys((v) => !v); break;
         case "ArrowLeft": e.preventDefault(); step(-1); break;
         case "ArrowRight": e.preventDefault(); step(1); break;
         case "\\": setShowOriginal(true); break;
@@ -4501,7 +4763,7 @@ ${known.license}
     };
   }, [onClose, copySettings, pasteSettings, step, reset, runAuto, applyToBurst,
     cropMode, endCrop, startCrop, maskMode, endMasks, loupe, placeLoupe, version, setBrush, undo, redo,
-    zoomAbout, maskSel, objectNextGuess,
+    zoomAbout, maskSel, objectNextGuess, showKeys,
     spotMode, spotSel, toggleSpots, removeSpot]);
 
   // Object URLs are the one thing here that leaks if it is forgotten. A save
@@ -4540,22 +4802,36 @@ ${known.license}
     : null;
   const box = draft || boxOf(settings) || FULL_BOX;
   const shape = (box.w * frameDims.w) / (box.h * frameDims.h);
+  const spotCount = (settings.spots || []).length;
+  const frameSummary = (() => {
+    const kept = boxOf(settings);
+    const ratio = kept && (kept.w * frameDims.w) / (kept.h * frameDims.h);
+    const named = kept && ASPECTS.find((a) => typeof a.ratio === "number" && Math.abs(a.ratio - ratio) < 0.01);
+    return [
+      kept && `crop ${named ? named.label : `${ratio.toFixed(2)}:1`}`,
+      angle !== 0 && `level ${angle > 0 ? "+" : ""}${angle}°`,
+      Number(settings.lens_profile) === 1 && "lens corrected",
+      Number(settings.distortion) !== 0 && `distortion ${signed(Number(settings.distortion))}`,
+      TRANSFORM_KEYS.some((k) => Number(settings[k]) !== 0) && "transform",
+      spotCount > 0 && `${spotCount} spot${spotCount > 1 ? "s" : ""}`,
+    ].filter(Boolean).join(" · ") || "as shot";
+  })();
+  const frameEdited = frameSummary !== "as shot";
 
   // One group of sliders by its id, with what belongs to it: the treatment,
   // the camera-look note and the style under Profile, the rescues under Light.
-  const section = (id) => {
+  const section = (id, part = false) => {
     const group = GROUPS.find((g) => g.id === id);
-    return (
-      <div className="space-y-2">
-        <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-600 pt-1">
-          <span title={group.hint}>{group.title}</span>
-          {[...group.sliders.map((s) => s.key), ...(group.switches || [])].some((k) => Number(settings[k]) !== 0) && (
-            <button
-              onClick={() => applyGroup([...group.sliders.map((s) => s.key), ...(group.switches || [])], {}, `${group.title} reset`)}
-              className="normal-case tracking-normal text-neutral-600 hover:text-neutral-300"
-              title={`Reset ${group.title.toLowerCase()} controls`}>reset</button>
-          )}
-        </div>
+    const keys = [...group.sliders.map((s) => s.key), ...(group.switches || [])];
+    const edited = keys.some((k) => Number(settings[k]) !== 0)
+      || (id === "profile" && !!settings.style);
+    const reset = keys.some((k) => Number(settings[k]) !== 0) && (
+      <button onClick={() => applyGroup(keys, {}, `${group.title} reset`)}
+        className="text-[10px] text-neutral-600 hover:text-neutral-300"
+        title={`Reset ${group.title.toLowerCase()} controls`}>reset</button>
+    );
+    const body = (
+      <>
         {id === "profile" && (
           <div className="flex items-center gap-2 text-xs" data-testid="treatment">
             <span className="w-20 shrink-0 text-neutral-400" title="Develop this photo in colour or in black and white. The black-and-white mix and toning are kept when you switch back.">Treatment</span>
@@ -4648,8 +4924,206 @@ ${known.license}
               onChange={change} onReset={() => resetOne(def.key)} />
           ))}
         </Controls>
-      </div>
+      </>
     );
+    return part ? (
+      <Part title={group.title} hint={group.hint} extra={reset} testid={`part-${id}`}>{body}</Part>
+    ) : (
+      <Fold id={id} title={group.title} hint={group.hint} edited={edited} open={folds.includes(id)}
+        onToggle={toggleFold} extra={reset}>{body}</Fold>
+    );
+  };
+
+  // The panel's sections by id, put in the order kept on this device (and left
+  // out where that was asked, unless one holds a change).
+  const groupEdited = (id) => {
+    const group = GROUPS.find((g) => g.id === id);
+    return [...group.sliders.map((d) => d.key), ...(group.switches || [])].some((k) => Number(settings[k]) !== 0)
+      || (id === "profile" && !!settings.style);
+  };
+  const panelEdited = {
+    frame: frameEdited, looks: false, curve: CURVE_KEYS.some((k) => curveEdited(settings[k])),
+    mixer: (Number(settings.mono) ? BW_MIX_KEYS : HSL_KEYS).some((k) => Number(settings[k]) !== 0),
+    masks: !!(settings.masks || []).length,
+    ...Object.fromEntries(["profile", "wb", "light", "presence", "toning", "sharpen", "noise", "effects"]
+      .map((id) => [id, groupEdited(id)])),
+  };
+  const blocks = {
+    frame: (
+          <Fold id="frame" title="Frame" edited={frameEdited} open={folds.includes("frame")} onToggle={toggleFold}
+            summary={frameSummary}
+            hint="Crop and level, lens corrections, transform and spot removal: done once, early, then folded away. Nothing is cut from the file."
+            extra={(cropMode || spotMode) && (
+              <button onClick={() => toggleFold("frame")} className="text-amber-400 hover:text-amber-300"
+                title="Back to the picture as framed (Esc)">done</button>
+            )}>
+            <Part title="Crop & level" testid="part-crop"
+              hint="Crop to a shape (C) and straighten the horizon. Nothing is cut from the file; the crop is part of the edit."
+              extra={framed && (
+                <button onClick={resetFraming} className="text-[10px] text-neutral-600 hover:text-neutral-300"
+                  title="Back to the whole frame, unturned">remove</button>
+              )}>
+              <div className="flex flex-wrap gap-1">
+                {ASPECTS.map((a) => (
+                  <button key={a.id} title={a.note} onClick={() => chooseAspect(a.id)}
+                    className={`text-[11px] px-2 py-0.5 rounded border ${cropMode && aspect === a.id
+                      ? "border-amber-500 text-amber-400"
+                      : "border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500"}`}>
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+              <label className="flex items-center gap-2 text-xs">
+                <span className={`w-20 shrink-0 select-none ${angle ? "text-amber-300" : "text-neutral-400"}`}
+                  title="Turn the picture to level a horizon. Double-click to reset."
+                  onDoubleClick={() => setAngle(0)}>Level</span>
+                <input type="range" min={-15} max={15} step={0.1} value={clamp(angle, -15, 15)}
+                  onChange={(e) => setAngle(+e.target.value)} onDoubleClick={() => setAngle(0)}
+                  className="flex-1 accent-amber-400" />
+                <input type="number" min={-45} max={45} step={0.1} value={angle}
+                  onChange={(e) => setAngle(e.target.value)}
+                  className="w-14 bg-neutral-900 border border-neutral-800 rounded px-1 py-0.5 text-right font-mono text-xs" />
+              </label>
+              {framed && boxOf(settings) && (
+                <p className="text-[10px] text-neutral-500 font-mono">
+                  {Math.round(box.w * 100)}% × {Math.round(box.h * 100)}% of the frame · {shape.toFixed(2)}:1
+                </p>
+              )}
+            </Part>
+            {section("lens", true)}
+            {section("transform", true)}
+            <Part title={`Spot removal${spotCount ? ` · ${spotCount}` : ""}`} testid="part-spots"
+              hint="Paint out dust, a blemish or a wire from a clean place nearby (Q). Done before every other control.">
+            <SpotPanel spots={settings.spots || []} selected={spotSel} spotMode={spotMode} size={spotSize}
+              mode={spotKind} busy={spotBusy} onSize={setSpotSize} onMode={setSpotKind} onToggle={toggleSpots}
+              onSelect={setSpotSel} onRemove={removeSpot} onClear={clearSpots} onChange={updateSpot} />
+            </Part>
+          </Fold>
+    ),
+    profile: section("profile"),
+    wb: section("wb"),
+    light: section("light"),
+    presence: section("presence"),
+    looks: (
+          <Fold id="looks" title="Looks" open={folds.includes("looks")} onToggle={toggleFold}
+            summary={activePreset ? `“${activePreset}”` : ""}
+            hint="Starting points for the styling, built in or saved from your own edits. Each sets only the sections it carries, so pick one before fine-tuning those.">
+            <div className="text-[11px] text-neutral-500">Built in · contrast, colour, toning, grain and vignette</div>
+            <div className="flex flex-wrap gap-1">
+              {LOOKS.map((r) => (
+                <button key={r.name} title={r.note}
+                  onClick={() => applyGroup(LOOK_KEYS, r.settings, r.name)}
+                  className="text-[11px] px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500">
+                  {r.name}
+                </button>
+              ))}
+            </div>
+            {presets.length > 0 && (
+              <>
+                <div className="text-[11px] text-neutral-500">Yours</div>
+                <div className="flex flex-wrap gap-1" data-testid="my-looks">
+                  {presets.map((p) => (
+                    <span key={p.name} className="inline-flex">
+                      <button onClick={() => applyPreset(p.name)}
+                        title={`Sets ${sectionNames(LOOK_SECTIONS.filter((sec) => lookSections(p).includes(sec.id))).join(" + ")}`}
+                        className={`text-[11px] px-2 py-0.5 rounded-l border ${activePreset === p.name
+                          ? "border-amber-500 text-amber-300" : "border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500"}`}>
+                        {p.name}
+                      </button>
+                      <button onClick={() => deletePreset(p.name)} title={`Forget the look “${p.name}”`}
+                        className="text-[10px] px-1 rounded-r border border-l-0 border-neutral-700 text-neutral-600 hover:text-red-400">✕</button>
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
+            {lookTicks == null ? (
+              <button onClick={startLook} disabled={!toneEdited} data-testid="look-save-start"
+                title="Keep this edit's styling under a name, to put on other photos"
+                className="text-[11px] text-neutral-400 hover:text-white disabled:opacity-40">+ Save this edit as a look</button>
+            ) : (
+              <div className="rounded border border-neutral-800 bg-neutral-900/60 p-2 space-y-1.5" data-testid="look-save">
+                <input value={presetName} onChange={(e) => setPresetName(e.target.value)} autoFocus
+                  placeholder="Name it" data-testid="look-name"
+                  onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") savePreset(); if (e.key === "Escape") setLookTicks(null); }}
+                  className="w-full bg-neutral-900 border border-neutral-800 rounded px-2 py-1 text-xs" />
+                <div className="text-[10px] text-neutral-500">What it carries (never crop, spots or masks)</div>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
+                  {LOOK_SECTIONS.map((sec) => (
+                    <label key={sec.id} className="flex items-center gap-1.5 text-[11px] text-neutral-300 cursor-pointer">
+                      <input type="checkbox" className="accent-amber-400" checked={lookTicks.includes(sec.id)}
+                        onChange={(e) => setLookTicks((now) => (e.target.checked
+                          ? LOOK_SECTIONS.filter((x) => x.id === sec.id || now.includes(x.id)).map((x) => x.id)
+                          : now.filter((x) => x !== sec.id)))} />
+                      {sec.label}
+                    </label>
+                  ))}
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setLookTicks(null)} className="text-xs text-neutral-500 hover:text-white">Cancel</button>
+                  <button onClick={savePreset} disabled={!presetName.trim() || !lookTicks.length} data-testid="look-save-go"
+                    className="text-xs px-2 py-0.5 rounded border border-amber-600/70 text-amber-300 hover:text-amber-200 disabled:opacity-40">Save</button>
+                </div>
+              </div>
+            )}
+          </Fold>
+    ),
+    curve: (
+          <Fold id="curve" title="Tone curve" edited={CURVE_KEYS.some((k) => curveEdited(settings[k]))}
+            open={folds.includes("curve")} onToggle={toggleFold}
+            hint="A point curve on the finished picture, for all channels or one at a time."
+            extra={CURVE_KEYS.some((k) => curveEdited(settings[k])) && (
+              <button onClick={() => applyGroup(CURVE_KEYS, {}, "Tone curve reset")}
+                className="text-neutral-600 hover:text-neutral-300" title="Reset every curve">reset</button>
+            )}>
+            <CurveEditor settings={settings} onChange={change} />
+          </Fold>
+    ),
+    mixer: (
+Number(settings.mono) ? (
+            <Fold id="mixer" title="B&W mix" edited={BW_MIX_KEYS.some((k) => Number(settings[k]) !== 0)}
+              open={folds.includes("mixer")} onToggle={toggleFold}
+              hint="How light each colour turns in grey, and how the grey is toned."
+              extra={BW_MIX_KEYS.some((k) => Number(settings[k]) !== 0) && (
+                <button onClick={() => applyGroup(BW_MIX_KEYS, {}, "B&W mix reset")}
+                  className="text-neutral-600 hover:text-neutral-300" title="Back to a neutral conversion">reset</button>
+              )}>
+              <BwMix settings={settings} onChange={change} onReset={resetOne} onPreset={applyGroup} />
+            </Fold>
+          ) : (
+            <Fold id="mixer" title="Colour mixer" edited={HSL_KEYS.some((k) => Number(settings[k]) !== 0)}
+              open={folds.includes("mixer")} onToggle={toggleFold}
+              hint="Hue, saturation and luminance, colour by colour."
+              extra={HSL_KEYS.some((k) => Number(settings[k]) !== 0) && (
+                <button onClick={() => applyGroup(HSL_KEYS, {}, "Colour mixer reset")}
+                  className="text-neutral-600 hover:text-neutral-300" title="Reset the colour mixer">reset</button>
+              )}>
+              <ColourMixer settings={settings} onChange={change} onReset={resetOne} />
+            </Fold>
+          )
+    ),
+    toning: section("toning"),
+    masks: (
+          <Fold id="masks" title={`Masks${(settings.masks || []).length ? ` · ${settings.masks.length}` : ""}`}
+            edited={!!(settings.masks || []).length} open={folds.includes("masks")} onToggle={toggleFold}
+            summary={(settings.masks || []).length ? (settings.masks || []).map((m, k) => maskName(m, k)).join(", ") : ""}
+            hint="Change part of the picture: a linear gradient (a sky, a foreground), a radial one (a face, a vignette of your own), a brush where you paint, or a part chosen for you. Each has its own exposure, tone and colour."
+            extra={maskMode && (
+              <button onClick={endMasks} className="text-amber-400 hover:text-amber-300"
+                title="Back to the picture as framed (Esc)">done</button>
+            )}>
+          <MaskPanel masks={settings.masks || []} selected={maskSel} maskMode={maskMode}
+            brush={brush} onBrush={setBrush} showShade={showShade} onShowShade={setShowShade}
+            choosing={choosing} people={people} picking={picking} onPicking={setPicking}
+            onSelect={selectMask} onAdd={addMask} onRemove={removeMask} onChange={updateMask}
+            onDone={endMasks} objectDraft={objectDraft} objectModels={objectModels} objectState={objectState}
+            onObjectModel={objectModel} onObjectPick={objectNextGuess} onObjectUndo={objectUndo}
+            onObjectNewPart={objectNewPart} onObjectFind={objectFind} onObjectKeepFound={objectKeepFound} />
+          </Fold>
+    ),
+    sharpen: section("sharpen"),
+    noise: section("noise"),
+    effects: section("effects"),
   };
 
   return (
@@ -4794,7 +5268,12 @@ ${known.license}
         </div>
 
         <ControlStyle.Provider value={controlStyle}>
-        <aside className="w-80 2xl:w-96 shrink-0 border-l border-neutral-800 overflow-y-auto p-4 space-y-4">
+        <aside className="w-80 2xl:w-96 shrink-0 border-l border-neutral-800 flex flex-col min-h-0">
+          {/* What is wanted on every photo stays in view: the versions, the
+              histogram, Auto and Reset, Copy and Paste, and the tools that work
+              on the picture itself. The sections scroll beneath. */}
+          <div className="shrink-0 max-h-[65%] overflow-y-auto p-4 pb-3 space-y-3 border-b border-neutral-800"
+            data-testid="panel-top">
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-600">
               <span title="Virtual copies: more than one edit of this same file — say colour and black-and-white, or a square and a 9:16. No second file is made; an export writes one picture per copy.">
@@ -4902,154 +5381,7 @@ ${known.license}
               title={history.index < history.entries.length - 1
                 ? `Redo ${history.entries[history.index + 1].label} (Ctrl+Shift+Z)` : "Nothing to redo"}>↷</button>
           </div>
-          <HistoryPanel history={history} onJump={jumpTo} />
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-600">
-              <span title="Crop to a shape and straighten the horizon. Nothing is cut from the file; the crop is part of the edit.">Crop &amp; level</span>
-              {framed && (
-                <button onClick={resetFraming}
-                  className="normal-case tracking-normal text-neutral-600 hover:text-neutral-300"
-                  title="Back to the whole frame, unturned">remove</button>
-              )}
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {ASPECTS.map((a) => (
-                <button key={a.id} title={a.note} onClick={() => chooseAspect(a.id)}
-                  className={`text-[11px] px-2 py-0.5 rounded border ${cropMode && aspect === a.id
-                    ? "border-amber-500 text-amber-400"
-                    : "border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500"}`}>
-                  {a.label}
-                </button>
-              ))}
-            </div>
-            <label className="flex items-center gap-2 text-xs">
-              <span className={`w-20 shrink-0 select-none ${angle ? "text-amber-300" : "text-neutral-400"}`}
-                title="Turn the picture to level a horizon. Double-click to reset."
-                onDoubleClick={() => setAngle(0)}>Level</span>
-              <input type="range" min={-15} max={15} step={0.1} value={clamp(angle, -15, 15)}
-                onChange={(e) => setAngle(+e.target.value)} onDoubleClick={() => setAngle(0)}
-                className="flex-1 accent-amber-400" />
-              <input type="number" min={-45} max={45} step={0.1} value={angle}
-                onChange={(e) => setAngle(e.target.value)}
-                className="w-14 bg-neutral-900 border border-neutral-800 rounded px-1 py-0.5 text-right font-mono text-xs" />
-            </label>
-            {framed && boxOf(settings) && (
-              <p className="text-[10px] text-neutral-500 font-mono">
-                {Math.round(box.w * 100)}% × {Math.round(box.h * 100)}% of the frame · {shape.toFixed(2)}:1
-              </p>
-            )}
-          </div>
-
-          {section("profile")}
-          {section("wb")}
-          {section("light")}
-          {section("noise")}
-          {section("sharpen")}
-          {section("lens")}
-          {section("transform")}
-
-          <div className="space-y-2">
-            {/* Before Presence on purpose: a look sets contrast, colour, toning,
-                grain and vignette, so it is the start of the styling, and picked
-                after them it would wipe the fine-tuning out. */}
-            <div className="text-[10px] uppercase tracking-wide text-neutral-600 pt-1"
-              title="Starting points for the styling. Each sets contrast, colour, toning, grain and vignette, so pick one before fine-tuning those.">Looks</div>
-            <div className="flex flex-wrap gap-1">
-              {LOOKS.map((r) => (
-                <button key={r.name} title={r.note}
-                  onClick={() => applyGroup(LOOK_KEYS, r.settings, r.name)}
-                  className="text-[11px] px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500">
-                  {r.name}
-                </button>
-              ))}
-            </div>
-            <MatchPanel filepath={filepath} reference={reference} match={matched} busy={matchBusy}
-              stale={!!matched && matchBase(settings) !== matched.base}
-              error={matchError} onPickThis={pickThisAsReference} onFile={referenceFromFile}
-              onForget={() => { setReference(null); setMatched(null); }} onMatch={runMatch}
-              onAmount={setMatchAmount} />
-          </div>
-
-          {section("presence")}
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-600 pt-1">
-              <span title="A point curve on the finished picture, for all channels or one at a time.">Tone curve</span>
-              {CURVE_KEYS.some((k) => curveEdited(settings[k])) && (
-                <button onClick={() => applyGroup(CURVE_KEYS, {}, "Tone curve reset")}
-                  className="normal-case tracking-normal text-neutral-600 hover:text-neutral-300"
-                  title="Reset every curve">reset</button>
-              )}
-            </div>
-            <CurveEditor settings={settings} onChange={change} />
-          </div>
-
-          {Number(settings.mono) ? (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-600 pt-1">
-                <span title="How light each colour turns in grey, and how the grey is toned.">B&amp;W mix</span>
-                {BW_MIX_KEYS.some((k) => Number(settings[k]) !== 0) && (
-                  <button onClick={() => applyGroup(BW_MIX_KEYS, {}, "B&W mix reset")}
-                    className="normal-case tracking-normal text-neutral-600 hover:text-neutral-300"
-                    title="Back to a neutral conversion">reset</button>
-                )}
-              </div>
-              <BwMix settings={settings} onChange={change} onReset={resetOne} onPreset={applyGroup} />
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-600 pt-1">
-                <span title="Hue, saturation and luminance, colour by colour.">Colour mixer</span>
-                {HSL_KEYS.some((k) => Number(settings[k]) !== 0) && (
-                  <button onClick={() => applyGroup(HSL_KEYS, {}, "Colour mixer reset")}
-                    className="normal-case tracking-normal text-neutral-600 hover:text-neutral-300"
-                    title="Reset the colour mixer">reset</button>
-                )}
-              </div>
-              <ColourMixer settings={settings} onChange={change} onReset={resetOne} />
-            </div>
-          )}
-
-          {section("toning")}
-
-          <SpotPanel spots={settings.spots || []} selected={spotSel} spotMode={spotMode} size={spotSize}
-            mode={spotKind} busy={spotBusy} onSize={setSpotSize} onMode={setSpotKind} onToggle={toggleSpots}
-            onSelect={setSpotSel} onRemove={removeSpot} onClear={clearSpots} onChange={updateSpot} />
-
-          <MaskPanel masks={settings.masks || []} selected={maskSel} maskMode={maskMode}
-            brush={brush} onBrush={setBrush} showShade={showShade} onShowShade={setShowShade}
-            choosing={choosing} people={people} picking={picking} onPicking={setPicking}
-            onSelect={selectMask} onAdd={addMask} onRemove={removeMask} onChange={updateMask}
-            onDone={endMasks} objectDraft={objectDraft} objectModels={objectModels} objectState={objectState}
-            onObjectModel={objectModel} onObjectPick={objectNextGuess} onObjectUndo={objectUndo}
-            onObjectNewPart={objectNewPart} onObjectFind={objectFind} onObjectKeepFound={objectKeepFound} />
-
-          {section("effects")}
-
-          <div className="border-t border-neutral-800 pt-3 space-y-2">
-            <div className="flex items-center gap-2">
-              <select value={activePreset} onChange={(e) => applyPreset(e.target.value)}
-                title="Put a saved edit back on this photo"
-                className="flex-1 bg-neutral-900 border border-neutral-800 rounded px-2 py-1 text-xs">
-                <option value="">My presets…</option>
-                {presets.map((p) => (
-                  <option key={p.name} value={p.name}>{p.name}</option>
-                ))}
-              </select>
-              {activePreset && (
-                <button onClick={deletePreset} title="Forget this preset"
-                  className="text-xs text-neutral-500 hover:text-red-400">Delete</button>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <input value={presetName} onChange={(e) => setPresetName(e.target.value)}
-                placeholder="Name this edit" onKeyDown={(e) => e.key === "Enter" && savePreset()}
-                className="flex-1 bg-neutral-900 border border-neutral-800 rounded px-2 py-1 text-xs" />
-              <button onClick={savePreset} disabled={!presetName.trim() || !toneEdited}
-                className="text-xs text-neutral-400 hover:text-white disabled:opacity-40">Save</button>
-            </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
               <span className="flex">
                 <button onClick={copySettings} data-testid="copy-edit"
                   className="text-xs px-2 py-1 rounded-l border border-neutral-700 text-neutral-300 hover:text-white"
@@ -5069,6 +5401,19 @@ ${known.license}
                 <button onClick={() => setPastePicker((open) => !open)} data-testid="paste-picker"
                   className={`text-xs px-1.5 py-1 rounded-r border border-l-0 border-neutral-700 hover:text-white ${pastePicker ? "text-white bg-neutral-800" : "text-neutral-400"}`}
                   title="Choose how Paste, To burst and the grid's Paste edit adjust each frame">▾</button>
+              </span>
+              <span className="flex">
+                <button onClick={() => { setMatchPicker(true); runMatch(); }} data-testid="match-here"
+                  disabled={!reference || reference.filepath === filepath || matchBusy}
+                  className="text-xs px-2 py-1 rounded-l border border-neutral-700 text-neutral-300 hover:text-white disabled:opacity-40"
+                  title={reference && reference.filepath !== filepath
+                    ? `Give this frame the tone and colour of ${reference.name}`
+                    : "Choose a photo to match first (▾)"}>
+                  {matchBusy ? "Matching…" : "Match"}
+                </button>
+                <button onClick={() => setMatchPicker((open) => !open)} data-testid="match-picker"
+                  className={`text-xs px-1.5 py-1 rounded-r border border-l-0 border-neutral-700 hover:text-white ${matchPicker ? "text-white bg-neutral-800" : "text-neutral-400"}`}
+                  title="The photo to match, and how far">▾</button>
               </span>
               <button onClick={applyToBurst} disabled={busy || version !== 0}
                 className="text-xs px-2 py-1 rounded border border-neutral-700 text-neutral-300 hover:text-white disabled:opacity-40"
@@ -5117,8 +5462,65 @@ ${known.license}
                 </div>
               </div>
             )}
+            {matchPicker && (
+              <div className="rounded border border-neutral-800 bg-neutral-900/60 p-2">
+                <MatchPanel filepath={filepath} reference={reference} match={matched} busy={matchBusy}
+                  stale={!!matched && matchBase(settings) !== matched.base}
+                  error={matchError} onPickThis={pickThisAsReference} onFile={referenceFromFile}
+                  onForget={() => { setReference(null); setMatched(null); }} onMatch={runMatch}
+                  onAmount={setMatchAmount} />
+              </div>
+            )}
             {note && <p className="text-xs text-neutral-500">{note}</p>}
           </div>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-3" data-testid="panel-sections">
+          <HistoryPanel history={history} onJump={jumpTo} />
+
+          <FoldGrip.Provider value={grip}>
+            {order.filter((id) => !hidden.includes(id) || panelEdited[id]).map((id) => (
+              <div key={id} draggable={dragging === id} data-testid={`slot-${id}`}
+                onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", id); }}
+                onDragEnd={() => { setDragging(null); setDropAt(null); }}
+                onDragOver={(e) => { if (dragging) { e.preventDefault(); setDropAt(id); } }}
+                onDrop={(e) => { e.preventDefault(); if (dragging) moveSection(dragging, id); setDragging(null); setDropAt(null); }}
+                className={`rounded ${dropAt === id && dragging && dragging !== id ? "ring-1 ring-amber-500/60 ring-offset-4 ring-offset-neutral-950" : ""} ${dragging === id ? "opacity-50" : ""}`}>
+                {blocks[id]}
+              </div>
+            ))}
+          </FoldGrip.Provider>
+
+          <div className="space-y-1.5" data-testid="arrange">
+            <button onClick={() => setArranging((a) => !a)} className="text-[11px] text-neutral-500 hover:text-white"
+              title="Put the sections in your own order, and leave out those you do not use, on this device">
+              {arranging ? "▾" : "▸"} Arrange sections
+            </button>
+            {arranging && (
+              <div className="rounded border border-neutral-800 bg-neutral-900/60 p-2 space-y-0.5">
+                {order.map((id, i) => (
+                  <div key={id} className="flex items-center gap-1.5 text-[11px]">
+                    <input type="checkbox" className="accent-amber-400" checked={!hidden.includes(id)}
+                      onChange={(e) => showSection(id, e.target.checked)}
+                      title="Shown in the panel (a section left out still shows while it holds a change)" />
+                    <span className={`flex-1 ${hidden.includes(id) ? "text-neutral-600" : "text-neutral-300"}`}>{PANEL_NAMES[id]}</span>
+                    <button onClick={() => moveSection(id, order[i - 1])} disabled={i === 0}
+                      className="px-1 text-neutral-500 hover:text-white disabled:opacity-20" title="Move up">↑</button>
+                    <button onClick={() => moveSection(id, i + 2 < order.length ? order[i + 2] : null)}
+                      disabled={i === order.length - 1}
+                      className="px-1 text-neutral-500 hover:text-white disabled:opacity-20" title="Move down">↓</button>
+                  </div>
+                ))}
+                <div className="flex justify-between pt-1 text-[10px] text-neutral-600">
+                  <span>Or drag a section by the ⋮ beside its title.</span>
+                  <button onClick={restoreArrangement} className="hover:text-white">Restore</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+
+
+
 
           <ControlStylePicker value={controlStyle} onChange={pickControlStyle} />
 
@@ -5128,6 +5530,7 @@ ${known.license}
             removed at any time and the original is untouched. RAW frames are developed from the
             sensor data, so exposure and highlights can recover detail a JPEG has already lost.
           </p>
+          </div>
         </aside>
         </ControlStyle.Provider>
       </div>
@@ -5143,7 +5546,10 @@ ${known.license}
         <span>Ctrl+C / Ctrl+V edit</span>
         <span>B to burst</span>
         <span>Esc back out / close</span>
+        <button onClick={() => setShowKeys(true)} className="ml-auto text-neutral-400 hover:text-white"
+          data-testid="shortcuts-open">? all shortcuts</button>
       </footer>
+      {showKeys && <ShortcutSheet onClose={() => setShowKeys(false)} />}
     </div>
   );
 }

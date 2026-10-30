@@ -187,6 +187,16 @@ class TestDevelopPresets:
                 {"name": "Warm interior", "settings": {"exposure": 0.4, "shadows": 25}}
             ]
 
+    def test_a_look_says_which_sections_it_carries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = CatalogDB(str(Path(tmp) / "test.db"))
+            db.save_develop_preset("Night", {"exposure": 0.4, "contrast": 20}, ["light", "curve"])
+            assert db.list_develop_presets() == [
+                {"name": "Night", "settings": {"contrast": 20, "exposure": 0.4}, "sections": ["light", "curve"]}
+            ]
+            db.save_develop_preset("Night", {"exposure": 0.2})
+            assert "sections" not in db.list_develop_presets()[0]
+
     def test_saving_the_same_name_again_replaces_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = CatalogDB(str(Path(tmp) / "test.db"))

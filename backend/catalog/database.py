@@ -458,6 +458,9 @@ _MIGRATIONS = [
     # with no vector, so it never shapes how anyone is recognised.
     "ALTER TABLE photo_faces ADD COLUMN drawn INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE face_scans ADD COLUMN model TEXT NOT NULL DEFAULT ''",
+    # Which of the develop panel's sections a saved look carries (a JSON list);
+    # '' for one saved before looks said, which carries what it holds.
+    "ALTER TABLE develop_presets ADD COLUMN sections TEXT NOT NULL DEFAULT ''",
     # The named person an unnamed group most resembles, offered as a question.
     "ALTER TABLE person_clusters ADD COLUMN suggest_id INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE person_clusters ADD COLUMN suggest_score REAL NOT NULL DEFAULT 0",
@@ -1903,16 +1906,18 @@ class CatalogDB:
     # model's business, and it is the route that clamps them into range before
     # they arrive, so this layer never has to know the shape.
 
-    def save_develop_preset(self, name: str, settings: dict) -> int:
-        """Insert or update a saved edit set. Returns the row id."""
+    def save_develop_preset(self, name: str, settings: dict, sections: Optional[list] = None) -> int:
+        """Insert or update a saved edit set, with the panel sections it carries.
+        Returns the row id."""
         import json as _json
         now = datetime.now().isoformat()
         with self._connect() as conn:
             cursor = conn.execute(
-                """INSERT INTO develop_presets (name, settings, created_at, updated_at)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(name) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at""",
-                (name, _json.dumps(settings, sort_keys=True), now, now),
+                """INSERT INTO develop_presets (name, settings, sections, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(name) DO UPDATE SET settings = excluded.settings,
+                       sections = excluded.sections, updated_at = excluded.updated_at""",
+                (name, _json.dumps(settings, sort_keys=True), _json.dumps(sections) if sections else "", now, now),
             )
             return cursor.lastrowid
 
@@ -1920,18 +1925,22 @@ class CatalogDB:
         import json as _json
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT name, settings FROM develop_presets ORDER BY name ASC"
+                "SELECT name, settings, sections FROM develop_presets ORDER BY name ASC"
             ).fetchall()
             out = []
             for row in rows:
                 try:
                     settings = _json.loads(row["settings"])
+                    sections = _json.loads(row["sections"]) if row["sections"] else None
                 except ValueError:
                     # A row that cannot be read is a row this build cannot use;
                     # it should not take the whole preset list down with it.
                     continue
                 if isinstance(settings, dict):
-                    out.append({"name": row["name"], "settings": settings})
+                    preset = {"name": row["name"], "settings": settings}
+                    if isinstance(sections, list):
+                        preset["sections"] = [s for s in sections if isinstance(s, str)]
+                    out.append(preset)
             return out
 
     def delete_develop_preset(self, name: str) -> bool:
