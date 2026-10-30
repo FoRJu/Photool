@@ -217,10 +217,21 @@ that:
 
 | Group | Controls |
 |-------|----------|
-| **Light** | Exposure (±5 EV), Highlights, Shadows, Whites, Blacks, **Squeeze** |
-| **Presence** | Contrast, **Clarity** |
+| **Light** | Exposure (±5 EV), Contrast, Highlights, Shadows, Whites, Blacks, **Squeeze** |
+| **Presence** | **Clarity** |
 | **Colour** | Warmth, Tint, **Vibrance**, **Saturation** |
 | **Look** | **Fade**, **split toning** (hue and strength for the shadows and the highlights) |
+
+**The panel.** Its top stays in view: the versions, the histogram, *Auto* and
+*Reset*, *Copy*, *Paste* and *To burst*, and the three tools that work on the
+picture itself, **Crop**, **Spots** and **Masks** (a click takes the tool up and
+opens its section; `C` and `Q` do the same for the first two). Below it the sections
+run in Lightroom's order: crop, spots and masks, then Profile, White balance,
+Light and Presence, Looks & match, the tone curve, the colour mixer (B&W mix in
+black and white), Fade & toning, Sharpening, Noise reduction, Lens corrections,
+Transform, Effects and your presets. Each folds away on a click of its title, and
+a folded section that holds a change shows an amber dot; which are open is kept
+on this device. At first only Profile, White balance, Light and Presence are.
 
 **Squeeze** is the answer to "can a wide scene be put into a normal 8-bit JPEG":
 it compresses the scene's overall range — a bright window and a dark room, ten
