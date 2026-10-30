@@ -306,5 +306,22 @@ class PageFiles(StaticFiles):
         return response
 
 
+# The icon a phone or an iPad shows for the page added to its home screen,
+# drawn on request (app_icon.py). Before the page's files, which would answer
+# for these paths otherwise.
+import app_icon  # noqa: E402
+from starlette.responses import Response as _Response  # noqa: E402
+
+
+def _icon(name: str):
+    async def endpoint(request):
+        return _Response(app_icon.png(app_icon.SIZES[name]), media_type="image/png",
+                         headers={"Cache-Control": "public, max-age=86400"})
+    return endpoint
+
+
+for _name in app_icon.SIZES:
+    app.router.routes.append(Route(f"/{_name}", endpoint=_icon(_name)))
+
 if _DIST.is_dir():
     app.mount("/", PageFiles(directory=str(_DIST), html=True), name="page")

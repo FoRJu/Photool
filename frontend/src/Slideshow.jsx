@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { canFullscreen, exitFullscreen, toggleFullscreen } from "./fullscreen.js";
 import { pullFocus } from "./slideshowFocus.js";
 import { recall, remember } from "./remembered.js";
 
@@ -205,7 +206,7 @@ export default function Slideshow({ photos, start = 0, title = "", onClose }) {
   useEffect(() => { poke(); return () => clearTimeout(hideRef.current); }, [poke]);
 
   const close = useCallback(() => {
-    if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    exitFullscreen();
     onClose();
   }, [onClose]);
 
@@ -216,10 +217,8 @@ export default function Slideshow({ photos, start = 0, title = "", onClose }) {
       else if (e.key === "ArrowLeft") go(-1);
       else if (e.key === " ") setPlaying((p) => !p);
       else if (e.key === "z" || e.key === "Z") togglePull();
-      else if (e.key === "f" || e.key === "F") {
-        if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
-        else rootRef.current?.requestFullscreen?.().catch(() => {});
-      } else return;
+      else if (e.key === "f" || e.key === "F") toggleFullscreen(rootRef.current);
+      else return;
       e.preventDefault();
       e.stopPropagation();
       poke();
@@ -316,8 +315,10 @@ export default function Slideshow({ photos, start = 0, title = "", onClose }) {
             : "Seconds per picture"}>
           {[...PACES].sort((a, b) => a - b).map((p) => <option key={p} value={p}>{p} s</option>)}
         </select>
-        <button onClick={() => (document.fullscreenElement ? document.exitFullscreen?.() : rootRef.current?.requestFullscreen?.())?.catch?.(() => {})}
-          title="Full screen (F)" className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-neutral-100">⛶</button>
+        {canFullscreen() && (
+          <button onClick={() => toggleFullscreen(rootRef.current)}
+            title="Full screen (F)" className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-neutral-100">⛶</button>
+        )}
         <button onClick={close} title="Close (Esc)" className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-neutral-100">✕</button>
       </div>
       {photo && (
