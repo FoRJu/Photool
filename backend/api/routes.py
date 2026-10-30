@@ -3125,6 +3125,189 @@ async def develop_people(req: PeopleRequest, request: Request):
                       for x, y, w, h in boxes]}
 
 
+class ObjectModelRequest(BaseModel):
+    model: str = "sam2.1"
+
+
+@router.get("/export/develop/object-models")
+async def develop_object_models():
+    """The models an object mask can be chosen with: whether each is here yet,
+    how much a first use fetches, and whether it finds things by name."""
+    from adjust import objects
+
+    def _list():
+        return [{"model": name, "label": spec["label"], "available": objects.available(name),
+                 "download_mb": round(objects.download_size(name) / 1e6), "finds": objects.finds(name),
+                 "license": spec.get("license")}
+                for name, spec in objects.MODELS.items()]
+
+    return {"models": await _run_blocking(_list), "default": objects.DEFAULT_MODEL}
+
+
+@router.post("/export/develop/object-model")
+async def develop_object_model(req: ObjectModelRequest):
+    """Make an object model ready, fetching it the first time (hundreds of MB),
+    so pointing at something answers at once afterwards."""
+    from adjust import objects
+    from faces.models import ModelsUnavailable
+
+    try:
+        await _run_blocking(objects._session_pair, req.model)
+    except ModelsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"ok": True, "model": objects.model_name(req.model)}
+
+
+class ObjectPredictRequest(FrameGeometry):
+    filepath: str
+    model: str = "sam2.1"
+    part: dict                   # a mask part: view, points, box (adjust.masks)
+
+
+def _object_key(req, size: int) -> tuple:
+    return (req.filepath, size, req.lens_profile, req.distortion, req.tf_vertical, req.tf_horizontal,
+            req.tf_aspect)
+
+
+@router.post("/export/develop/object-predict")
+async def develop_object_predict(req: ObjectPredictRequest, request: Request):
+    """What one prompt chooses on its view: the model's three candidates, each a
+    grey PNG over the view (as data URLs) with its score, and which is best. Fast
+    once the view has been read; the first prompt on a view reads it."""
+    import base64
+
+    import numpy as np
+
+    from adjust import objects
+    from adjust.masks import _normalize_part
+    from faces.models import ModelsUnavailable
+
+    part = _normalize_part(req.part)
+    if part is None:
+        raise HTTPException(status_code=400, detail="Point at something, or drag a box round it")
+    config = request.app.state.config
+
+    def _predict():
+        size = objects.picture_size([part])
+        frame = _mask_frame(config, req.filepath, size, req)
+        if frame is None:
+            return None
+        logits, scores = objects.predict(objects.picture(frame), part, req.model, _object_key(req, size))
+        soft = 1.0 / (1.0 + np.exp(-np.clip(logits, -30.0, 30.0)))
+        return {
+            "view": part["view"],
+            "best": objects.chosen(scores, None),
+            "candidates": [{"score": round(float(sc), 3),
+                            "image": "data:image/png;base64," + base64.b64encode(objects.png(m)).decode()}
+                           for m, sc in zip(soft, scores)],
+        }
+
+    try:
+        found = await _run_blocking(_predict)
+    except ModelsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Could not read this frame")
+    return found
+
+
+@router.post("/export/develop/object-find")
+async def develop_object_find(req: ObjectPredictRequest, request: Request):
+    """Every instance of what a part names (its ``text``) on its view, best
+    first: each a grey PNG over the view (a data URL), its score, and the box it
+    fills as fractions of the whole frame. SAM 3 only; the first use loads its
+    text model."""
+    import base64
+
+    import numpy as np
+
+    from adjust import objects
+    from adjust.masks import _normalize_part
+    from faces.models import ModelsUnavailable
+
+    part = _normalize_part(req.part)
+    if part is None or not part.get("text"):
+        raise HTTPException(status_code=400, detail="Name what to find")
+    if not objects.finds(req.model):
+        raise HTTPException(status_code=400, detail="Finding by name needs SAM 3")
+    config = request.app.state.config
+
+    def _find():
+        size = objects.picture_size([part])
+        frame = _mask_frame(config, req.filepath, size, req)
+        if frame is None:
+            return None
+        logits, scores = objects.find(objects.picture(frame), part, req.model, _object_key(req, size))
+        left, top, right, bottom = part["view"]
+        found = []
+        for logit, score in zip(logits, scores):
+            soft = 1.0 / (1.0 + np.exp(-np.clip(logit, -30.0, 30.0)))
+            ys, xs = np.nonzero(soft > 0.5)
+            mh, mw = soft.shape
+            box = [left + (right - left) * xs.min() / mw, top + (bottom - top) * ys.min() / mh,
+                   left + (right - left) * (xs.max() + 1) / mw, top + (bottom - top) * (ys.max() + 1) / mh]
+            found.append({"score": round(float(score), 3), "box": [round(v, 4) for v in box],
+                          "image": "data:image/png;base64," + base64.b64encode(objects.png(soft)).decode()})
+        return {"view": part["view"], "text": part["text"], "found": found}
+
+    try:
+        found = await _run_blocking(_find)
+    except ModelsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Could not read this frame")
+    return found
+
+
+class ObjectCommitRequest(FrameGeometry):
+    filepath: str
+    model: str = "sam2.1"
+    parts: list
+
+
+@router.post("/export/develop/object-commit")
+async def develop_object_commit(req: ObjectCommitRequest, request: Request):
+    """The selection an object mask's parts make, worked out on the whole frame,
+    brought to its edges and kept: its name goes in the mask as ``matte``, and
+    the preview and the export both read that picture."""
+    from adjust import objects
+    from adjust.masks import _normalize_parts
+    from faces.models import ModelsUnavailable
+
+    parts = _normalize_parts(req.parts)
+    if not parts:
+        raise HTTPException(status_code=400, detail="An object mask needs something pointed at")
+    config = request.app.state.config
+
+    def _commit():
+        size = objects.picture_size(parts)
+        frame = _mask_frame(config, req.filepath, size, req)
+        if frame is None:
+            return None
+        matte = objects.selection(objects.picture(frame), parts, req.model, _object_key(req, size))
+        return objects.save(matte)
+
+    try:
+        matte_id = await _run_blocking(_commit)
+    except ModelsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if matte_id is None:
+        raise HTTPException(status_code=404, detail="Could not read this frame")
+    return {"matte": matte_id, "parts": parts, "model": objects.model_name(req.model)}
+
+
+@router.get("/export/develop/object-matte/{matte_id}")
+async def develop_object_matte(matte_id: str):
+    """A kept object selection, as the grey PNG it is kept as."""
+    from adjust import objects
+
+    path = objects._matte_path(matte_id) if all(c in "0123456789abcdef" for c in matte_id) else None
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="That selection is not here")
+    return Response(content=path.read_bytes(), media_type="image/png",
+                    headers={"Cache-Control": "max-age=31536000, immutable"})
+
+
 class SpotSourceRequest(BaseModel):
     filepath: str
     x: float                     # the spot, fractions of the whole frame

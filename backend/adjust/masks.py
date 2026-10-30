@@ -20,6 +20,16 @@ An edit's ``masks`` is a list of them, each with its own few controls:
   people   everyone in the frame, and ``faces`` their faces (adjust.segment);
   faces    ``person`` (1, 2, … counted from the left) for one person only, and
            ``invert`` for everything else.
+  object   one thing the person pointed at (adjust.objects): ``parts``, each a
+           prompt on a ``view`` of the frame (left, top, right, bottom) — a
+           ``box`` (x1, y1, x2, y2) dragged round it and ``points`` [x, y, 1]
+           on it or [x, y, 0] off it, and the candidate it took, ``pick``; or
+           (SAM 3) the ``text`` naming it and which of the instances found it
+           ``keep``s, all when not said — with the ``model`` that read them.
+           The selection they made is kept as a
+           picture named ``matte``, since the same prompts on the frame decoded
+           at another size can choose another candidate; ``invert`` for
+           everything else.
 
 Any of them carries ``strokes``, laid over its shape in the order they were
 painted: each a list of ``points`` along the hand's path, a radius ``size`` (a
@@ -80,13 +90,21 @@ MAX_MASK_EXPOSURE = 4.0
 # twice as far: +200 over a picture at -100 is +100 where it is whole.
 MAX_MASK_SATURATION = 200.0
 MAX_MASKS = 16
-KINDS = ("linear", "radial", "brush", "subject", "sky", "people", "faces")
+KINDS = ("linear", "radial", "brush", "subject", "sky", "people", "faces", "object")
 # The kinds a model selects (adjust.segment.KINDS; not imported, so this module
 # needs no OpenCV).
 CHOSEN = ("subject", "sky", "people", "faces")
 # The kinds that can be narrowed to one person, and how many people that may name.
 OF_PEOPLE = ("people", "faces")
 MAX_PERSON = 64
+# The kinds whose selection is a picture of the whole frame: chosen by a model at
+# render time, or (an object) kept from when it was pointed at.
+MATTED = CHOSEN + ("object",)
+OBJECT_MODELS = ("sam2.1", "sam3")
+MAX_PARTS = 12
+MAX_PART_POINTS = 24
+MAX_PART_TEXT = 60
+MAX_FOUND = 20
 MAX_STROKES = 200
 # A stroke longer than this is thinned (every other point, and so on): the
 # hand's path is sampled far more finely than a soft brush needs.
@@ -144,6 +162,53 @@ def _normalize_strokes(strokes) -> list:
     return [s for s in (_normalize_stroke(s) for s in strokes[-MAX_STROKES:]) if s]
 
 
+def _normalize_part(part) -> Optional[dict]:
+    """One prompt of an object mask, cleaned; ``None`` when it points at nothing."""
+    if not isinstance(part, dict):
+        return None
+    view = part.get("view")
+    if not isinstance(view, (list, tuple)) or len(view) != 4:
+        view = (0.0, 0.0, 1.0, 1.0)
+    left, top, right, bottom = (_num(v, 0.0, 1.0, d) for v, d in zip(view, (0.0, 0.0, 1.0, 1.0)))
+    if right - left < 0.005 or bottom - top < 0.005:
+        left, top, right, bottom = 0.0, 0.0, 1.0, 1.0
+    out: dict = {"view": [round(left, 5), round(top, 5), round(right, 5), round(bottom, 5)]}
+    text = part.get("text")
+    if isinstance(text, str) and text.strip():
+        # A thing named: every instance found, or those it keeps.
+        out["text"] = " ".join("".join(c for c in text if c.isprintable()).split())[:MAX_PART_TEXT]
+        keep = part.get("keep")
+        if isinstance(keep, (list, tuple)):
+            out["keep"] = sorted({int(k) for k in keep
+                                  if isinstance(k, (int, float)) and 0 <= k < MAX_FOUND})
+        return out if out["text"] else None
+    points = []
+    for point in part.get("points") or ():
+        if isinstance(point, (list, tuple)) and len(point) == 3:
+            x, y = (_num(v, 0.0, 1.0, math.nan) for v in point[:2])
+            if not (math.isnan(x) or math.isnan(y)):
+                points.append([round(x, 5), round(y, 5), 1 if point[2] else 0])
+    if points:
+        out["points"] = points[-MAX_PART_POINTS:]
+    box = part.get("box")
+    if isinstance(box, (list, tuple)) and len(box) == 4:
+        x1, y1, x2, y2 = (_num(v, 0.0, 1.0, math.nan) for v in box)
+        if not any(math.isnan(v) for v in (x1, y1, x2, y2)) and abs(x2 - x1) > 1e-4 and abs(y2 - y1) > 1e-4:
+            out["box"] = [round(min(x1, x2), 5), round(min(y1, y2), 5),
+                          round(max(x1, x2), 5), round(max(y1, y2), 5)]
+    if not any(p[2] for p in out.get("points", ())) and "box" not in out:
+        return None                 # only "not this": nothing to choose
+    if part.get("pick") is not None:
+        out["pick"] = int(_num(part.get("pick"), 0, 2, 0))
+    return out
+
+
+def _normalize_parts(parts) -> list:
+    if not isinstance(parts, (list, tuple)):
+        return []
+    return [p for p in (_normalize_part(p) for p in parts[:MAX_PARTS]) if p]
+
+
 def normalize_mask(mask) -> Optional[dict]:
     """One mask, cleaned: known fields only, each in range. ``None`` when it
     is not a mask this app draws."""
@@ -169,6 +234,13 @@ def normalize_mask(mask) -> Optional[dict]:
     elif kind == "brush":
         if mask.get("invert"):
             out["invert"] = True
+    elif kind == "object":
+        out["invert"] = bool(mask.get("invert"))
+        out["model"] = mask.get("model") if mask.get("model") in OBJECT_MODELS else OBJECT_MODELS[0]
+        out["parts"] = _normalize_parts(mask.get("parts"))
+        matte = mask.get("matte")
+        if isinstance(matte, str) and 8 <= len(matte) <= 64 and all(c in "0123456789abcdef" for c in matte):
+            out["matte"] = matte
     elif kind in CHOSEN:
         out["invert"] = bool(mask.get("invert"))
         if kind in OF_PEOPLE:
@@ -323,9 +395,9 @@ def weight(mask: dict, shape: tuple, window: tuple = (0.0, 0.0, 1.0, 1.0),
     drawn round, and a band or a brush is as wide across a patch as across the
     frame.
 
-    ``matte`` is the whole frame's selection for a subject or sky mask
-    (adjust.segment.matte); without one such a mask reaches nothing, inverted
-    or not, rather than everything.
+    ``matte`` is the whole frame's selection for a subject, sky or object mask
+    (adjust.segment.matte, adjust.objects.load); without one such a mask
+    reaches nothing, inverted or not, rather than everything.
 
     A ``section`` (crop) is multiplied over the result last, so the mask reaches
     only inside it, whatever its shape, strokes or inversion.
@@ -337,9 +409,9 @@ def weight(mask: dict, shape: tuple, window: tuple = (0.0, 0.0, 1.0, 1.0),
     xs = (left + (np.arange(w, dtype=np.float32) + 0.5) / w * (right - left)) * full_w
     ys = (top + (np.arange(h, dtype=np.float32) + 0.5) / h * (bottom - top)) * full_h
 
-    if mask["kind"] == "brush" or (mask["kind"] in CHOSEN and matte is None):
+    if mask["kind"] == "brush" or (mask["kind"] in MATTED and matte is None):
         out = np.zeros((h, w), dtype=np.float32)
-    elif mask["kind"] in CHOSEN:
+    elif mask["kind"] in MATTED:
         from adjust.segment import sample
 
         out = sample(matte, (h, w), window)

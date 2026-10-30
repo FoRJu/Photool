@@ -1025,7 +1025,7 @@ _MASK_TONE_KEYS = ("contrast", "highlights", "shadows")
 
 def _mask_layers(frame: LinearFrame, masks: list) -> list:
     """Each gradient that changes something, with its weight over these pixels."""
-    from adjust.masks import CHOSEN, MASK_SLIDERS, active, weight
+    from adjust.masks import CHOSEN, MASK_SLIDERS, MATTED, active, weight
 
     h, w = frame.rgb.shape[:2]
     kept = {}
@@ -1040,12 +1040,16 @@ def _mask_layers(frame: LinearFrame, masks: list) -> list:
                     from adjust.segment import whole_matte
 
                     matte = whole_matte(frame, m["kind"], m.get("person"))
+                elif m["kind"] == "object":
+                    from adjust.objects import load
+
+                    matte = load(m.get("matte"))
                 kept[key] = weight(m, (h, w), frame.window, matte=matte)
                 if m.get("range") and kept[key].any():
                     from adjust.masks import range_weight
 
                     kept[key] = kept[key] * range_weight(frame.shown(), m["range"])
-                if m["kind"] in CHOSEN and matte is None:
+                if m["kind"] in MATTED and matte is None:
                     # Not kept: once the model is here, the next render selects.
                     layers.append((m, kept.pop(key)))
                     continue
