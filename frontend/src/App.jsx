@@ -279,6 +279,39 @@ function usePhone() {
 }
 // Thumbnails on a phone: three across.
 const PHONE_CELL = 100;
+// A screen worked with a finger, of any size: there is no Esc key to back out
+// with, so a Back button stands in for it.
+const TOUCH_QUERY = "(pointer: coarse)";
+function useTouch() {
+  const [touch, setTouch] = useState(() => !!window.matchMedia?.(TOUCH_QUERY).matches);
+  useEffect(() => {
+    const m = window.matchMedia?.(TOUCH_QUERY);
+    if (!m) return undefined;
+    const on = () => setTouch(m.matches);
+    m.addEventListener("change", on);
+    return () => m.removeEventListener("change", on);
+  }, []);
+  return touch;
+}
+
+// Esc, from a button: the key is sent where the keyboard's focus is, so every
+// view backs out one step exactly as it does for the key (the crop, the masks,
+// the loupe, the develop view, the viewer, the folder).
+function pressEscape() {
+  const at = document.activeElement && document.activeElement !== document.body
+    ? document.activeElement : document.querySelector("[data-modal]") || document.body;
+  at.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, bubbles: true }));
+}
+
+function BackButton({ above = 0 }) {
+  return (
+    <button onPointerDown={(e) => e.preventDefault()} onClick={pressEscape} aria-label="Back"
+      data-testid="touch-back" title="Back one step (Esc)"
+      className="fixed left-3 z-[90] w-14 h-14 rounded-full bg-neutral-900/85 border border-neutral-700 backdrop-blur
+        text-3xl leading-none text-neutral-200 shadow-lg active:bg-neutral-700"
+      style={{ bottom: `calc(${above + 16}px + env(safe-area-inset-bottom))` }}>‹</button>
+  );
+}
 
 function thumbUrl(folderPath, filename, size = "grid", edit = "") {
   const version = edit ? `&v=${edit}` : "";
@@ -291,22 +324,26 @@ const TABS = ["import", "library", "people", "activity", "export", "devices"];
 
 function routeHash(r) {
   const folder = r.folder ? "/" + r.folder.split("/").map(encodeURIComponent).join("/") : "";
-  return `#/${r.tab}${folder}${r.viewer ? "?photo" : ""}`;
+  const open = [r.viewer && "photo", r.develop && "develop"].filter(Boolean).join("&");
+  return `#/${r.tab}${folder}${open ? `?${open}` : ""}`;
 }
 
 function parseRoute(hash) {
-  const m = /^#\/([a-z]+)(\/[^?]*)?(\?photo)?$/.exec(hash || "");
+  const m = /^#\/([a-z]+)(\/[^?]*)?(?:\?([a-z&]+))?$/.exec(hash || "");
   if (m && m[1] === "queue") m[1] = "activity";   // the tab's old name, in old links
   if (!m || !TABS.includes(m[1])) return null;
   let folder = null;
   if (m[2] && m[2].length > 1) {
     try { folder = m[2].slice(1).split("/").map(decodeURIComponent).join("/"); } catch { folder = null; }
   }
-  return { tab: m[1], folder: m[1] === "library" ? folder : null, viewer: !!m[3] && !!folder };
+  const open = (m[3] || "").split("&");
+  return { tab: m[1], folder: m[1] === "library" ? folder : null, viewer: open.includes("photo") && !!folder,
+    develop: open.includes("develop") };
 }
 
 function sameRoute(a, b) {
-  return !!a && !!b && a.tab === b.tab && (a.folder || null) === (b.folder || null) && !!a.viewer === !!b.viewer;
+  return !!a && !!b && a.tab === b.tab && (a.folder || null) === (b.folder || null) && !!a.viewer === !!b.viewer
+    && !!a.develop === !!b.develop;
 }
 
 // ── Prefetch helper ─────────────────────────────────────────────────
@@ -2247,7 +2284,7 @@ function CullView({ photos, folderPath, startIndex, onClose, onRate, basketSet, 
 
       {/* Keyboard hints. Compare has its own set, because the arrow keys and
           Shift+R mean something different there. */}
-      <div className="px-4 py-1.5 bg-neutral-950 border-t border-neutral-800 text-neutral-600 text-xs flex justify-center gap-4">
+      <div className="px-4 py-1.5 bg-neutral-950 border-t border-neutral-800 text-neutral-600 text-xs flex justify-center gap-4 [@media(pointer:coarse)]:hidden">
         {showCompare ? (
           <>
             <span>← → switch frame</span><span>1-5 rate</span><span>P pick</span>
@@ -3939,6 +3976,7 @@ function PhotoolApp({ access }) {
   const [filter, setFilter] = useState({ flag: null, minRating: 0, color: null, tag: null, unreviewed: false, edited: false, pairMode: "paired",
     camera: null, matches: null, hidden: [], showDemoted: false });
   const phone = usePhone();
+  const touch = useTouch();
   const [moreOpen, setMoreOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   // How many filters narrow the grid, said on the phone's folded Filters button.
@@ -4381,7 +4419,10 @@ function PhotoolApp({ access }) {
   const poppingRef = useRef(null);
   const expectPopRef = useRef(false);
   const liveRef = useRef({});
-  liveRef.current = { tab, selectedFolder, cullIndex };
+  liveRef.current = { tab, selectedFolder, cullIndex, developFile };
+  // The develop view is closed from the history (Back, Safari's edge swipe)
+  // the way its own Close does.
+  const closeDevelopRef = useRef(null);
 
   useEffect(() => {
     try { window.history.scrollRestoration = "manual"; } catch {}
@@ -4392,6 +4433,7 @@ function PhotoolApp({ access }) {
       tab,
       folder: tab === "library" ? selectedFolder : null,
       viewer: tab === "library" && !!selectedFolder && cullIndex !== null,
+      develop: developFile !== null,
     };
     const prev = routeRef.current;
     routeRef.current = route;
@@ -4406,15 +4448,16 @@ function PhotoolApp({ access }) {
       return;
     }
     const st = window.history.state;
-    const outOfViewer = prev.viewer && !route.viewer && prev.folder === route.folder && prev.tab === route.tab;
-    const outOfFolder = !prev.viewer && prev.folder && !route.folder && prev.tab === route.tab;
-    if ((outOfViewer || outOfFolder) && st && st.photool && sameRoute(st.photool, prev) && st.depth > 0) {
+    const outOfDevelop = prev.develop && !route.develop && prev.folder === route.folder && prev.tab === route.tab;
+    const outOfViewer = !prev.develop && prev.viewer && !route.viewer && prev.folder === route.folder && prev.tab === route.tab;
+    const outOfFolder = !prev.develop && !prev.viewer && prev.folder && !route.folder && prev.tab === route.tab;
+    if ((outOfDevelop || outOfViewer || outOfFolder) && st && st.photool && sameRoute(st.photool, prev) && st.depth > 0) {
       expectPopRef.current = true;
       window.history.back();
       return;
     }
     window.history.pushState({ photool: route, depth: ((st && st.depth) || 0) + 1 }, "", routeHash(route));
-  }, [tab, selectedFolder, cullIndex !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tab, selectedFolder, cullIndex !== null, developFile !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const onPop = (e) => {
@@ -4422,13 +4465,15 @@ function PhotoolApp({ access }) {
       const asked = (e.state && e.state.photool) || parseRoute(window.location.hash)
         || { tab: access.local ? "import" : "library", folder: null, viewer: false };
       const live = liveRef.current;
-      // The viewer cannot be reopened at the photo it showed; Forward into it
-      // lands on its folder instead.
-      const target = { ...asked, viewer: asked.viewer && live.cullIndex !== null };
-      if (asked.viewer && !target.viewer) {
+      // The viewer cannot be reopened at the photo it showed, nor the develop
+      // view on its photo; Forward into either lands where it was opened from.
+      const target = { ...asked, viewer: asked.viewer && live.cullIndex !== null,
+        develop: asked.develop && live.developFile !== null };
+      if ((asked.viewer && !target.viewer) || (asked.develop && !target.develop)) {
         window.history.replaceState({ ...(e.state || {}), photool: target }, "", routeHash(target));
       }
       poppingRef.current = target;
+      if (!target.develop && live.developFile !== null) closeDevelopRef.current?.();
       if (target.tab !== live.tab) {
         setTab(target.tab);
         if (target.tab === "library") loadFolders();
@@ -4448,7 +4493,8 @@ function PhotoolApp({ access }) {
       if (!target.viewer && live.cullIndex !== null) setCullIndex(null);
       // Nothing changes when the address already matches what is shown.
       const now = { tab: live.tab, folder: live.tab === "library" ? live.selectedFolder : null,
-        viewer: live.tab === "library" && !!live.selectedFolder && live.cullIndex !== null };
+        viewer: live.tab === "library" && !!live.selectedFolder && live.cullIndex !== null,
+        develop: live.developFile !== null };
       if (sameRoute(now, target)) poppingRef.current = null;
     };
     window.addEventListener("popstate", onPop);
@@ -4602,6 +4648,7 @@ function PhotoolApp({ access }) {
     }
     setDevelopFile(null);
   }, [developFile, cullIndex, photos]);
+  closeDevelopRef.current = closeDevelop;
 
   // A frame edited in the develop view keeps its marker in the grid, and the
   // marker survives a folder refetch for the same reason a rating does: the
@@ -5215,6 +5262,13 @@ function PhotoolApp({ access }) {
       </header>
 
       {access.local && <PairingRequests />}
+
+      {/* Back, one step at a time, where there is no Esc key. On a phone the
+          viewer has its own, and the button sits above the tab bar. */}
+      {touch && !(phone && cullIndex !== null) && (developFile !== null || cullIndex !== null || slideshow
+        || collageOf || (tab === "library" && (selectedFolder || searchResult || picked.size > 0 || picking))) && (
+        <BackButton above={phone && cullIndex === null && developFile === null && !(picked.size > 0 || picking) ? 64 : 0} />
+      )}
 
       {/* On a phone the tabs are at the bottom, under the thumb. Import, Activity
           and Devices are things for the computer, under More. */}

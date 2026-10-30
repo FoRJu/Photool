@@ -5621,7 +5621,8 @@ Number(settings.mono) ? (
         </ControlStyle.Provider>
       </div>
 
-      <footer className="px-5 py-2 border-t border-neutral-800 text-[11px] text-neutral-600 flex gap-4 shrink-0 flex-wrap">
+      {/* Keys, for a keyboard: a touch screen backs out with its Back button. */}
+      <footer className="px-5 py-2 border-t border-neutral-800 text-[11px] text-neutral-600 flex gap-4 shrink-0 flex-wrap [@media(pointer:coarse)]:hidden">
         <span>← → move</span>
         <span>\ original</span>
         <span>J clipping</span>
