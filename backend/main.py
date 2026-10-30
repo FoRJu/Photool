@@ -95,6 +95,11 @@ async def lifespan(app: FastAPI):
     from adjust import segment
 
     segment.configure(config.models_dir)
+    # Object masks are chosen by pointing (adjust.objects); what was chosen is
+    # kept beside the catalog, since an edit names it and needs it to export.
+    from adjust import objects
+
+    objects.configure(config.models_dir, str(Path(config.db_path).parent / "mattes"))
 
     # Noise reduction's model is kept there too; the denoised mosaics it makes are
     # cache, beside the thumbnails.

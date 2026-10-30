@@ -35,6 +35,10 @@ let lookReference = null;
 // The brush as it was last set (size a share of the frame's longer side): it
 // stays from one frame to the next, as a brush in the hand does.
 let lastBrush = { tool: null, size: 0.03, feather: 50, flow: 100 };
+// The model the last object mask was chosen with: a new one starts with it.
+let lastObjectModel = "sam2.1";
+// How far the picture can be zoomed in: past this a preview pixel is a blur.
+const MAX_ZOOM = 16;
 
 const signed = (v) => `${v > 0 ? "+" : ""}${v}`;
 
@@ -966,8 +970,14 @@ const CHOSEN_NAMES = {
 // Every kind by its name and its name inverted.
 const MASK_NAMES = {
   linear: ["Linear", "Linear, turned round"], radial: ["Radial", "Outside radial"],
-  brush: ["Brush", "All but brush"], ...CHOSEN_NAMES,
+  brush: ["Brush", "All but brush"], ...CHOSEN_NAMES, object: ["Object", "All but object"],
 };
+// The kinds whose reach is a picture of the whole frame: a model's choice, or an
+// object's kept selection (backend adjust/objects.py).
+const isMatted = (m) => !!CHOSEN_NAMES[m?.kind] || m?.kind === "object";
+// An object's kept selection, named by its own hash: the same name is always the
+// same picture, so the browser keeps it.
+const objectMatteUrl = (m) => (m?.kind === "object" && m.matte ? `${API}/export/develop/object-matte/${m.matte}` : null);
 // What the invert box says for each kind.
 function invertLabel(m) {
   if (m.kind === "linear") return "The other way round";
@@ -980,8 +990,15 @@ const OF_PEOPLE = ["people", "faces"];
 // Which selection a chosen mask shades with: one person's is its own picture.
 const matteKey = (m) => (m.person ? `${m.kind}:${m.person}` : m.kind);
 
+// An object mask's prompt being worked on, as the part the mask keeps.
+function draftPart(d) {
+  return { view: d.view, ...(d.points.length ? { points: d.points } : {}),
+    ...(d.box ? { box: d.box } : {}), ...(d.pick != null ? { pick: d.pick } : {}) };
+}
+
 function newMask(kind, dims) {
   if (kind === "brush") return { kind, strokes: [] };
+  if (kind === "object") return { kind, invert: false, model: lastObjectModel, parts: [] };
   if (CHOSEN_NAMES[kind]) return { kind, invert: false };
   if (kind === "linear") return { kind, x1: 0.5, y1: 0.0, x2: 0.5, y2: 0.4 };
   const rx = 0.2;
@@ -1000,7 +1017,7 @@ function MaskShade({ mask, extra, matte, range, W, H, unit }) {
   const flip = mask.kind === "brush" && !!mask.invert;
   const base = mask.kind === "linear" ? `url(#${id}l)` : mask.kind === "radial" ? `url(#${id}r)`
     : flip ? "white" : "black";
-  const chosen = !!CHOSEN_NAMES[mask.kind];
+  const chosen = isMatted(mask);
   const inner = 1 - (mask.feather ?? 50) / 100;
   const [inside, outside] = mask.invert ? ["black", "white"] : ["white", "black"];
   // A section crops the final reach: the shape and the strokes inside its
@@ -1096,7 +1113,7 @@ function MaskShade({ mask, extra, matte, range, W, H, unit }) {
 }
 
 function MaskOverlay({ masks, selected, dims, brush, showShade, mattes, people, range, picking, onPick,
-  onSelect, onChange, onStroke }) {
+  onSelect, onChange, onStroke, objectDraft, onObjectPrompt, zoom = 1 }) {
   const ref = useRef(null);
   const W = dims.w, H = dims.h;
   const unit = Math.max(W, H);
@@ -1104,6 +1121,9 @@ function MaskOverlay({ masks, selected, dims, brush, showShade, mattes, people, 
   const [cursor, setCursor] = useState(null);       // where the brush is, in frame units
   const [wet, setWet] = useState(null);             // the stroke being painted
   const painting = !!brush.tool && selected >= 0 && !!masks[selected];
+  // An object mask takes clicks and boxes on the picture until a brush is taken up.
+  const pointing = !painting && !picking && masks[selected]?.kind === "object";
+  const [dragBox, setDragBox] = useState(null);     // the box being dragged round something
 
   const fraction = (ev) => {
     const rect = ref.current.getBoundingClientRect();
@@ -1259,6 +1279,67 @@ function MaskOverlay({ masks, selected, dims, brush, showShade, mattes, people, 
     );
   };
 
+  // A click says "this" (Alt-click "not this"); a drag draws a box round it. The
+  // box is told apart from a click by a few pixels of movement on the screen.
+  const point = (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const first = fraction(e);
+    const negative = e.altKey;
+    let box = null;
+    const move = (ev) => {
+      const p = fraction(ev);
+      if (!box && Math.hypot((p.x - first.x) * p.rect.width, (p.y - first.y) * p.rect.height) < 5) return;
+      box = [Math.min(first.x, p.x), Math.min(first.y, p.y), Math.max(first.x, p.x), Math.max(first.y, p.y)];
+      setDragBox(box);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setDragBox(null);
+      if (box) onObjectPrompt({ box });
+      else onObjectPrompt({ point: [first.x, first.y], positive: !negative });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  // The prompt being worked on: the candidate it chose, tinted over its view
+  // until the kept selection catches up, its clicks and its box.
+  const draftShape = () => {
+    const d = objectDraft;
+    if (!d || d.mask !== selected) return null;
+    const [l, t, r, b] = d.view;
+    const cand = d.candidates?.[d.pick ?? d.best ?? 0];
+    const id = `od${selected}`;
+    const sw = unit * 0.0018;
+    return (
+      <g pointerEvents="none" data-testid="object-draft">
+        {cand && !d.kept && (
+          <>
+            <defs>
+              <mask id={id} maskUnits="userSpaceOnUse" x="0" y="0" width={W} height={H}>
+                <image href={cand.image} x={l * W} y={t * H} width={(r - l) * W} height={(b - t) * H}
+                  preserveAspectRatio="none" />
+              </mask>
+            </defs>
+            <rect x="0" y="0" width={W} height={H} fill="rgba(251,191,36,0.45)" mask={`url(#${id})`} />
+          </>
+        )}
+        {d.box && (
+          <rect x={d.box[0] * W} y={d.box[1] * H} width={(d.box[2] - d.box[0]) * W} height={(d.box[3] - d.box[1]) * H}
+            fill="none" stroke="white" strokeWidth={sw} strokeDasharray={`${unit * 0.008} ${unit * 0.006}`}
+            style={{ filter: "drop-shadow(0 0 1px black)" }} />
+        )}
+        {d.points.map(([x, y, on], k) => (
+          <circle key={k} cx={x * W} cy={y * H} r={(unit * 0.005) / zoom} fill={on ? "rgb(34,197,94)" : "rgb(239,68,68)"}
+            stroke="white" strokeWidth={(unit * 0.0012) / zoom} />
+        ))}
+      </g>
+    );
+  };
+
   const dot = (x, y, part, index, fill = "white") => (
     <circle cx={x} cy={y} r={handle} fill={fill} stroke="black" strokeWidth={unit * 0.002}
       style={{ cursor: "grab" }} onPointerDown={begin(index, part)} />
@@ -1271,8 +1352,9 @@ function MaskOverlay({ masks, selected, dims, brush, showShade, mattes, people, 
       style={{ touchAction: "none", cursor: picking ? "crosshair" : undefined }}
       onPointerMove={painting ? (e) => { const p = fraction(e); setCursor({ x: p.x * W, y: p.y * H }); } : undefined}
       onPointerLeave={() => setCursor(null)}>
-      {(showShade || painting || picking) && masks[selected] && (
-        <MaskShade mask={masks[selected]} extra={wet} matte={mattes[matteKey(masks[selected])]}
+      {(showShade || painting || picking || pointing) && masks[selected] && (
+        <MaskShade mask={masks[selected]} extra={wet}
+          matte={objectMatteUrl(masks[selected]) || mattes[matteKey(masks[selected])]}
           range={masks[selected].range ? range : null} W={W} H={H} unit={unit} />
       )}
       {/* The people a people or faces mask can be narrowed to, numbered from the
@@ -1296,7 +1378,7 @@ function MaskOverlay({ masks, selected, dims, brush, showShade, mattes, people, 
       {/* Picking a colour for a range takes every click, so the section waits. */}
       {!painting && !picking && selected >= 0 && masks[selected]?.section && sectionHit(selected)}
       {masks.map((m, i) => {
-        if (m.kind === "brush" || CHOSEN_NAMES[m.kind]) return null;
+        if (m.kind === "brush" || isMatted(m)) return null;
         const on = i === selected;
         const stroke = on ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.45)";
         const sw = unit * (on ? 0.0025 : 0.0018);
@@ -1352,6 +1434,16 @@ function MaskOverlay({ masks, selected, dims, brush, showShade, mattes, people, 
           </g>
         );
       })}
+      {pointing && (
+        <rect x="0" y="0" width={W} height={H} fill="transparent" style={{ cursor: "crosshair" }}
+          onPointerDown={point} data-testid="object-surface" />
+      )}
+      {pointing && draftShape()}
+      {dragBox && (
+        <rect x={dragBox[0] * W} y={dragBox[1] * H} width={(dragBox[2] - dragBox[0]) * W}
+          height={(dragBox[3] - dragBox[1]) * H} fill="rgba(255,255,255,0.08)" stroke="white"
+          strokeWidth={unit * 0.0018} pointerEvents="none" />
+      )}
       {!painting && !picking && selected >= 0 && masks[selected]?.section && sectionFrame(selected)}
       {painting && (
         <rect x="0" y="0" width={W} height={H} fill="transparent" style={{ cursor: "none" }}
@@ -1702,8 +1794,63 @@ function HistoryPanel({ history, onJump }) {
   );
 }
 
+// What an object mask is chosen with, and the prompt being worked on: which of
+// the model's three candidates it took, and the parts it is made of.
+function ObjectControls({ mask, draft, models, state, onModel, onPick, onUndo, onNewPart }) {
+  const parts = mask.parts?.length || 0;
+  const mine = draft && draft.candidates;
+  const pick = mine ? (draft.pick ?? draft.best ?? 0) : 0;
+  return (
+    <div className="space-y-1.5" data-testid="object-controls">
+      <p className="text-[11px] text-neutral-500 leading-snug">
+        Drag a box round it, or click on it; Alt-click what is not it. Zoom in (scroll, or Z) for
+        something small: a click there starts a new part. Tab tries the next of the model's guesses.
+      </p>
+      <label className="flex items-center gap-2 text-xs text-neutral-400"
+        title="SAM 2.1 is quick and small. SAM 3 keeps small and thin things better, and is fetched the first time it is chosen.">
+        <span className="w-20 shrink-0">Model</span>
+        <select value={mask.model || "sam2.1"} onChange={(e) => onModel(e.target.value)} disabled={!!state.busy}
+          data-testid="object-model"
+          className="flex-1 bg-neutral-900 border border-neutral-700 rounded px-1 py-0.5 text-xs text-neutral-200">
+          {(models || [{ model: "sam2.1", label: "SAM 2.1", available: true }, { model: "sam3", label: "SAM 3" }]).map((m) => (
+            <option key={m.model} value={m.model}>
+              {m.label}{m.available ? "" : m.download_mb ? ` (fetches ${m.download_mb} MB)` : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="flex items-center gap-1 text-[11px]">
+        {mine && (
+          <button onClick={onPick} title="The model's next guess at what you meant (Tab): the person or their shirt, her or her hair"
+            data-testid="object-next" disabled={!!state.busy}
+            className="px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-50">
+            Guess {pick + 1} of 3 · {Math.round(100 * (draft.candidates[pick]?.score || 0))}%
+          </button>
+        )}
+        {mine && (
+          <button onClick={onNewPart} title="The next click or box starts another part, added to this one"
+            className="px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500">
+            + part
+          </button>
+        )}
+        <span className="flex-1 text-neutral-500 text-right" data-testid="object-state">
+          {state.busy || (parts ? `${parts} part${parts > 1 ? "s" : ""}` : "nothing chosen yet")}
+        </span>
+        {parts > 0 && (
+          <button onClick={onUndo} title="Take back the last part" className="text-neutral-500 hover:text-white">↶ part</button>
+        )}
+      </div>
+      {state.error && <p className="text-[11px] text-red-400">{state.error}</p>}
+      {mask.parts?.length > 0 && !mask.matte && !state.busy && (
+        <p className="text-[11px] text-amber-400">This selection is not here (an edit from elsewhere): click to choose it again.</p>
+      )}
+    </div>
+  );
+}
+
 function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, onBrush,
-  choosing, people, picking, onPicking, onSelect, onAdd, onRemove, onChange, onDone }) {
+  choosing, people, picking, onPicking, onSelect, onAdd, onRemove, onChange, onDone,
+  objectDraft, objectModels, objectState, onObjectModel, onObjectPick, onObjectUndo, onObjectNewPart }) {
   const m = selected >= 0 ? masks[selected] : null;
   const set = (key, value) => onChange(selected, { ...m, [key]: value });
   return (
@@ -1722,7 +1869,8 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
           ["subject", "+ Subject", "The picture's subject, as a model finds it: the runners in front, not the crowd. Invert it for the background."],
           ["sky", "+ Sky", "The sky, as a model finds it. Invert it for everything below."],
           ["people", "+ People", "Everyone in the picture, or one of them: pick a number on a face. Invert it for the background."],
-          ["faces", "+ Faces", "The faces in the picture, or one person's: lift them with exposure, soften skin with negative clarity."]].map(([kind, label, title]) => (
+          ["faces", "+ Faces", "The faces in the picture, or one person's: lift them with exposure, soften skin with negative clarity."],
+          ["object", "+ Object", "One thing you point at: drag a box round it or click on it. Zoom in for something small."]].map(([kind, label, title]) => (
           <button key={kind} onClick={() => onAdd(kind)} title={title} disabled={!!choosing.busy}
             className="text-[11px] px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-50">
             {choosing.busy === kind ? "finding…" : label}
@@ -1746,6 +1894,11 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
       )}
       {m && maskMode && (
         <div className="space-y-1.5 pt-1">
+          {m.kind === "object" && (
+            <ObjectControls mask={m} draft={objectDraft?.mask === selected ? objectDraft : null}
+              models={objectModels} state={objectState} onModel={onObjectModel} onPick={onObjectPick}
+              onUndo={onObjectUndo} onNewPart={onObjectNewPart} />
+          )}
           <BrushControls mask={m} brush={brush} onBrush={onBrush}
             onUndo={() => onChange(selected, { ...m, strokes: (m.strokes || []).slice(0, -1) })}
             onClear={() => onChange(selected, { ...m, strokes: [] })} />
@@ -2750,6 +2903,16 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   const setLoupeZoom = useCallback((z) => { lastLoupeZoom = z; setLoupeZoomState(z); }, []);
   const [loupeState, setLoupeState] = useState("");  // "", "loading", "failed"
   const imgRef = useRef(null);
+  // Zoom and pan: the picture and everything drawn on it, scaled by ``z`` from
+  // its top-left corner and moved by ``x, y`` screen pixels. 1 is the whole
+  // frame fitted to the space.
+  const stageRef = useRef(null);
+  const pictureRef = useRef(null);
+  const [zoom, setZoom] = useState({ z: 1, x: 0, y: 0 });
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  const panned = useRef(false);
+  const spaceHeld = useRef(false);
   const geoOriginalUrl = useRef(null);
   const loupeObjectUrl = useRef(null);
   const previewUrl = useRef(null);
@@ -3110,6 +3273,7 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   }, []);
 
   const onPictureClick = useCallback((e) => {
+    if (panned.current) { panned.current = false; return; }
     if (fullView || !imgRef.current) return;
     const rect = imgRef.current.getBoundingClientRect();
     const u = (e.clientX - rect.left) / rect.width;
@@ -3332,8 +3496,56 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
     setBrushState((b) => (lastBrush = { ...b, ...patch }));
   }, []);
   const [choosing, setChoosing] = useState({ busy: null, error: "" });
+
+  // ── Object masks ────────────────────────────────────────────────
+  // A prompt is worked on as a draft: each click or box on the same view adds to
+  // it, the model's guesses come back at once, and the guess taken is kept
+  // (the backend works the whole selection out and names its picture). Zooming
+  // or panning to another view starts a new part.
+  const [objectModels, setObjectModels] = useState(null);
+  const [objectState, setObjectState] = useState({ busy: "", error: "" });
+  const [objectDraft, setObjectDraftState] = useState(null);
+  const objectDraftRef = useRef(null);
+  const objectSeq = useRef(0);
+  const setObjectDraft = useCallback((d) => { objectDraftRef.current = d; setObjectDraftState(d); }, []);
+  const refreshObjectModels = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/export/develop/object-models`);
+      if (res.ok) setObjectModels((await res.json()).models);
+    } catch { /* the list says what it can without it */ }
+  }, []);
+  const readyObjectModel = useCallback(async (model) => {
+    const known = objectModels?.find((m) => m.model === model);
+    setObjectState({ busy: known && !known.available
+      ? `fetching ${known.label} (${known.download_mb} MB, once)…` : "loading the model…", error: "" });
+    setChoosing({ busy: "object", error: "" });
+    const fail = (error) => {
+      setObjectState({ busy: "", error });
+      setChoosing({ busy: null, error });
+      return false;
+    };
+    try {
+      const res = await fetch(`${API}/export/develop/object-model`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return fail(body.detail || "Could not get the model");
+      }
+    } catch {
+      return fail("The server did not answer");
+    }
+    setObjectState({ busy: "", error: "" });
+    setChoosing({ busy: null, error: "" });
+    refreshObjectModels();
+    return true;
+  }, [objectModels, refreshObjectModels]);
+  useEffect(() => { if (maskMode && !objectModels) refreshObjectModels(); }, [maskMode, objectModels, refreshObjectModels]);
+
   const addMask = useCallback(async (kind) => {
-    if (CHOSEN_NAMES[kind]) {
+    if (kind === "object") {
+      if (!(await readyObjectModel(lastObjectModel))) return;
+    } else if (CHOSEN_NAMES[kind]) {
       // The model is fetched the first time (a few MB); the mask is added once
       // it can select anything.
       setChoosing({ busy: kind, error: "" });
@@ -3357,11 +3569,11 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
     setMasks(masks);
     setMaskSel(masks.length - 1);
     // A chosen mask is shown shaded: what the model chose is the first question.
-    if (CHOSEN_NAMES[kind]) setShowShade(true);
+    if (isMatted({ kind })) setShowShade(true);
     // A brush starts with nothing painted, so it starts with the brush in hand.
     setBrush({ tool: kind === "brush" ? "paint" : null });
     enterMasks();
-  }, [setMasks, frameDims, enterMasks, setBrush]);
+  }, [setMasks, frameDims, enterMasks, setBrush, readyObjectModel]);
   const updateMask = useCallback((index, mask) => {
     setMasks((settingsRef.current.masks || []).map((m, i) => (i === index ? mask : m)));
   }, [setMasks]);
@@ -3371,6 +3583,127 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
     setMaskSel((sel) => (sel === index ? -1 : sel > index ? sel - 1 : sel));
     if (!masks.length) setMaskMode(false);
   }, [setMasks]);
+  // A draft belongs to one mask of one frame.
+  useEffect(() => { setObjectDraft(null); }, [filepath, version, maskSel, setObjectDraft]);
+
+  // Keep a mask's parts: the backend works out their selection and keeps it.
+  const commitObject = useCallback(async (index, parts, model) => {
+    const seq = ++objectSeq.current;
+    const m = settingsRef.current.masks?.[index];
+    if (!m) return;
+    if (!parts.length) {
+      const { matte, ...rest } = m;   // eslint-disable-line no-unused-vars
+      updateMask(index, { ...rest, parts: [] });
+      setObjectState({ busy: "", error: "" });
+      return;
+    }
+    setObjectState({ busy: "keeping the selection…", error: "" });
+    try {
+      const res = await fetch(`${API}/export/develop/object-commit`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filepath, model, parts, ...frameGeometry(settingsRef.current) }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (seq !== objectSeq.current) return;
+      if (!res.ok) { setObjectState({ busy: "", error: body.detail || "Could not keep the selection" }); return; }
+      const now = settingsRef.current.masks?.[index];
+      if (now?.kind !== "object") return;
+      updateMask(index, { ...now, model: body.model, parts: body.parts, matte: body.matte });
+      const d = objectDraftRef.current;
+      if (d && d.mask === index) setObjectDraft({ ...d, kept: true });
+      setObjectState({ busy: "", error: "" });
+    } catch {
+      if (seq === objectSeq.current) setObjectState({ busy: "", error: "The server did not answer" });
+    }
+  }, [filepath, updateMask, setObjectDraft]);
+
+  // The draft as a part, which the mask keeps at its place among the others.
+  const keepDraft = useCallback((d) => {
+    const m = settingsRef.current.masks?.[d.mask];
+    if (!m) return;
+    const parts = [...(m.parts || [])];
+    parts[d.part] = draftPart(d);
+    commitObject(d.mask, parts, m.model || "sam2.1");
+  }, [commitObject]);
+
+  // The part of the frame on the screen, as fractions of the whole frame: all of
+  // it, or what the zoom shows.
+  const visibleView = useCallback(() => {
+    const stage = stageRef.current?.getBoundingClientRect();
+    const pic = imgRef.current?.getBoundingClientRect();
+    if (!stage || !pic || !pic.width) return [0, 0, 1, 1];
+    const c = (v) => Math.min(1, Math.max(0, v));
+    const view = [c((stage.left - pic.left) / pic.width), c((stage.top - pic.top) / pic.height),
+      c((stage.right - pic.left) / pic.width), c((stage.bottom - pic.top) / pic.height)];
+    return view.map((v) => Math.round(v * 1e4) / 1e4);
+  }, []);
+
+  const objectPrompt = useCallback(async ({ point, positive, box }) => {
+    const index = maskSel;
+    const m = settingsRef.current.masks?.[index];
+    if (m?.kind !== "object" || objectState.busy.startsWith("fetching")) return;
+    const view = visibleView();
+    let d = objectDraftRef.current;
+    const sameView = d && d.mask === index && !d.fresh && d.part <= (m.parts?.length || 0)
+      && d.view.every((v, k) => Math.abs(v - view[k]) < 0.005);
+    if (!sameView) d = { mask: index, part: m.parts?.length || 0, view, points: [], box: null };
+    d = box ? { ...d, box, pick: null }
+      : { ...d, points: [...d.points, [point[0], point[1], positive ? 1 : 0]], pick: null };
+    if (!d.box && !d.points.some((p) => p[2])) {
+      setObjectState({ busy: "", error: "Click on it first; Alt-click is for what is not it." });
+      return;
+    }
+    const seq = ++objectSeq.current;
+    setObjectDraft({ ...d, kept: false });
+    setObjectState({ busy: "reading the view…", error: "" });
+    try {
+      const res = await fetch(`${API}/export/develop/object-predict`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filepath, model: m.model || "sam2.1", part: draftPart(d),
+          ...frameGeometry(settingsRef.current) }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (seq !== objectSeq.current) return;
+      if (!res.ok) { setObjectState({ busy: "", error: body.detail || "The model did not answer" }); return; }
+      d = { ...d, candidates: body.candidates, best: body.best, pick: body.best, kept: false };
+      setObjectDraft(d);
+      keepDraft(d);
+    } catch {
+      if (seq === objectSeq.current) setObjectState({ busy: "", error: "The server did not answer" });
+    }
+  }, [maskSel, objectState.busy, visibleView, filepath, setObjectDraft, keepDraft]);
+
+  const objectNextGuess = useCallback(() => {
+    const d = objectDraftRef.current;
+    if (!d?.candidates) return false;
+    const next = { ...d, pick: ((d.pick ?? d.best ?? 0) + 1) % d.candidates.length, kept: false };
+    setObjectDraft(next);
+    keepDraft(next);
+    return true;
+  }, [setObjectDraft, keepDraft]);
+  const objectNewPart = useCallback(() => {
+    const d = objectDraftRef.current;
+    if (d) setObjectDraft({ ...d, fresh: true });
+  }, [setObjectDraft]);
+  const objectUndo = useCallback(() => {
+    const m = settingsRef.current.masks?.[maskSel];
+    if (m?.kind !== "object" || !m.parts?.length) return;
+    setObjectDraft(null);
+    commitObject(maskSel, m.parts.slice(0, -1), m.model || "sam2.1");
+  }, [maskSel, commitObject, setObjectDraft]);
+  const objectModel = useCallback(async (model) => {
+    const index = maskSel;
+    const m = settingsRef.current.masks?.[index];
+    if (m?.kind !== "object") return;
+    if (!(await readyObjectModel(model))) return;
+    lastObjectModel = model;
+    setObjectDraft(null);
+    // The parts are chosen again by the other model, each with its best guess.
+    const parts = (m.parts || []).map(({ pick, ...rest }) => rest);   // eslint-disable-line no-unused-vars
+    updateMask(index, { ...settingsRef.current.masks[index], model, parts });
+    if (parts.length) commitObject(index, parts, model);
+  }, [maskSel, readyObjectModel, updateMask, commitObject, setObjectDraft]);
+
   const selectMask = useCallback((index) => {
     setMaskSel(index);
     const m = settingsRef.current.masks?.[index];
@@ -3872,6 +4205,77 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
 
   // Keyboard is the whole point of a develop view: the sliders are for the
   // fine decision, and moving between frames should not need the mouse.
+  // The zoom about a point on the screen: what is under it stays under it. The
+  // picture always covers the space it was fitted to, so it cannot be lost.
+  const zoomAbout = useCallback((factor, cx, cy) => {
+    const pic = pictureRef.current?.getBoundingClientRect();
+    if (!pic) return;
+    const now = zoomRef.current;
+    const w0 = pic.width / now.z, h0 = pic.height / now.z;
+    const left = pic.left - now.x, top = pic.top - now.y;     // where it sits unzoomed
+    const z = Math.min(MAX_ZOOM, Math.max(1, now.z * factor));
+    if (cx == null) { cx = left + w0 / 2; cy = top + h0 / 2; }
+    const ux = (cx - left - now.x) / now.z, uy = (cy - top - now.y) / now.z;
+    const clamp = (v, size) => Math.min(0, Math.max(-(z - 1) * size, v));
+    setZoom(z === 1 ? { z: 1, x: 0, y: 0 }
+      : { z, x: clamp(cx - left - z * ux, w0), y: clamp(cy - top - z * uy, h0) });
+  }, []);
+  const panBy = useCallback((dx, dy) => {
+    const pic = pictureRef.current?.getBoundingClientRect();
+    const now = zoomRef.current;
+    if (!pic || now.z === 1) return;
+    const w0 = pic.width / now.z, h0 = pic.height / now.z;
+    const clamp = (v, size) => Math.min(0, Math.max(-(now.z - 1) * size, v));
+    setZoom({ z: now.z, x: clamp(now.x + dx, w0), y: clamp(now.y + dy, h0) });
+  }, []);
+  // A new frame, or the crop (drawn on the whole frame), starts from the whole.
+  useEffect(() => { setZoom({ z: 1, x: 0, y: 0 }); }, [filepath, cropMode]);
+  // The wheel zooms where the pointer is. Not a passive listener: the page must
+  // not scroll as well.
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return undefined;
+    const onWheel = (e) => {
+      if (cropMode) return;
+      e.preventDefault();
+      zoomAbout(Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0015)), e.clientX, e.clientY);
+    };
+    stage.addEventListener("wheel", onWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", onWheel);
+  }, [cropMode, zoomAbout, original]);
+  // Space held, or the middle button, drags the picture about: the other tools
+  // keep the left button.
+  const onStagePointerDown = useCallback((e) => {
+    if (zoomRef.current.z === 1 || !(e.button === 1 || (e.button === 0 && spaceHeld.current))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    let last = { x: e.clientX, y: e.clientY };
+    panned.current = false;
+    const move = (ev) => {
+      panned.current = true;
+      panBy(ev.clientX - last.x, ev.clientY - last.y);
+      last = { x: ev.clientX, y: ev.clientY };
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }, [panBy]);
+  useEffect(() => {
+    const down = (e) => {
+      if (e.key !== " " || ["SELECT", "TEXTAREA"].includes(e.target?.tagName)
+          || (e.target?.tagName === "INPUT" && e.target.type !== "range" && e.target.type !== "checkbox")) return;
+      if (zoomRef.current.z > 1) e.preventDefault();
+      spaceHeld.current = true;
+    };
+    const up = (e) => { if (e.key === " ") spaceHeld.current = false; };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
+  }, []);
+
   useEffect(() => {
     const onKey = (e) => {
       if (e.timeStamp < openedAt.current) return;
@@ -3943,6 +4347,15 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
           break;
         // Q for spots, as in Lightroom.
         case "q": case "Q": toggleSpots(); break;
+        // Z zooms in on the middle of the view (or back out to the whole frame).
+        case "z": case "Z":
+          if (cropMode) break;
+          if (zoomRef.current.z > 1) setZoom({ z: 1, x: 0, y: 0 });
+          else zoomAbout(3);
+          break;
+        case "Tab":
+          if (maskMode && settingsRef.current.masks?.[maskSel]?.kind === "object" && objectNextGuess()) e.preventDefault();
+          break;
         case "Delete": case "Backspace":
           if (spotMode && spotSel >= 0) { e.preventDefault(); removeSpot(spotSel); }
           break;
@@ -3958,6 +4371,7 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
     };
   }, [onClose, copySettings, pasteSettings, step, reset, runAuto, applyToBurst,
     cropMode, endCrop, startCrop, maskMode, endMasks, loupe, placeLoupe, version, setBrush, undo, redo,
+    zoomAbout, maskSel, objectNextGuess,
     spotMode, spotSel, toggleSpots, removeSpot]);
 
   // Object URLs are the one thing here that leaks if it is forgotten. A save
@@ -4134,14 +4548,17 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
       <div className="flex-1 flex min-h-0">
         {/* The picture, big enough to judge. Everything below exists to make a
             subtle change visible: the compare keys, the split, the histogram. */}
-        <div className="flex-1 relative bg-black flex items-center justify-center min-w-0">
+        <div ref={stageRef} onPointerDownCapture={onStagePointerDown}
+          className="flex-1 relative bg-black flex items-center justify-center min-w-0 overflow-hidden">
           {loading && <span className="text-neutral-500 text-sm">Loading…</span>}
           {!loading && !original && (
             <span className="text-neutral-500 text-sm">Could not render this frame</span>
           )}
           {original && (
-            <div className="relative max-h-full max-w-full overflow-hidden"
-              style={{ lineHeight: 0, cursor: fullView ? "default" : "crosshair" }}
+            <div ref={pictureRef} className="relative max-h-full max-w-full overflow-hidden"
+              style={{ lineHeight: 0, cursor: fullView ? "default" : "crosshair",
+                transform: zoom.z > 1 ? `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.z})` : undefined,
+                transformOrigin: "0 0" }}
               onClick={onPictureClick}
               onPointerMove={onPictureMove} onPointerLeave={() => setProbe(null)}
               title={fullView ? undefined : "Click to look at this spot at 1:1"}>
@@ -4168,7 +4585,8 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
                 <MaskOverlay masks={settings.masks || []} selected={maskSel} dims={frameDims}
                   brush={brush} showShade={showShade} mattes={mattes} people={people}
                   range={rangeImage} picking={picking} onPick={pickColour}
-                  onSelect={setMaskSel} onChange={updateMask} onStroke={addStroke} />
+                  onSelect={setMaskSel} onChange={updateMask} onStroke={addStroke}
+                  objectDraft={objectDraft} onObjectPrompt={objectPrompt} zoom={zoom.z} />
               )}
               {loupe && !fullView && (
                 <span className="absolute w-5 h-5 -ml-2.5 -mt-2.5 rounded-full border-2 border-amber-400 pointer-events-none"
@@ -4234,6 +4652,12 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
               className={`px-2 py-1 rounded border ${showClip ? "border-red-500 text-red-400" : "border-neutral-700 text-neutral-400 hover:text-white"}`}
               title="Mark clipped areas: red is pure white, blue is pure black (J)">
               Clipping
+            </button>
+            <button onClick={() => (zoom.z > 1 ? setZoom({ z: 1, x: 0, y: 0 }) : zoomAbout(3))} disabled={cropMode}
+              data-testid="zoom"
+              className={`px-2 py-1 rounded border disabled:opacity-40 ${zoom.z > 1 ? "border-amber-500 text-amber-400" : "border-neutral-700 text-neutral-400 hover:text-white"}`}
+              title="Zoom (Z, or scroll on the picture); hold Space and drag, or drag with the middle button, to move about">
+              {zoom.z > 1 ? `${Math.round(zoom.z * 100)}%` : "Fit"}
             </button>
             <span className="text-neutral-600">hold \ for the original</span>
           </div>
@@ -4467,7 +4891,9 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
             brush={brush} onBrush={setBrush} showShade={showShade} onShowShade={setShowShade}
             choosing={choosing} people={people} picking={picking} onPicking={setPicking}
             onSelect={selectMask} onAdd={addMask} onRemove={removeMask} onChange={updateMask}
-            onDone={endMasks} />
+            onDone={endMasks} objectDraft={objectDraft} objectModels={objectModels} objectState={objectState}
+            onObjectModel={objectModel} onObjectPick={objectNextGuess} onObjectUndo={objectUndo}
+            onObjectNewPart={objectNewPart} />
 
           {section("effects")}
 

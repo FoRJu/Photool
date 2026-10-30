@@ -144,16 +144,17 @@ def _net(kind: str):
     return net
 
 
-def _small_picture(frame) -> np.ndarray:
-    """The frame as a viewer sees it, at the matte's size: 8-bit RGB through
-    its own camera look, lifted when it is dark so a night sky is still seen."""
+def _small_picture(frame, size: int = MATTE_SIZE) -> np.ndarray:
+    """The frame as a viewer sees it, at most ``size`` on its longer side (the
+    matte's): 8-bit RGB through its own camera look, lifted when it is dark so a
+    night sky is still seen."""
     import cv2
 
     from adjust.render import LinearFrame
 
     rgb = frame.rgb
     h, w = rgb.shape[:2]
-    scale = min(1.0, MATTE_SIZE / max(h, w))
+    scale = min(1.0, size / max(h, w))
     if scale < 1.0:
         rgb = cv2.resize(rgb, (max(1, round(w * scale)), max(1, round(h * scale))),
                          interpolation=cv2.INTER_AREA)

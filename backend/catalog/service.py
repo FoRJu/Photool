@@ -925,6 +925,12 @@ class CatalogService:
         own = self.photo_edit(filepath)
         merged = {k: v for k, v in own.items() if k not in keys}
         merged.update({k: v for k, v in settings.items() if k in keys})
+        if "masks" in keys and (settings.get("masks") or own.get("masks")):
+            # An object mask is a selection of one frame's pixels (adjust.objects),
+            # like its spots: the frame keeps its own, and another's is not put on it.
+            masks = [m for m in settings.get("masks") or () if m.get("kind") != "object"]
+            masks += [m for m in own.get("masks") or () if m.get("kind") == "object"]
+            merged["masks"] = masks
         return normalize(merged)
 
     @staticmethod

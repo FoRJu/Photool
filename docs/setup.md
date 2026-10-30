@@ -138,12 +138,14 @@ folder. Each download is checked against a known hash.
 | Smart search ("kids at the beach") | Search, *Describe* | 305 MB |
 | Noise reduction | Develop, Detail | 22 MB |
 | Subject, sky and people masks | Develop, Masks | 4.6 MB and 15 MB |
+| Object masks (SAM 2.1; SAM 3 if chosen) | Develop, Masks | 330 MB; 960 MB |
 | Place names | Library, a folder's About | ~10 MB (GeoNames town list) |
 
-**Graphics cards.** Noise reduction is the one step that uses a graphics card.
-On Windows it uses any card through DirectML: NVIDIA, AMD or Intel. On a Mac it
-uses Core ML, the Apple Silicon GPU and Neural Engine. Without one it runs on
-the CPU, more slowly. Everything else runs on the CPU and needs no graphics card.
+**Graphics cards.** Noise reduction and object masks use a graphics card.
+On Windows they use any card through DirectML: NVIDIA, AMD or Intel. On a Mac
+they use Core ML, the Apple Silicon GPU and Neural Engine. Without one they run on
+the CPU, more slowly (an object mask's first click on a view then takes seconds,
+not a fifth of one). Everything else runs on the CPU and needs no graphics card.
 
 ## 7. Other computers and phones
 
