@@ -934,7 +934,7 @@ const SKIN_SLIDERS = [
 const SKIN_LOOKS = [
   ["Natural", { smooth: 30, even: 20, texture: 0 }, "A light touch: blemishes calmed, the skin as it is"],
   ["Polished", { smooth: 50, even: 35, texture: -10 }, "Smoother and more even, pores still there"],
-  ["Glam", { smooth: 70, even: 45, texture: -20 }, "Smooth and even, as for a portrait under studio light"],
+  ["Glam", { smooth: 65, even: 40, texture: -12 }, "Smooth and even, its glow kept: a portrait under studio light"],
 ];
 // The masks whose people can have their skin retouched.
 const SKIN_KINDS = ["people", "faces", "object"];
