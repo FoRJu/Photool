@@ -92,9 +92,11 @@ async def lifespan(app: FastAPI):
 
     # Subject and sky masks find their selection with models kept beside the
     # face models, fetched on first use.
-    from adjust import segment
+    # The parts of people (hair, skin, eyes, clothes) are read by two more.
+    from adjust import parts, segment
 
     segment.configure(config.models_dir)
+    parts.configure(config.models_dir)
     # Object masks are chosen by pointing (adjust.objects); what was chosen is
     # kept beside the catalog, since an edit names it and needs it to export.
     from adjust import objects

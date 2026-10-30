@@ -2915,16 +2915,27 @@ async def develop_prefetch(req: PrefetchRequest, request: Request):
 
 
 class MaskModelRequest(BaseModel):
-    kind: str                    # "subject" or "sky"
+    kind: str                    # "subject", "sky", "people", "faces"; "parts" for people's parts
 
 
 @router.post("/export/develop/mask-model")
 async def develop_mask_model(req: MaskModelRequest):
     """Make the model a subject or sky mask needs ready, fetching it the first
     time (a few MB), so the mask is added only once it can select anything."""
-    from adjust import segment
+    from adjust import parts, segment
     from faces.models import ModelsUnavailable
 
+    if req.kind == "parts":
+        # The parts of people: the people model and the face finder, then the
+        # two parsers (hundreds of MB, the first time).
+        def _ready():
+            segment.ensure("faces")
+            parts.ensure()
+        try:
+            await _run_blocking(_ready)
+        except ModelsUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        return {"ok": True}
     if req.kind not in segment.KINDS:
         raise HTTPException(status_code=400, detail=f"No model selects {req.kind!r}")
     try:
@@ -2932,6 +2943,15 @@ async def develop_mask_model(req: MaskModelRequest):
     except ModelsUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     return {"ok": True}
+
+
+@router.get("/export/develop/parts-model")
+async def develop_parts_model():
+    """Whether the parsers for people's parts are here, and how much a first
+    use fetches."""
+    from adjust import parts
+
+    return {"available": await _run_blocking(parts.available), "download_mb": parts.DOWNLOAD_MB}
 
 
 class FrameGeometry(BaseModel):
@@ -2949,6 +2969,7 @@ class MaskImageRequest(FrameGeometry):
     kind: str
     size: int = 1600             # the develop preview's size, whose frame is kept
     person: int = 0              # people and faces: one person (1 = leftmost), 0 everyone
+    areas: list = []             # people: the parts of them (adjust.parts.AREAS), none for all
 
 
 def _mask_frame(config, filepath: str, size: int, geometry: FrameGeometry):
@@ -2988,7 +3009,10 @@ async def develop_mask_image(req: MaskImageRequest, request: Request):
         frame = _mask_frame(config, req.filepath, req.size, req)
         if frame is None:
             return None
-        matte = segment.matte(frame, req.kind, req.person or None)
+        from adjust.masks import PEOPLE_AREAS
+
+        areas = [a for a in PEOPLE_AREAS if a in req.areas] if req.kind == "people" else []
+        matte = segment.matte(frame, req.kind, req.person or None, areas)
         buf = _io.BytesIO()
         Image.fromarray((matte * 255.0 + 0.5).astype(np.uint8), "L").save(buf, format="PNG")
         buf.seek(0)

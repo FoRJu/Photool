@@ -1039,7 +1039,7 @@ def _mask_layers(frame: LinearFrame, masks: list) -> list:
                 if m["kind"] in CHOSEN:
                     from adjust.segment import whole_matte
 
-                    matte = whole_matte(frame, m["kind"], m.get("person"))
+                    matte = whole_matte(frame, m["kind"], m.get("person"), m.get("areas"))
                 elif m["kind"] == "object":
                     from adjust.objects import load
 

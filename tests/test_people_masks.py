@@ -146,7 +146,7 @@ class TestFaceBoxes:
 class TestInTheDevelop:
     def test_a_faces_mask_lifts_the_faces(self, monkeypatch):
         frame = _frame()
-        monkeypatch.setattr(segment, "whole_matte", lambda f, kind, person=None: segment.matte(frame, kind, person))
+        monkeypatch.setattr(segment, "whole_matte", lambda f, kind, person=None, areas=None: segment.matte(frame, kind, person))
         out = np.asarray(develop_frame(frame, {"masks": [{"kind": "faces", "exposure": 1.0}]}), dtype=np.float32)
         plain = np.asarray(frame.encoded(), dtype=np.float32)
         r, c = _centre(FACES[1])
@@ -190,7 +190,7 @@ class TestThroughTheApi:
 
         asked = []
 
-        def fake(frame, kind, person=None):
+        def fake(frame, kind, person=None, areas=None):
             asked.append((kind, person))
             return np.zeros((8, 8), dtype=np.float32)
 
