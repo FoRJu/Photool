@@ -50,8 +50,8 @@ _SAM21 = ("https://huggingface.co/onnx-community/sam2.1-hiera-base-plus-ONNX/res
           "bab18593f44e652f04cf18b60b3690f60e8996b0/onnx/")
 # Our export: vision (one reading for clicks and words), text and detector
 # graphs from Meta's SAM 3 weights, and onnx-community's prompt decoder.
-_SAM3 = ("https://huggingface.co/Photool/sam3-ONNX/resolve/"
-         "main/")
+_SAM3 = ("https://huggingface.co/wW-Ww/sam3-ONNX/resolve/"
+         "73f31f4c0cd2cb7fbcb1bcc868b32deb9e1dd461/")
 
 
 def _spec(folder: str, base: str, name: str, sha256: str, size: int) -> ModelSpec:
