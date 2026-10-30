@@ -2511,129 +2511,169 @@ function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, bask
     if (index < photos.length - 1) setTimeout(() => nextRef.current?.(), 350);
   };
   const video = isVideo(photo);
+  // A phone on its side is short: the bars above and below would leave the
+  // photo a strip, so they go in a column beside it and the photo has the
+  // whole height.
+  const side = useMedia("(orientation: landscape) and (max-height: 600px)");
+
+  const top = (
+    <div className={`flex items-center gap-1 shrink-0 text-neutral-300 ${side ? "px-0" : "px-1 h-12"}`}>
+      <button onClick={onClose} aria-label="Back to the grid" className="w-11 h-11 text-xl">‹</button>
+      <span className="text-sm font-mono text-neutral-400 truncate">{index + 1} / {photos.length}</span>
+      <span className="flex-1" />
+      {/* Developing is for a screen the size of a tablet's, not a phone's. */}
+      {TABLET && onDevelop && !video && (
+        <button onClick={() => onDevelop(photo)} data-testid="phone-develop"
+          className={`h-9 px-3 rounded-full text-sm border ${photo.edited
+            ? "border-amber-700 text-amber-300" : "border-neutral-800 text-neutral-300"}`}>
+          Develop{photo.edited ? " ●" : ""}
+        </button>
+      )}
+      <button onClick={() => setInfo((v) => !v)} aria-label="About this photo" data-testid="phone-info"
+        className={`w-10 h-11 rounded-full text-lg shrink-0 ${info ? "text-white" : "text-neutral-500"}`}>ⓘ</button>
+      <button onClick={() => onToggleBasket(photo)} aria-label="Basket" data-testid="phone-basket"
+        className={`h-9 px-3 rounded-full text-sm shrink-0 ${basketSet.has(photo.filepath)
+          ? "bg-orange-600 text-white" : "text-neutral-500 border border-neutral-800"}`}>
+        ⬡{basketSet.has(photo.filepath) && !side ? " In basket" : ""}
+      </button>
+    </div>
+  );
+
+  const picture = (
+    <div className="flex-1 min-h-0 min-w-0 relative overflow-hidden" style={{ touchAction: "none" }}
+      {...(video ? {} : handlers)} data-testid="phone-photo">
+      {video ? (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <VideoPlayer photo={photo} folderPath={folderPath} videoRef={videoRef} onFocusBack={() => {}} />
+        </div>
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center" style={style}>
+          <img ref={imgRef} draggable={false} alt={photo.filename}
+            src={thumbUrl(photo.folder || folderPath, photo.filename, "preview", editKey(photo))}
+            className={`max-h-full max-w-full object-contain ${rejected ? "opacity-40" : ""}`} />
+        </div>
+      )}
+      {rejected && (
+        <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-red-900/80 text-red-100 text-xs">Rejected</span>
+      )}
+      {/* A tap at either edge moves on: said, faintly, by a chevron there. */}
+      {!video && !zoomed && index > 0 && (
+        <span className="absolute left-1 top-1/2 -translate-y-1/2 text-3xl text-white/20 pointer-events-none">‹</span>
+      )}
+      {!video && !zoomed && index < photos.length - 1 && (
+        <span className="absolute right-1 top-1/2 -translate-y-1/2 text-3xl text-white/20 pointer-events-none">›</span>
+      )}
+      {video && index > 0 && (
+        <button onClick={() => onGo(-1)} className="absolute left-0 top-1/2 -translate-y-1/2 w-11 h-20 text-4xl text-white/40">‹</button>
+      )}
+      {video && index < photos.length - 1 && (
+        <button onClick={() => onGo(1)} className="absolute right-0 top-1/2 -translate-y-1/2 w-11 h-20 text-4xl text-white/40">›</button>
+      )}
+    </div>
+  );
+
+  const about = info && (
+    <div className={`text-xs text-neutral-400 space-y-0.5 ${side ? "px-1" : "px-4 py-2 border-t border-neutral-900"}`}
+      data-testid="phone-exif">
+      <div className="text-neutral-300 truncate">{photo.filename}</div>
+      {(photo.capture_date || exif?.date) && <div>{takenAt(photo.capture_date || exif.date)}</div>}
+      {exif && (
+        <div className="font-mono">
+          {[exif.camera, exif.lens, exif.focal_length, exif.aperture, exif.shutter_speed, exif.iso && `ISO ${exif.iso}`]
+            .filter(Boolean).join(" · ")}
+        </div>
+      )}
+    </div>
+  );
+
+  const warnings = hint && (hint.soft_frame || hint.blown_highlights || hint.eyes_closed) && (
+    <div className={`text-[11px] flex flex-wrap gap-x-3 ${side ? "px-1" : "px-4 py-1"}`}>
+      {hint.soft_frame && <span className="text-amber-300/90">⚠ softer than the rest</span>}
+      {hint.blown_highlights && <span className="text-red-300/90">⚠ highlights clipped</span>}
+      {hint.eyes_closed && <span className="text-sky-300/90">⚠ eyes may be closed</span>}
+    </div>
+  );
+
+  const suggestion = proposal && onProposal && (
+    <div className={`bg-violet-950/70 text-xs flex items-center gap-2 ${side ? "flex-wrap p-1.5 rounded" : "px-3 py-1.5"}`}
+      data-testid="phone-proposal">
+      <span className="text-violet-200 flex-1 truncate">✦ {proposalText(proposal)}{proposal.reason ? ` — ${proposal.reason}` : ""}</span>
+      <button onClick={() => onProposal("accept", photo)} className="px-3 py-1.5 rounded bg-violet-700 text-white">Accept</button>
+      <button onClick={() => onProposal("dismiss", photo)} className="px-3 py-1.5 rounded border border-neutral-700 text-neutral-300">No</button>
+    </div>
+  );
+
+  const frames = burst && (
+    <div className={`flex gap-2 ${side ? "flex-col" : "px-2 py-1.5 items-center border-t border-neutral-900"}`}
+      data-testid="phone-burst">
+      <div className={`flex gap-1 ${side ? "flex-wrap" : "overflow-x-auto flex-1"}`}>
+        {(burst.members || []).map((m) => (
+          <button key={m.filepath} onClick={() => onJump(m.filepath)}
+            className={`relative shrink-0 rounded overflow-hidden border ${m.filepath === photo.filepath
+              ? "border-white" : "border-transparent"} ${memberFlag(m) === -1 ? "opacity-30" : ""}`}>
+            <img src={thumbUrl(m.folder || folderPath, m.filename, "grid", editKey(photoByPath.get(m.filepath)))}
+              alt="" className={`${side ? "h-9 w-9" : "h-11 w-11"} object-cover`} />
+            {memberFlag(m) !== -1 && m.filepath === burst.keep && (
+              <span className="absolute bottom-0 inset-x-0 text-[8px] text-center bg-emerald-900/90 text-emerald-200">sharpest</span>
+            )}
+          </button>
+        ))}
+      </div>
+      <button onClick={onRejectBurst} className="shrink-0 px-2.5 py-2 rounded bg-red-900/60 text-red-200 text-xs"
+        title="Keep the sharpest frame and reject the rest">Keep sharpest</button>
+    </div>
+  );
+
+  const marks = (
+    <div className={`flex ${side ? "flex-col gap-1.5" : "items-center justify-between px-2 py-1 border-t border-neutral-900"}`}
+      data-testid="phone-marks">
+      <div className="flex">
+        {[1, 2, 3, 4, 5].map((n) => (
+          <button key={n} onClick={() => rate("rating", photo.rating === n ? 0 : n)}
+            aria-label={`${n} star${n > 1 ? "s" : ""}`} data-testid={`phone-star-${n}`}
+            className={`leading-none ${side ? "w-9 h-11 text-[24px]" : "w-12 h-14 text-[28px]"} ${
+              n <= (photo.rating || 0) ? "text-yellow-400" : "text-neutral-700"}`}>★</button>
+        ))}
+      </div>
+      <button onClick={reject} data-testid="phone-reject"
+        className={`h-11 px-4 rounded-full text-sm font-medium ${rejected
+          ? "bg-red-700 text-white" : "border border-red-900 text-red-300"}`}>
+        ✕ {rejected ? "Rejected" : "Reject"}
+      </button>
+    </div>
+  );
+
+  const edges = { paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)",
+    paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)" };
+  if (side) {
+    return (
+      <div data-modal="viewer" data-testid="phone-viewer" data-side="1"
+        className="fixed inset-0 z-50 bg-black flex flex-row select-none" style={edges}>
+        {picture}
+        {bars && (
+          <aside className="w-[13.5rem] shrink-0 flex flex-col gap-2 py-1 pr-1 overflow-y-auto">
+            {top}
+            {about}
+            {warnings}
+            {suggestion}
+            {frames}
+            <span className="flex-1" />
+            {marks}
+          </aside>
+        )}
+      </div>
+    );
+  }
   return (
     <div data-modal="viewer" data-testid="phone-viewer"
-      className="fixed inset-0 z-50 bg-black flex flex-col select-none"
-      style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
-      {bars && (
-      <div className="flex items-center gap-1 px-1 h-12 shrink-0 text-neutral-300">
-        <button onClick={onClose} aria-label="Back to the grid" className="w-11 h-11 text-xl">‹</button>
-        <span className="text-sm font-mono text-neutral-400">{index + 1} / {photos.length}</span>
-        <span className="flex-1" />
-        {/* Developing is for a screen the size of a tablet's, not a phone's. */}
-        {TABLET && onDevelop && !isVideo(photo) && (
-          <button onClick={() => onDevelop(photo)} data-testid="phone-develop"
-            className={`h-9 px-3 rounded-full text-sm border ${photo.edited
-              ? "border-amber-700 text-amber-300" : "border-neutral-800 text-neutral-300"}`}>
-            Develop{photo.edited ? " ●" : ""}
-          </button>
-        )}
-        <button onClick={() => setInfo((v) => !v)} aria-label="About this photo" data-testid="phone-info"
-          className={`w-11 h-11 rounded-full text-lg ${info ? "text-white" : "text-neutral-500"}`}>ⓘ</button>
-        <button onClick={() => onToggleBasket(photo)} aria-label="Basket" data-testid="phone-basket"
-          className={`h-9 px-3 rounded-full text-sm ${basketSet.has(photo.filepath)
-            ? "bg-orange-600 text-white" : "text-neutral-500 border border-neutral-800"}`}>
-          ⬡{basketSet.has(photo.filepath) ? " In basket" : ""}
-        </button>
-      </div>
-      )}
-
-      <div className="flex-1 min-h-0 relative overflow-hidden" style={{ touchAction: "none" }}
-        {...(video ? {} : handlers)} data-testid="phone-photo">
-        {video ? (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <VideoPlayer photo={photo} folderPath={folderPath} videoRef={videoRef} onFocusBack={() => {}} />
-          </div>
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center" style={style}>
-            <img ref={imgRef} draggable={false} alt={photo.filename}
-              src={thumbUrl(photo.folder || folderPath, photo.filename, "preview", editKey(photo))}
-              className={`max-h-full max-w-full object-contain ${rejected ? "opacity-40" : ""}`} />
-          </div>
-        )}
-        {rejected && (
-          <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-red-900/80 text-red-100 text-xs">Rejected</span>
-        )}
-        {/* A tap at either edge moves on: said, faintly, by a chevron there. */}
-        {!video && !zoomed && index > 0 && (
-          <span className="absolute left-1 top-1/2 -translate-y-1/2 text-3xl text-white/20 pointer-events-none">‹</span>
-        )}
-        {!video && !zoomed && index < photos.length - 1 && (
-          <span className="absolute right-1 top-1/2 -translate-y-1/2 text-3xl text-white/20 pointer-events-none">›</span>
-        )}
-        {video && index > 0 && (
-          <button onClick={() => onGo(-1)} className="absolute left-0 top-1/2 -translate-y-1/2 w-11 h-20 text-4xl text-white/40">‹</button>
-        )}
-        {video && index < photos.length - 1 && (
-          <button onClick={() => onGo(1)} className="absolute right-0 top-1/2 -translate-y-1/2 w-11 h-20 text-4xl text-white/40">›</button>
-        )}
-      </div>
-
-      {bars && info && (
-        <div className="px-4 py-2 text-xs text-neutral-400 space-y-0.5 border-t border-neutral-900" data-testid="phone-exif">
-          <div className="text-neutral-300 truncate">{photo.filename}</div>
-          {(photo.capture_date || exif?.date) && <div>{takenAt(photo.capture_date || exif.date)}</div>}
-          {exif && (
-            <div className="font-mono">
-              {[exif.camera, exif.lens, exif.focal_length, exif.aperture, exif.shutter_speed, exif.iso && `ISO ${exif.iso}`]
-                .filter(Boolean).join(" · ")}
-            </div>
-          )}
-        </div>
-      )}
-
-      {bars && hint && (hint.soft_frame || hint.blown_highlights || hint.eyes_closed) && (
-        <div className="px-4 py-1 text-[11px] flex flex-wrap gap-x-3">
-          {hint.soft_frame && <span className="text-amber-300/90">⚠ softer than the rest</span>}
-          {hint.blown_highlights && <span className="text-red-300/90">⚠ highlights clipped</span>}
-          {hint.eyes_closed && <span className="text-sky-300/90">⚠ eyes may be closed</span>}
-        </div>
-      )}
-
-      {bars && proposal && onProposal && (
-        <div className="px-3 py-1.5 bg-violet-950/70 text-xs flex items-center gap-2" data-testid="phone-proposal">
-          <span className="text-violet-200 flex-1 truncate">✦ {proposalText(proposal)}{proposal.reason ? ` — ${proposal.reason}` : ""}</span>
-          <button onClick={() => onProposal("accept", photo)} className="px-3 py-1.5 rounded bg-violet-700 text-white">Accept</button>
-          <button onClick={() => onProposal("dismiss", photo)} className="px-3 py-1.5 rounded border border-neutral-700 text-neutral-300">No</button>
-        </div>
-      )}
-
-      {bars && burst && (
-        <div className="px-2 py-1.5 flex items-center gap-2 border-t border-neutral-900" data-testid="phone-burst">
-          <div className="flex gap-1 overflow-x-auto flex-1">
-            {(burst.members || []).map((m) => (
-              <button key={m.filepath} onClick={() => onJump(m.filepath)}
-                className={`relative shrink-0 rounded overflow-hidden border ${m.filepath === photo.filepath
-                  ? "border-white" : "border-transparent"} ${memberFlag(m) === -1 ? "opacity-30" : ""}`}>
-                <img src={thumbUrl(m.folder || folderPath, m.filename, "grid", editKey(photoByPath.get(m.filepath)))}
-                  alt="" className="h-11 w-11 object-cover" />
-                {memberFlag(m) !== -1 && m.filepath === burst.keep && (
-                  <span className="absolute bottom-0 inset-x-0 text-[8px] text-center bg-emerald-900/90 text-emerald-200">sharpest</span>
-                )}
-              </button>
-            ))}
-          </div>
-          <button onClick={onRejectBurst} className="shrink-0 px-2.5 py-2 rounded bg-red-900/60 text-red-200 text-xs"
-            title="Keep the sharpest frame and reject the rest">Keep sharpest</button>
-        </div>
-      )}
-
-      {bars && (
-      <div className="flex items-center justify-between px-2 py-1 border-t border-neutral-900" data-testid="phone-marks">
-        <div className="flex">
-          {[1, 2, 3, 4, 5].map((n) => (
-            <button key={n} onClick={() => rate("rating", photo.rating === n ? 0 : n)}
-              aria-label={`${n} star${n > 1 ? "s" : ""}`} data-testid={`phone-star-${n}`}
-              className={`w-12 h-14 text-[28px] leading-none ${n <= (photo.rating || 0) ? "text-yellow-400" : "text-neutral-700"}`}>★</button>
-          ))}
-        </div>
-        <button onClick={reject} data-testid="phone-reject"
-          className={`h-11 px-4 rounded-full text-sm font-medium ${rejected
-            ? "bg-red-700 text-white" : "border border-red-900 text-red-300"}`}>
-          ✕ {rejected ? "Rejected" : "Reject"}
-        </button>
-      </div>
-      )}
+      className="fixed inset-0 z-50 bg-black flex flex-col select-none" style={edges}>
+      {bars && top}
+      {picture}
+      {bars && about}
+      {bars && warnings}
+      {bars && suggestion}
+      {bars && frames}
+      {bars && marks}
     </div>
   );
 }
