@@ -223,15 +223,19 @@ that:
 | **Look** | **Fade**, **split toning** (hue and strength for the shadows and the highlights) |
 
 **The panel.** Its top stays in view: the versions, the histogram, *Auto* and
-*Reset*, *Copy*, *Paste* and *To burst*, and the three tools that work on the
-picture itself, **Crop**, **Spots** and **Masks** (a click takes the tool up and
-opens its section; `C` and `Q` do the same for the first two). Below it the sections
-run in Lightroom's order: crop, spots and masks, then Profile, White balance,
-Light and Presence, Looks & match, the tone curve, the colour mixer (B&W mix in
-black and white), Fade & toning, Sharpening, Noise reduction, Lens corrections,
-Transform, Effects and your presets. Each folds away on a click of its title, and
-a folded section that holds a change shows an amber dot; which are open is kept
-on this device. At first only Profile, White balance, Light and Presence are.
+*Reset*, and *Copy*, *Paste* and *To burst*. Below it the sections scroll in
+Lightroom's order, each folding away on a click of its title; a folded section
+that holds a change shows an amber dot, and which are open is kept on this
+device (at first Profile, White balance, Light and Presence). **Frame** comes
+first: crop and level, lens corrections, transform and spot removal, the things
+done once to a photo. `C` or `Q` opens it with the crop or the spot tool in hand;
+*done*, Esc or folding it puts the tool down, and folded it reads as one line of
+what it holds (*crop 4:5 · level −1.2° · lens corrected · 3 spots*). It starts
+folded on every photo. Then Profile, White balance, Light (Contrast is here,
+next to Exposure) and Presence, Looks & match, the tone curve, the colour mixer
+(B&W mix in black and white) and Fade & toning; then **Masks**, which like Frame
+is its tool: opening it shows the masks on the picture, folding it puts them
+away; then Sharpening, Noise reduction, Effects and your presets.
 
 **Squeeze** is the answer to "can a wide scene be put into a normal 8-bit JPEG":
 it compresses the scene's overall range — a bright window and a dark room, ten

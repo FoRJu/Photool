@@ -1796,18 +1796,25 @@ function SpotPanel({ spots, selected, spotMode, size, mode, busy, onSize, onMode
 
 // The panel's sections fold away. Which are open is kept on this device; at
 // first only the ones most photos need. A closed one that holds changes says so.
+// Frame and Masks are tools on the picture: open is in use, so they start
+// folded and are not kept open.
 const FOLDS_KEY = "photool.develop.open";
 const OPEN_AT_FIRST = ["profile", "wb", "light", "presence"];
+const TOOL_FOLDS = ["frame", "masks"];
+const keepable = (open) => open.filter((id) => !TOOL_FOLDS.includes(id));
 function readFolds() {
   try {
     const kept = JSON.parse(localStorage.getItem(FOLDS_KEY));
-    return Array.isArray(kept) ? kept : OPEN_AT_FIRST;
+    return Array.isArray(kept) ? keepable(kept) : OPEN_AT_FIRST;
   } catch {
     return OPEN_AT_FIRST;
   }
 }
+function keepFolds(open) {
+  try { localStorage.setItem(FOLDS_KEY, JSON.stringify(keepable(open))); } catch { /* this visit only */ }
+}
 
-function Fold({ id, title, hint, edited, open, onToggle, extra, children }) {
+function Fold({ id, title, hint, edited, open, onToggle, extra, summary, children }) {
   return (
     <section id={`fold-${id}`} className="space-y-2" data-testid={`fold-${id}`}>
       <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-500">
@@ -1817,10 +1824,29 @@ function Fold({ id, title, hint, edited, open, onToggle, extra, children }) {
           {title}
           {edited && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-0.5" title="Changed in this edit" />}
         </button>
+        {!open && summary && (
+          <button onClick={() => onToggle(id)} data-testid={`fold-${id}-summary`}
+            className="flex-1 min-w-0 truncate text-right normal-case tracking-normal text-neutral-500 hover:text-neutral-300 ml-2">
+            {summary}
+          </button>
+        )}
         <span className="flex items-center gap-2 normal-case tracking-normal">{extra}</span>
       </div>
       {open && children}
     </section>
+  );
+}
+
+// One part of a section that holds several (Frame's crop, lens, transform and spots).
+function Part({ title, hint, extra, children, testid }) {
+  return (
+    <div className="space-y-2" data-testid={testid}>
+      <div className="flex items-center justify-between text-[11px]">
+        <span className="text-neutral-300" title={hint}>{title}</span>
+        <span className="flex items-center gap-2">{extra}</span>
+      </div>
+      {children}
+    </div>
   );
 }
 
@@ -3529,24 +3555,22 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
 
   // ── The panel's sections ────────────────────────────────────────
   const [folds, setFolds] = useState(readFolds);
-  const toggleFold = useCallback((id) => {
-    setFolds((open) => {
-      const next = open.includes(id) ? open.filter((f) => f !== id) : [...open, id];
-      try { localStorage.setItem(FOLDS_KEY, JSON.stringify(next)); } catch { /* this visit only */ }
+  const foldsRef = useRef(folds);
+  const setOpen = useCallback((id, open) => {
+    setFolds((now) => {
+      if (now.includes(id) === open) return now;
+      const next = open ? [...now, id] : now.filter((f) => f !== id);
+      foldsRef.current = next;
+      keepFolds(next);
       return next;
     });
   }, []);
-  // A tool taken up (by its button or its key) opens its section and brings it
-  // into view.
+  // A tool taken up (by its key, or a button in its section) opens the section
+  // and brings it into view.
   const openFold = useCallback((id) => {
-    setFolds((open) => {
-      if (open.includes(id)) return open;
-      const next = [...open, id];
-      try { localStorage.setItem(FOLDS_KEY, JSON.stringify(next)); } catch { /* this visit only */ }
-      return next;
-    });
+    setOpen(id, true);
     requestAnimationFrame(() => document.getElementById(`fold-${id}`)?.scrollIntoView({ block: "nearest" }));
-  }, []);
+  }, [setOpen]);
 
   // ── Gradients ───────────────────────────────────────────────────
   const enterMasks = useCallback(() => {
@@ -3560,10 +3584,34 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   }, []);
   const endMasks = useCallback(() => setMaskMode(false), []);
 
+  // Frame (crop, level, lens, transform, spots) and Masks are their tools:
+  // taking one up opens its section, and putting it down (Done, Esc, the key
+  // again) folds the section away. Opening Masks takes up the masks; folding
+  // either puts its tools down.
+  const framing = cropMode || spotMode;
+  const wasFraming = useRef(false);
+  useEffect(() => {
+    if (framing) openFold("frame");
+    else if (wasFraming.current) setOpen("frame", false);
+    wasFraming.current = framing;
+  }, [framing, openFold, setOpen]);
+  const wasMasking = useRef(false);
+  useEffect(() => {
+    if (maskMode) openFold("masks");
+    else if (wasMasking.current) setOpen("masks", false);
+    wasMasking.current = maskMode;
+  }, [maskMode, openFold, setOpen]);
+  // Another photo starts with the tools folded away.
+  useEffect(() => { setOpen("frame", false); }, [filepath, setOpen]);
+
   // ── Spots ───────────────────────────────────────────────────────
-  useEffect(() => { if (cropMode) openFold("crop"); }, [cropMode, openFold]);
-  useEffect(() => { if (spotMode) openFold("spots"); }, [spotMode, openFold]);
-  useEffect(() => { if (maskMode) openFold("masks"); }, [maskMode, openFold]);
+
+  const toggleFold = useCallback((id) => {
+    const open = !foldsRef.current.includes(id);
+    setOpen(id, open);
+    if (id === "masks") (open ? enterMasks : endMasks)();
+    if (id === "frame" && !open) { endCrop(); setSpotMode(false); }
+  }, [setOpen, enterMasks, endMasks, endCrop]);
 
   const toggleSpots = useCallback(() => {
     setSpotMode((on) => {
@@ -4579,22 +4627,36 @@ ${known.license}
     : null;
   const box = draft || boxOf(settings) || FULL_BOX;
   const shape = (box.w * frameDims.w) / (box.h * frameDims.h);
+  const spotCount = (settings.spots || []).length;
+  const frameSummary = (() => {
+    const kept = boxOf(settings);
+    const ratio = kept && (kept.w * frameDims.w) / (kept.h * frameDims.h);
+    const named = kept && ASPECTS.find((a) => typeof a.ratio === "number" && Math.abs(a.ratio - ratio) < 0.01);
+    return [
+      kept && `crop ${named ? named.label : `${ratio.toFixed(2)}:1`}`,
+      angle !== 0 && `level ${angle > 0 ? "+" : ""}${angle}°`,
+      Number(settings.lens_profile) === 1 && "lens corrected",
+      Number(settings.distortion) !== 0 && `distortion ${signed(Number(settings.distortion))}`,
+      TRANSFORM_KEYS.some((k) => Number(settings[k]) !== 0) && "transform",
+      spotCount > 0 && `${spotCount} spot${spotCount > 1 ? "s" : ""}`,
+    ].filter(Boolean).join(" · ") || "as shot";
+  })();
+  const frameEdited = frameSummary !== "as shot";
 
   // One group of sliders by its id, with what belongs to it: the treatment,
   // the camera-look note and the style under Profile, the rescues under Light.
-  const section = (id) => {
+  const section = (id, part = false) => {
     const group = GROUPS.find((g) => g.id === id);
     const keys = [...group.sliders.map((s) => s.key), ...(group.switches || [])];
     const edited = keys.some((k) => Number(settings[k]) !== 0)
       || (id === "profile" && !!settings.style);
-    return (
-      <Fold id={id} title={group.title} hint={group.hint} edited={edited} open={folds.includes(id)}
-        onToggle={toggleFold}
-        extra={edited && keys.some((k) => Number(settings[k]) !== 0) && (
-          <button onClick={() => applyGroup(keys, {}, `${group.title} reset`)}
-            className="text-neutral-600 hover:text-neutral-300"
-            title={`Reset ${group.title.toLowerCase()} controls`}>reset</button>
-        )}>
+    const reset = keys.some((k) => Number(settings[k]) !== 0) && (
+      <button onClick={() => applyGroup(keys, {}, `${group.title} reset`)}
+        className="text-[10px] text-neutral-600 hover:text-neutral-300"
+        title={`Reset ${group.title.toLowerCase()} controls`}>reset</button>
+    );
+    const body = (
+      <>
         {id === "profile" && (
           <div className="flex items-center gap-2 text-xs" data-testid="treatment">
             <span className="w-20 shrink-0 text-neutral-400" title="Develop this photo in colour or in black and white. The black-and-white mix and toning are kept when you switch back.">Treatment</span>
@@ -4687,7 +4749,13 @@ ${known.license}
               onChange={change} onReset={() => resetOne(def.key)} />
           ))}
         </Controls>
-      </Fold>
+      </>
+    );
+    return part ? (
+      <Part title={group.title} hint={group.hint} extra={reset} testid={`part-${id}`}>{body}</Part>
+    ) : (
+      <Fold id={id} title={group.title} hint={group.hint} edited={edited} open={folds.includes(id)}
+        onToggle={toggleFold} extra={reset}>{body}</Fold>
     );
   };
 
@@ -5015,85 +5083,59 @@ ${known.license}
               </div>
             )}
             {note && <p className="text-xs text-neutral-500">{note}</p>}
-            {/* The tools that work on the picture itself: each opens its section
-                and takes the picture, and a second click puts it down. */}
-            <div className="flex items-center gap-1" data-testid="tool-strip">
-              {[["crop", "Crop", "Crop and level (C)", cropMode, () => (cropMode ? endCrop() : startCrop())],
-                ["spots", "Spots", "Paint out dust and blemishes (Q)", spotMode, toggleSpots],
-                ["masks", "Masks", "Gradients, brushes and chosen parts of the picture", maskMode,
-                  () => (maskMode ? endMasks() : enterMasks())]].map(([id, label, title, on, act]) => (
-                <button key={id} onClick={act} title={title}
-                  data-testid={`tool-${id}`}
-                  className={`flex-1 text-xs px-2 py-1 rounded border ${on
-                    ? "border-amber-500 text-amber-300 bg-amber-500/10"
-                    : "border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500"}`}>
-                  {label}
-                </button>
-              ))}
-            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 space-y-3" data-testid="panel-sections">
           <HistoryPanel history={history} onJump={jumpTo} />
 
-          <Fold id="crop" title="Crop & level" edited={framed} open={folds.includes("crop")} onToggle={toggleFold}
-            hint="Crop to a shape and straighten the horizon. Nothing is cut from the file; the crop is part of the edit."
-            extra={framed && (
-              <button onClick={resetFraming} className="text-neutral-600 hover:text-neutral-300"
-                title="Back to the whole frame, unturned">remove</button>
-            )}>
-            <div className="flex flex-wrap gap-1">
-              {ASPECTS.map((a) => (
-                <button key={a.id} title={a.note} onClick={() => chooseAspect(a.id)}
-                  className={`text-[11px] px-2 py-0.5 rounded border ${cropMode && aspect === a.id
-                    ? "border-amber-500 text-amber-400"
-                    : "border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500"}`}>
-                  {a.label}
-                </button>
-              ))}
-            </div>
-            <label className="flex items-center gap-2 text-xs">
-              <span className={`w-20 shrink-0 select-none ${angle ? "text-amber-300" : "text-neutral-400"}`}
-                title="Turn the picture to level a horizon. Double-click to reset."
-                onDoubleClick={() => setAngle(0)}>Level</span>
-              <input type="range" min={-15} max={15} step={0.1} value={clamp(angle, -15, 15)}
-                onChange={(e) => setAngle(+e.target.value)} onDoubleClick={() => setAngle(0)}
-                className="flex-1 accent-amber-400" />
-              <input type="number" min={-45} max={45} step={0.1} value={angle}
-                onChange={(e) => setAngle(e.target.value)}
-                className="w-14 bg-neutral-900 border border-neutral-800 rounded px-1 py-0.5 text-right font-mono text-xs" />
-            </label>
-            {framed && boxOf(settings) && (
-              <p className="text-[10px] text-neutral-500 font-mono">
-                {Math.round(box.w * 100)}% × {Math.round(box.h * 100)}% of the frame · {shape.toFixed(2)}:1
-              </p>
-            )}
-          </Fold>
-          <Fold id="spots" title={`Spot removal${(settings.spots || []).length ? ` · ${settings.spots.length}` : ""}`}
-            edited={!!(settings.spots || []).length} open={folds.includes("spots")} onToggle={toggleFold}
-            hint="Paint out dust, a blemish or a wire from a clean place nearby. Done before every other control."
-            extra={spotMode && (
-              <button onClick={toggleSpots} className="text-amber-400 hover:text-amber-300"
-                title="Back to the picture as framed (Q or Esc)">done</button>
-            )}>
-          <SpotPanel spots={settings.spots || []} selected={spotSel} spotMode={spotMode} size={spotSize}
-            mode={spotKind} busy={spotBusy} onSize={setSpotSize} onMode={setSpotKind} onToggle={toggleSpots}
-            onSelect={setSpotSel} onRemove={removeSpot} onClear={clearSpots} onChange={updateSpot} />
-          </Fold>
-          <Fold id="masks" title={`Masks${(settings.masks || []).length ? ` · ${settings.masks.length}` : ""}`}
-            edited={!!(settings.masks || []).length} open={folds.includes("masks")} onToggle={toggleFold}
-            hint="Change part of the picture: a linear gradient (a sky, a foreground), a radial one (a face, a vignette of your own), a brush where you paint, or a part chosen for you. Each has its own exposure, tone and colour."
-            extra={maskMode && (
-              <button onClick={endMasks} className="text-amber-400 hover:text-amber-300"
+          <Fold id="frame" title="Frame" edited={frameEdited} open={folds.includes("frame")} onToggle={toggleFold}
+            summary={frameSummary}
+            hint="Crop and level, lens corrections, transform and spot removal: done once, early, then folded away. Nothing is cut from the file."
+            extra={(cropMode || spotMode) && (
+              <button onClick={() => toggleFold("frame")} className="text-amber-400 hover:text-amber-300"
                 title="Back to the picture as framed (Esc)">done</button>
             )}>
-          <MaskPanel masks={settings.masks || []} selected={maskSel} maskMode={maskMode}
-            brush={brush} onBrush={setBrush} showShade={showShade} onShowShade={setShowShade}
-            choosing={choosing} people={people} picking={picking} onPicking={setPicking}
-            onSelect={selectMask} onAdd={addMask} onRemove={removeMask} onChange={updateMask}
-            onDone={endMasks} objectDraft={objectDraft} objectModels={objectModels} objectState={objectState}
-            onObjectModel={objectModel} onObjectPick={objectNextGuess} onObjectUndo={objectUndo}
-            onObjectNewPart={objectNewPart} onObjectFind={objectFind} onObjectKeepFound={objectKeepFound} />
+            <Part title="Crop & level" testid="part-crop"
+              hint="Crop to a shape (C) and straighten the horizon. Nothing is cut from the file; the crop is part of the edit."
+              extra={framed && (
+                <button onClick={resetFraming} className="text-[10px] text-neutral-600 hover:text-neutral-300"
+                  title="Back to the whole frame, unturned">remove</button>
+              )}>
+              <div className="flex flex-wrap gap-1">
+                {ASPECTS.map((a) => (
+                  <button key={a.id} title={a.note} onClick={() => chooseAspect(a.id)}
+                    className={`text-[11px] px-2 py-0.5 rounded border ${cropMode && aspect === a.id
+                      ? "border-amber-500 text-amber-400"
+                      : "border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500"}`}>
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+              <label className="flex items-center gap-2 text-xs">
+                <span className={`w-20 shrink-0 select-none ${angle ? "text-amber-300" : "text-neutral-400"}`}
+                  title="Turn the picture to level a horizon. Double-click to reset."
+                  onDoubleClick={() => setAngle(0)}>Level</span>
+                <input type="range" min={-15} max={15} step={0.1} value={clamp(angle, -15, 15)}
+                  onChange={(e) => setAngle(+e.target.value)} onDoubleClick={() => setAngle(0)}
+                  className="flex-1 accent-amber-400" />
+                <input type="number" min={-45} max={45} step={0.1} value={angle}
+                  onChange={(e) => setAngle(e.target.value)}
+                  className="w-14 bg-neutral-900 border border-neutral-800 rounded px-1 py-0.5 text-right font-mono text-xs" />
+              </label>
+              {framed && boxOf(settings) && (
+                <p className="text-[10px] text-neutral-500 font-mono">
+                  {Math.round(box.w * 100)}% × {Math.round(box.h * 100)}% of the frame · {shape.toFixed(2)}:1
+                </p>
+              )}
+            </Part>
+            {section("lens", true)}
+            {section("transform", true)}
+            <Part title={`Spot removal${spotCount ? ` · ${spotCount}` : ""}`} testid="part-spots"
+              hint="Paint out dust, a blemish or a wire from a clean place nearby (Q). Done before every other control.">
+            <SpotPanel spots={settings.spots || []} selected={spotSel} spotMode={spotMode} size={spotSize}
+              mode={spotKind} busy={spotBusy} onSize={setSpotSize} onMode={setSpotKind} onToggle={toggleSpots}
+              onSelect={setSpotSel} onRemove={removeSpot} onClear={clearSpots} onChange={updateSpot} />
+            </Part>
           </Fold>
 
           {section("profile")}
@@ -5154,10 +5196,26 @@ ${known.license}
           )}
 
           {section("toning")}
+
+          <Fold id="masks" title={`Masks${(settings.masks || []).length ? ` · ${settings.masks.length}` : ""}`}
+            edited={!!(settings.masks || []).length} open={folds.includes("masks")} onToggle={toggleFold}
+            summary={(settings.masks || []).length ? (settings.masks || []).map((m, k) => maskName(m, k)).join(", ") : ""}
+            hint="Change part of the picture: a linear gradient (a sky, a foreground), a radial one (a face, a vignette of your own), a brush where you paint, or a part chosen for you. Each has its own exposure, tone and colour."
+            extra={maskMode && (
+              <button onClick={endMasks} className="text-amber-400 hover:text-amber-300"
+                title="Back to the picture as framed (Esc)">done</button>
+            )}>
+          <MaskPanel masks={settings.masks || []} selected={maskSel} maskMode={maskMode}
+            brush={brush} onBrush={setBrush} showShade={showShade} onShowShade={setShowShade}
+            choosing={choosing} people={people} picking={picking} onPicking={setPicking}
+            onSelect={selectMask} onAdd={addMask} onRemove={removeMask} onChange={updateMask}
+            onDone={endMasks} objectDraft={objectDraft} objectModels={objectModels} objectState={objectState}
+            onObjectModel={objectModel} onObjectPick={objectNextGuess} onObjectUndo={objectUndo}
+            onObjectNewPart={objectNewPart} onObjectFind={objectFind} onObjectKeepFound={objectKeepFound} />
+          </Fold>
+
           {section("sharpen")}
           {section("noise")}
-          {section("lens")}
-          {section("transform")}
           {section("effects")}
 
           <Fold id="presets" title="My presets" open={folds.includes("presets")} onToggle={toggleFold}
