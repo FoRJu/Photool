@@ -247,8 +247,11 @@ def _sessions_of(model: str, parts: tuple) -> tuple:
 
             folder = ensure(model)
             have = ort.get_available_providers()
-            providers = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider",
-                                     "CoreMLExecutionProvider") if p in have] + ["CPUExecutionProvider"]
+            # Not Core ML: on a Mac it read a view 20x slower than the CPU (it
+            # splits the graph and copies between them), and its decoder cannot
+            # take a click without a box (an empty input).
+            providers = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider")
+                         if p in have] + ["CPUExecutionProvider"]
             options = ort.SessionOptions()
             options.log_severity_level = 3
             # As DirectML asks: no memory pattern, one node at a time.

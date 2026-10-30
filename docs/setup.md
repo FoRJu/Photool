@@ -143,11 +143,14 @@ folder. Each download is checked against a known hash.
 
 **Graphics cards.** Noise reduction and object masks use a graphics card.
 On Windows they use any card through DirectML: NVIDIA, AMD or Intel. On a Mac
-they use Core ML, the Apple Silicon GPU and Neural Engine. Without one they run on
-the CPU, more slowly (an object mask's first click on a view then takes seconds,
-not a fifth of one). Everything else runs on the CPU and needs no graphics card.
-SAM 3 holds about 6.5 GB of graphics memory while it is in use, and lets go of
-it three minutes after the last click or word.
+noise reduction uses Core ML, the Apple Silicon GPU and Neural Engine; object masks
+run on the CPU there, which was faster than Core ML for them. Without a card they
+run on the CPU, more slowly: SAM 2.1 takes about 2 s for the first click on a view
+(a fifth of a second with a card), then a few hundredths for each click; SAM 3
+takes 20 to 30 s for the first click or word on a view, then about 2 s a word,
+so on the CPU it is for patient use. Everything else runs on the CPU and needs no
+graphics card. SAM 3 holds about 6.5 GB of graphics memory while it is in use, and
+lets go of it three minutes after the last click or word.
 
 ## 7. Other computers and phones
 
