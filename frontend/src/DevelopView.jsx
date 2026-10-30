@@ -79,7 +79,7 @@ const GROUPS = [
   {
     id: "light",
     title: "Light",
-    hint: "Exposure is in stops of light. Contrast spreads the tones about the middle; highlights, shadows, whites and blacks reshape one part of the range each, and Squeeze compresses the whole scene.",
+    hint: "Exposure is in stops of light. Contrast spreads the tones about the middle; highlights, lights, darks, shadows, whites and blacks reshape one part of the range each, bright to dark, and Squeeze compresses the whole scene.",
     sliders: [
       { key: "exposure", label: "Exposure", min: -5, max: 5, step: 0.05,
         format: (v) => `${v > 0 ? "+" : ""}${Number(v).toFixed(2)}`,
@@ -88,6 +88,10 @@ const GROUPS = [
         title: "More or less separation about the mid-tones." },
       { key: "highlights", label: "Highlights", min: -100, max: 100, step: 1, format: signed,
         title: "Pull the bright end back (left) to recover sky and windows, or push it further." },
+      { key: "lights", label: "Lights", min: -100, max: 100, step: 1, format: signed,
+        title: "The bright half of the middle tones: a lit face, skin, pale cloth. Brighten them without blowing the sky." },
+      { key: "darks", label: "Darks", min: -100, max: 100, step: 1, format: signed,
+        title: "The dark half of the middle tones: hair, dark cloth, the shade side of a face. Weight without crushing the shadows." },
       { key: "shadows", label: "Shadows", min: -100, max: 100, step: 1, format: signed,
         title: "Open up the dark end (right) like a fill light, or deepen it." },
       { key: "whites", label: "Whites", min: -100, max: 100, step: 1, format: signed,
@@ -413,7 +417,7 @@ function boxOfRatio(ratio, within, W, H) {
 }
 
 // What "Auto" and the rescue presets own: how much light, and where it sits.
-const LIGHT_KEYS = ["exposure", "highlights", "shadows", "whites", "blacks", "compress"];
+const LIGHT_KEYS = ["exposure", "highlights", "lights", "darks", "shadows", "whites", "blacks", "compress"];
 // What the looks own: the styling on top of a finished exposure. White balance
 // is left to the person, since it is a correction and not a taste.
 // A look also chooses colour or black and white, its filter and its grain, so
@@ -904,6 +908,10 @@ const MASK_SLIDERS = [
     title: "More or less contrast where the gradient reaches." },
   { key: "highlights", label: "Highlights", min: -100, max: 100, step: 1, format: signed,
     title: "Pull back (left) or brighten the bright end where the gradient reaches: a sky, a window." },
+  { key: "lights", label: "Lights", min: -100, max: 100, step: 1, format: signed,
+    title: "The bright middle tones where the gradient reaches: lift a face without the sky behind it." },
+  { key: "darks", label: "Darks", min: -100, max: 100, step: 1, format: signed,
+    title: "The dark middle tones where the gradient reaches: hair, dark clothes." },
   { key: "shadows", label: "Shadows", min: -100, max: 100, step: 1, format: signed,
     title: "Open up (right) or deepen the dark end where the gradient reaches." },
   { key: "temperature", label: "Temp", min: -100, max: 100, step: 1, format: signed,
@@ -913,7 +921,24 @@ const MASK_SLIDERS = [
   { key: "clarity", label: "Clarity", min: -100, max: 100, step: 1, format: signed,
     title: "Mid-tone local contrast where the gradient reaches." },
 ];
-const MASK_KEYS = MASK_SLIDERS.map((d) => d.key);
+// Skin, on the people a mask reaches (backend adjust/skin.py): only on their
+// skin, at the scale of each person's own face, for any complexion.
+const SKIN_SLIDERS = [
+  { key: "smooth", label: "Smooth", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+    title: "Calm spots, blemishes and blotches: the middle scale of the skin, bigger than pores, smaller than the face's shape." },
+  { key: "even", label: "Even tone", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+    title: "Even out redness and darker patches toward the skin around them." },
+  { key: "texture", label: "Texture", min: -100, max: 100, step: 1, format: signed,
+    title: "The finest detail, the pores: softer (left) or crisper (right). Kept as it is at 0, so skin still reads as skin." },
+];
+const SKIN_LOOKS = [
+  ["Natural", { smooth: 30, even: 20, texture: 0 }, "A light touch: blemishes calmed, the skin as it is"],
+  ["Polished", { smooth: 50, even: 35, texture: -10 }, "Smoother and more even, pores still there"],
+  ["Glam", { smooth: 70, even: 45, texture: -20 }, "Smooth and even, as for a portrait under studio light"],
+];
+// The masks whose people can have their skin retouched.
+const SKIN_KINDS = ["people", "faces", "object"];
+const MASK_KEYS = [...MASK_SLIDERS, ...SKIN_SLIDERS].map((d) => d.key);
 const FEATHER_DEF = { key: "feather", label: "Feather", min: 0, max: 100, step: 1, format: (v) => `${v}`,
   title: "How much of the ellipse the fade takes: 0 is a hard edge, 100 fades from the centre." };
 const ANGLE_DEF = { key: "angle", label: "Angle", min: -90, max: 90, step: 1, format: (v) => `${v}°`,
@@ -970,7 +995,7 @@ const PEOPLE_AREAS = [
 const AREA_LABEL = Object.fromEntries(PEOPLE_AREAS.map(([id, label]) => [id, label]));
 
 function maskName(m, i) {
-  const set = MASK_SLIDERS.filter((d) => Number(m[d.key] || 0) !== 0)
+  const set = [...MASK_SLIDERS, ...SKIN_SLIDERS].filter((d) => Number(m[d.key] || 0) !== 0)
     .map((d) => `${d.label} ${d.format(m[d.key])}`);
   const names = MASK_NAMES[m.kind];
   const kind = m.areas?.length
@@ -2108,18 +2133,16 @@ function ObjectControls({ mask, draft, models, state, onModel, onPick, onUndo, o
 // Which parts of the people a people mask reaches: all of them, or some of
 // their face skin, eyes, brows, lips, teeth, hair, body skin and clothes. The
 // parsers are fetched the first time a part is chosen.
-function PeopleAreas({ mask, onChange }) {
+// The people parsers, fetched the first time a part of people or their skin is
+// chosen, after asking: [state, ready], where ready() resolves true once they
+// are here.
+function usePartsModels() {
   const [state, setState] = useState({ busy: "", error: "" });
-  const areas = mask.areas || [];
-  // The choice as last made: clicks quicker than the edit is saved build on
-  // each other, not on what the mask said before them.
-  const latest = useRef(areas);
-  useEffect(() => { latest.current = mask.areas || []; }, [mask.areas]);
-  const ready = async () => {
+  const ready = useCallback(async () => {
     try {
       const info = await (await fetch(`${API}/export/develop/parts-model`)).json();
       if (!info.available) {
-        if (!window.confirm(`Choosing parts of people fetches two models once (${info.download_mb} MB). `
+        if (!window.confirm(`Choosing parts of people, or retouching their skin, fetches two models once (${info.download_mb} MB). `
           + "They are NVIDIA's SegFormer, for non-commercial use. Fetch them?")) return false;
         setState({ busy: `fetching the models (${info.download_mb} MB, once)…`, error: "" });
       }
@@ -2137,7 +2160,63 @@ function PeopleAreas({ mask, onChange }) {
     }
     setState({ busy: "", error: "" });
     return true;
+  }, []);
+  return [state, ready];
+}
+
+// The skin of the people a mask reaches: a starting look, then the sliders.
+function SkinControls({ mask, onChange }) {
+  const [state, ready] = usePartsModels();
+  const asked = useRef(false);
+  const touched = SKIN_SLIDERS.some((d) => Number(mask[d.key]) || 0);
+  // The first retouch needs the parsers; asked for once, then the edit goes on.
+  const put = async (values) => {
+    if (!touched && !asked.current) {
+      asked.current = true;
+      if (!(await ready())) { asked.current = false; return; }
+    }
+    onChange({ ...mask, ...values });
   };
+  return (
+    <div className="space-y-1.5" data-testid="mask-skin">
+      <div className="flex items-center gap-1 text-[11px]">
+        <span className="text-neutral-400 mr-1"
+          title="Retouch the skin of the people this mask reaches: only their skin, never eyes, lips or hair.">Skin</span>
+        {SKIN_LOOKS.map(([name, values, title]) => {
+          const on = SKIN_SLIDERS.every((d) => (Number(mask[d.key]) || 0) === values[d.key]);
+          return (
+            <button key={name} title={title} data-testid={`skin-${name.toLowerCase()}`} disabled={!!state.busy}
+              onClick={() => put(values)}
+              className={`px-2 py-0.5 rounded border ${on
+                ? "border-amber-500 text-amber-300" : "border-neutral-700 text-neutral-400 hover:text-white hover:border-neutral-500"}`}>
+              {name}
+            </button>
+          );
+        })}
+        {touched && (
+          <button onClick={() => onChange({ ...mask, smooth: 0, even: 0, texture: 0 })}
+            className="ml-auto text-neutral-600 hover:text-neutral-300" title="Leave the skin as it is">none</button>
+        )}
+      </div>
+      {state.busy && <p className="text-[11px] text-neutral-500">{state.busy}</p>}
+      {state.error && <p className="text-[11px] text-red-400">{state.error}</p>}
+      <Controls>
+        {SKIN_SLIDERS.map((def) => (
+          <Slider key={def.key} def={def} value={Number(mask[def.key]) || 0}
+            onChange={(key, value) => put({ [key]: value })} onReset={() => onChange({ ...mask, [def.key]: 0 })} />
+        ))}
+      </Controls>
+    </div>
+  );
+}
+
+function PeopleAreas({ mask, onChange }) {
+  const [state, ready] = usePartsModels();
+  const areas = mask.areas || [];
+  // The choice as last made: clicks quicker than the edit is saved build on
+  // each other, not on what the mask said before them.
+  const latest = useRef(areas);
+  useEffect(() => { latest.current = mask.areas || []; }, [mask.areas]);
   const choose = (next) => {
     latest.current = PEOPLE_AREAS.map(([a]) => a).filter((a) => next.includes(a));
     onChange(latest.current);
@@ -2234,6 +2313,7 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
                 onChange={(key, value) => set(key, value)} onReset={() => set(def.key, 0)} />
             ))}
           </Controls>
+          {SKIN_KINDS.includes(m.kind) && <SkinControls mask={m} onChange={(next) => onChange(selected, next)} />}
           {OF_PEOPLE.includes(m.kind) && (
             <label className="flex items-center gap-2 text-xs text-neutral-400" data-testid="mask-person"
               title="Everyone, or one person, counted from the left by their face. The numbers on the picture choose too.">

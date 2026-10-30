@@ -103,6 +103,8 @@ TONE_SLIDERS = ("contrast", "highlights", "shadows", "whites", "blacks")
 # squeezing a wide scene into a narrow display range, local contrast, and the
 # colour and look controls that sit on top of a finished exposure.
 #
+#   lights, darks   -100..100  the middle of the range, either side of grey:
+#                   between the highlights and the shadows (adjust.render)
 #   compress        0..100   squeeze the whole scene's range, keep local detail
 #   clarity         -100..100  mid-tone local contrast
 #   vibrance        -100..100  saturation that favours the flat colours
@@ -119,6 +121,7 @@ TONE_SLIDERS = ("contrast", "highlights", "shadows", "whites", "blacks")
 #                   decode). Stored this way round so that "no edit" is the
 #                   camera's look, which is where a RAW frame should start.
 LOOK_SLIDERS = (
+    "lights", "darks",
     "flat", "style_fade", "compress", "clarity", "vibrance", "saturation", "fade",
     "shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat",
 )
@@ -761,13 +764,16 @@ def describe_tone(settings: Optional[dict]) -> str:
     clean = normalize(settings)
     parts = [
         f"{key.capitalize()} {clean[key]:+d}"
-        for key in ("highlights", "shadows", "whites", "blacks", "contrast")
+        for key in ("highlights", "lights", "darks", "shadows", "whites", "blacks", "contrast")
         if key in clean
     ]
     return ", ".join(parts) if parts else "no tone"
 
 
 _LOOK_CRS = {
+    # Lightroom's parametric curve has the same two regions on the same scale.
+    "lights": "crs:ParametricLights",
+    "darks": "crs:ParametricDarks",
     "clarity": "crs:Clarity2012",
     "vibrance": "crs:Vibrance",
     "saturation": "crs:Saturation",

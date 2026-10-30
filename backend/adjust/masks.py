@@ -86,8 +86,11 @@ from typing import Optional
 import numpy as np
 
 # The controls a mask carries, and their ranges.
-MASK_SLIDERS = ("exposure", "contrast", "highlights", "shadows", "temperature",
-                "saturation", "clarity")
+MASK_SLIDERS = ("exposure", "contrast", "highlights", "lights", "darks", "shadows", "temperature",
+                "saturation", "clarity", "smooth", "even", "texture")
+# Skin, on the people a mask reaches (adjust.skin): smooth and even 0..100,
+# texture -100..100.
+SKIN_SLIDERS = ("smooth", "even", "texture")
 MAX_MASK_EXPOSURE = 4.0
 # Saturation adds to the global slider's (adjust.render), so a gradient reaches
 # twice as far: +200 over a picture at -100 is +100 where it is whole.
@@ -270,6 +273,8 @@ def normalize_mask(mask) -> Optional[dict]:
             value = round(_num(mask.get(key), -MAX_MASK_EXPOSURE, MAX_MASK_EXPOSURE, 0.0), 3)
         elif key == "saturation":
             value = int(round(_num(mask.get(key), -MAX_MASK_SATURATION, MAX_MASK_SATURATION, 0.0)))
+        elif key in ("smooth", "even"):
+            value = int(round(_num(mask.get(key), 0.0, 100.0, 0.0)))
         else:
             value = int(round(_num(mask.get(key), -100.0, 100.0, 0.0)))
         if value:

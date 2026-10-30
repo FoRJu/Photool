@@ -84,6 +84,10 @@ _FLOOR = 2.0 ** -14
 # so reaching far cannot turn the picture inside out.
 SHADOW_STOPS = 3.5
 HIGHLIGHT_STOPS = 2.8
+# Lights and Darks: the middle of the range, between the highlights and the
+# shadows, where faces and most of a picture's skin and cloth sit.
+LIGHT_STOPS = 1.2
+DARK_STOPS = 1.2
 WHITE_STOPS = 1.2
 BLACK_STOPS = 1.4
 CONTRAST_SPREAD = 0.45          # +100 stretches the stops about grey by this much
@@ -621,6 +625,8 @@ def tone_curve(settings: dict) -> np.ndarray:
     """
     shadows = settings.get("shadows", 0) / 100.0
     highlights = settings.get("highlights", 0) / 100.0
+    lights = settings.get("lights", 0) / 100.0
+    darks = settings.get("darks", 0) / 100.0
     whites = settings.get("whites", 0) / 100.0
     blacks = settings.get("blacks", 0) / 100.0
     contrast = settings.get("contrast", 0) / 100.0
@@ -643,6 +649,14 @@ def tone_curve(settings: dict) -> np.ndarray:
         y = y + shadows * SHADOW_STOPS * weight
     if highlights:
         y = y + highlights * HIGHLIGHT_STOPS * _smoothstep(-1.4, 2.4, x)
+    if lights:
+        # A rise and fall about two thirds of a stop over grey: skin, a lit
+        # face, pale cloth; gone well before the highlights' end.
+        y = y + lights * LIGHT_STOPS * _smoothstep(-1.2, 0.7, x) * (1.0 - _smoothstep(0.7, 2.6, x))
+    if darks:
+        # Likewise about a stop and three quarters under it: hair, dark cloth,
+        # the shade side of a face; gone before the deep shadows.
+        y = y + darks * DARK_STOPS * _smoothstep(-4.5, -1.8, x) * (1.0 - _smoothstep(-1.8, 0.2, x))
     if blacks:
         y = y + blacks * BLACK_STOPS * (1.0 - _smoothstep(-6.8, -3.0, x))
     if whites:
@@ -1014,18 +1028,43 @@ def _linear_gain_of_encoded(change: Optional[dict]) -> Optional[dict]:
     }
 
 
-_TONAL_KEYS = ("highlights", "shadows", "whites", "blacks", "contrast", "compress", "clarity")
+_TONAL_KEYS = ("highlights", "lights", "darks", "shadows", "whites", "blacks", "contrast", "compress", "clarity")
 # Everything the first two stages read. The rest of an edit — curve, mixer,
 # black and white, the look, effects — starts from their result.
 _LIGHT_AND_TONE_KEYS = ("exposure", "temperature", "tint", "flat", "style", "style_fade",
                         "masks") + _TONAL_KEYS
 # A gradient's controls that act through the tone curve on the base.
-_MASK_TONE_KEYS = ("contrast", "highlights", "shadows")
+_MASK_TONE_KEYS = ("contrast", "highlights", "lights", "darks", "shadows")
+
+
+def mask_reach(frame: LinearFrame, m: dict) -> Optional[np.ndarray]:
+    """How much of a mask each of these pixels gets, its range included; ``None``
+    for a model-chosen mask whose model is not here yet."""
+    from adjust.masks import CHOSEN, MATTED, weight
+
+    h, w = frame.rgb.shape[:2]
+    matte = None
+    if m["kind"] in CHOSEN:
+        from adjust.segment import whole_matte
+
+        matte = whole_matte(frame, m["kind"], m.get("person"), m.get("areas"))
+    elif m["kind"] == "object":
+        from adjust.objects import load
+
+        matte = load(m.get("matte"))
+    if m["kind"] in MATTED and matte is None:
+        return None
+    reach = weight(m, (h, w), frame.window, matte=matte)
+    if m.get("range") and reach.any():
+        from adjust.masks import range_weight
+
+        reach = reach * range_weight(frame.shown(), m["range"])
+    return reach
 
 
 def _mask_layers(frame: LinearFrame, masks: list) -> list:
     """Each gradient that changes something, with its weight over these pixels."""
-    from adjust.masks import CHOSEN, MASK_SLIDERS, MATTED, active, weight
+    from adjust.masks import MASK_SLIDERS, active, weight
 
     h, w = frame.rgb.shape[:2]
     kept = {}
@@ -1035,24 +1074,13 @@ def _mask_layers(frame: LinearFrame, masks: list) -> list:
         if key not in kept:
             kept[key] = frame._mask_weights.get(key)
             if kept[key] is None:
-                matte = None
-                if m["kind"] in CHOSEN:
-                    from adjust.segment import whole_matte
-
-                    matte = whole_matte(frame, m["kind"], m.get("person"), m.get("areas"))
-                elif m["kind"] == "object":
-                    from adjust.objects import load
-
-                    matte = load(m.get("matte"))
-                kept[key] = weight(m, (h, w), frame.window, matte=matte)
-                if m.get("range") and kept[key].any():
-                    from adjust.masks import range_weight
-
-                    kept[key] = kept[key] * range_weight(frame.shown(), m["range"])
-                if m["kind"] in MATTED and matte is None:
+                reach = mask_reach(frame, m)
+                if reach is None:
                     # Not kept: once the model is here, the next render selects.
-                    layers.append((m, kept.pop(key)))
+                    kept.pop(key)
+                    layers.append((m, weight(m, (h, w), frame.window, matte=None)))
                     continue
+                kept[key] = reach
         layers.append((m, kept[key]))
     frame._mask_weights = kept       # only the masks of the edit now in hand
     # A brush painted elsewhere in the frame reaches none of a loupe's patch.
@@ -1201,6 +1229,13 @@ def develop_frame(
         frame = healed(frame, clean.pop("spots"))
         if not clean and not matched:
             return frame.encoded()
+    if "masks" in clean:
+        from adjust import skin
+
+        if skin.wanted(clean["masks"]):
+            # Skin after the spots and before the light: a retouched face is
+            # lit and toned like any other.
+            frame = skin.retouched(frame, clean["masks"], mask_reach)
     if not clean and not matched:
         return frame.encoded()
     if not matched and not any(k not in GEOMETRY_KEYS for k in clean):

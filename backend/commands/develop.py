@@ -23,6 +23,8 @@ _MEANING = {
     "tint": "White balance. Negative greener, positive more magenta",
     "contrast": "A curve through the mid-tones. Negative flatter, positive punchier",
     "highlights": "The bright half. Negative recovers a bright sky, positive brightens",
+    "lights": "The bright middle tones, about two thirds of a stop over grey: a lit face, skin, pale cloth",
+    "darks": "The dark middle tones, under grey: hair, dark cloth, the shade side of a face",
     "shadows": "The dark half. Positive opens up shadows, negative deepens them",
     "whites": "Only the very top of the range: sets the white point",
     "blacks": "Only the very bottom of the range: sets the black point",
@@ -98,11 +100,15 @@ _MASKS_MEANING = (
     "before crop and level. {kind: 'linear', x1, y1, x2, y2, invert}: whole at (x1, y1), gone at (x2, y2), e.g. "
     "x1 0.5 y1 0 x2 0.5 y2 0.4 for a sky; invert turns it round. {kind: 'radial', cx, cy, rx, ry, angle, feather 0-100, invert}: "
     "whole inside the ellipse (rx a share of the width, ry of the height), fading out over feather; "
-    "invert puts it outside. Each takes exposure (-4..4 stops) and contrast, highlights, shadows, "
-    "temperature, clarity (-100..100) and saturation (-200..200, added to the edit's own). {kind: 'brush', invert} reaches only where painted, or with invert everywhere but there. {kind: 'subject' or 'sky', invert}: where a "
+    "invert puts it outside. Each takes exposure (-4..4 stops) and contrast, highlights, lights, darks, shadows, "
+    "temperature, clarity (-100..100) and saturation (-200..200, added to the edit's own); and, on the skin of the "
+    "people it reaches only, smooth (0..100, calms blemishes and blotches), even (0..100, evens redness and dark "
+    "patches) and texture (-100..100, softer or crisper pores), e.g. people with smooth 30 even 20 for a natural "
+    "touch. {kind: 'brush', invert} reaches only where painted, or with invert everywhere but there. {kind: 'subject' or 'sky', invert}: where a "
     "model finds the picture's subject or sky (invert for the background or the land). {kind: 'people' or "
     "'faces', person, invert}: everyone in the frame, or their faces; person 1, 2, ... (counted from the left "
-    "by face) for one person only, e.g. faces with exposure 0.5 and clarity -20 to light and soften the faces "
+    "by face) for one person only; a people mask can take areas, a list of face_skin, eyes, brows, lips, teeth, "
+    "hair, body_skin, clothes, for only those parts of them, e.g. faces with exposure 0.5 and clarity -20 to light and soften the faces "
     "of a group. Any of them takes a range: {kind: 'luminance', lo, hi, smooth} (0-100) for only a band of "
     "brightness, or {kind: 'color', cb, cr, lum, width} for only colours near one (sample cb, cr and lum with "
     "the develop view, or take them from the picture: BT.709 blue and red differences of display values). Any of "
