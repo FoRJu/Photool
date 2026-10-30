@@ -955,11 +955,27 @@ function maskIsActive(m) {
   return MASK_KEYS.some((k) => Number(m?.[k] || 0) !== 0);
 }
 
+// The parts of people a people mask can name (backend adjust/parts.py), in the
+// order they are offered.
+const PEOPLE_AREAS = [
+  ["face_skin", "Face skin", "The skin of the face: cheeks, forehead, nose, ears. Not the eyes, brows or lips"],
+  ["eyes", "Eyes", "The eyes, whites and irises together"],
+  ["brows", "Brows", "The eyebrows"],
+  ["lips", "Lips", "Both lips"],
+  ["teeth", "Teeth", "The open mouth between the lips: the teeth"],
+  ["hair", "Hair", "The hair on the head"],
+  ["body_skin", "Body skin", "The neck, arms, hands and legs"],
+  ["clothes", "Clothes", "Clothes, hats and shoes"],
+];
+const AREA_LABEL = Object.fromEntries(PEOPLE_AREAS.map(([id, label]) => [id, label]));
+
 function maskName(m, i) {
   const set = MASK_SLIDERS.filter((d) => Number(m[d.key] || 0) !== 0)
     .map((d) => `${d.label} ${d.format(m[d.key])}`);
   const names = MASK_NAMES[m.kind];
-  const kind = names ? names[m.invert ? 1 : 0] : m.kind;
+  const kind = m.areas?.length
+    ? `${m.invert ? "All but " : ""}${m.areas.map((a) => AREA_LABEL[a]).join(", ")}`
+    : names ? names[m.invert ? 1 : 0] : m.kind;
   const who = (m.person ? ` (person ${m.person})` : "")
     + (m.range ? ` · ${m.range.kind === "color" ? "colour" : "brightness"} range` : "")
     + (m.section ? " · section" : "");
@@ -994,7 +1010,7 @@ function invertLabel(m) {
 // The chosen kinds that can be narrowed to one person (1 = leftmost face).
 const OF_PEOPLE = ["people", "faces"];
 // Which selection a chosen mask shades with: one person's is its own picture.
-const matteKey = (m) => (m.person ? `${m.kind}:${m.person}` : m.kind);
+const matteKey = (m) => `${m.kind}${m.person ? `:${m.person}` : ""}${m.areas?.length ? `|${m.areas.join(",")}` : ""}`;
 
 // An object mask's prompt being worked on, as the part the mask keeps.
 function draftPart(d) {
@@ -2089,6 +2105,74 @@ function ObjectControls({ mask, draft, models, state, onModel, onPick, onUndo, o
   );
 }
 
+// Which parts of the people a people mask reaches: all of them, or some of
+// their face skin, eyes, brows, lips, teeth, hair, body skin and clothes. The
+// parsers are fetched the first time a part is chosen.
+function PeopleAreas({ mask, onChange }) {
+  const [state, setState] = useState({ busy: "", error: "" });
+  const areas = mask.areas || [];
+  // The choice as last made: clicks quicker than the edit is saved build on
+  // each other, not on what the mask said before them.
+  const latest = useRef(areas);
+  useEffect(() => { latest.current = mask.areas || []; }, [mask.areas]);
+  const ready = async () => {
+    try {
+      const info = await (await fetch(`${API}/export/develop/parts-model`)).json();
+      if (!info.available) {
+        if (!window.confirm(`Choosing parts of people fetches two models once (${info.download_mb} MB). `
+          + "They are NVIDIA's SegFormer, for non-commercial use. Fetch them?")) return false;
+        setState({ busy: `fetching the models (${info.download_mb} MB, once)…`, error: "" });
+      }
+      const res = await fetch(`${API}/export/develop/mask-model`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "parts" }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setState({ busy: "", error: body.detail || "Could not get the models" });
+        return false;
+      }
+    } catch {
+      setState({ busy: "", error: "The server did not answer" });
+      return false;
+    }
+    setState({ busy: "", error: "" });
+    return true;
+  };
+  const choose = (next) => {
+    latest.current = PEOPLE_AREAS.map(([a]) => a).filter((a) => next.includes(a));
+    onChange(latest.current);
+  };
+  const toggle = async (id) => {
+    // The first part chosen needs the parsers.
+    if (!latest.current.length && !(await ready())) return;
+    const now = latest.current;
+    choose(now.includes(id) ? now.filter((a) => a !== id) : [...now, id]);
+  };
+  const chip = (on) => `text-[11px] px-2 py-0.5 rounded border ${on
+    ? "border-amber-500 text-amber-300" : "border-neutral-700 text-neutral-400 hover:text-white hover:border-neutral-500"}`;
+  return (
+    <div className="space-y-1" data-testid="people-areas">
+      <div className="flex items-start gap-2 text-xs text-neutral-400">
+        <span className="w-20 shrink-0 pt-0.5"
+          title="The whole of each person, or only some parts of them: soften skin, brighten eyes, deepen hair.">Parts</span>
+        <div className="flex flex-wrap gap-1">
+          <button onClick={() => choose([])} disabled={!!state.busy} className={chip(!areas.length)}
+            title="The whole of each person">All</button>
+          {PEOPLE_AREAS.map(([id, label, title]) => (
+            <button key={id} onClick={() => toggle(id)} disabled={!!state.busy} title={title}
+              data-testid={`area-${id}`} className={chip(areas.includes(id))}>{label}</button>
+          ))}
+        </div>
+      </div>
+      {state.busy && <p className="text-[11px] text-neutral-500">{state.busy}</p>}
+      {state.error && <p className="text-[11px] text-red-400">{state.error}</p>}
+      {areas.length > 0 && !state.busy && (
+        <p className="text-[10px] text-neutral-600">Read from each face found: someone whose face is hidden is left out.</p>
+      )}
+    </div>
+  );
+}
+
 function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, onBrush,
   choosing, people, picking, onPicking, onSelect, onAdd, onRemove, onChange, onDone,
   objectDraft, objectModels, objectState, onObjectModel, onObjectPick, onObjectUndo, onObjectNewPart,
@@ -2163,6 +2247,7 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
               </select>
             </label>
           )}
+          {m.kind === "people" && <PeopleAreas mask={m} onChange={(areas) => set("areas", areas)} />}
           <label className="flex items-center gap-2 text-xs text-neutral-400" data-testid="mask-invert"
             title={m.kind === "brush" ? "Change the whole picture but where you paint: paint what to leave alone, erase to give it back." : undefined}>
             <input type="checkbox" checked={!!m.invert} onChange={(e) => set("invert", e.target.checked)}
@@ -4110,7 +4195,8 @@ ${known.license}
       try {
         const res = await fetch(`${API}/export/develop/mask-image`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ filepath, kind: m.kind, person: m.person || 0, size: PREVIEW_SIZE, ...lensBody }),
+          body: JSON.stringify({ filepath, kind: m.kind, person: m.person || 0, areas: m.areas || [],
+            size: PREVIEW_SIZE, ...lensBody }),
         });
         if (!res.ok || mattesFor.current !== state) return;
         const url = URL.createObjectURL(await res.blob());

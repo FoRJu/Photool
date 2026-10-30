@@ -17,7 +17,10 @@ An edit's ``masks`` is a list of them, each with its own few controls:
   subject  where the picture's subject is, and ``sky`` where its sky is, as a
   sky      model finds them in the frame (adjust.segment); ``invert`` for
            everything else (the background, the land).
-  people   everyone in the frame, and ``faces`` their faces (adjust.segment);
+  people   everyone in the frame, and ``faces`` their faces (adjust.segment); a
+           people mask can name ``areas`` of them instead of all of them:
+           face_skin, eyes, brows, lips, teeth, hair, body_skin, clothes
+           (adjust.parts);
   faces    ``person`` (1, 2, … counted from the left) for one person only, and
            ``invert`` for everything else.
   object   one thing the person pointed at (adjust.objects): ``parts``, each a
@@ -97,6 +100,8 @@ CHOSEN = ("subject", "sky", "people", "faces")
 # The kinds that can be narrowed to one person, and how many people that may name.
 OF_PEOPLE = ("people", "faces")
 MAX_PERSON = 64
+# The parts of people a people mask can name (adjust.parts.AREAS).
+PEOPLE_AREAS = ("face_skin", "eyes", "brows", "lips", "teeth", "hair", "body_skin", "clothes")
 # The kinds whose selection is a picture of the whole frame: chosen by a model at
 # render time, or (an object) kept from when it was pointed at.
 MATTED = CHOSEN + ("object",)
@@ -247,6 +252,10 @@ def normalize_mask(mask) -> Optional[dict]:
             person = int(_num(mask.get("person"), 0, MAX_PERSON, 0))
             if person:
                 out["person"] = person
+        if kind == "people" and isinstance(mask.get("areas"), (list, tuple)):
+            areas = [a for a in PEOPLE_AREAS if a in mask["areas"]]
+            if areas:
+                out["areas"] = areas
     strokes = _normalize_strokes(mask.get("strokes"))
     if strokes:
         out["strokes"] = strokes

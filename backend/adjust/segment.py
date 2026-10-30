@@ -210,10 +210,15 @@ def _guided(guide: np.ndarray, p: np.ndarray, radius: int, eps: float) -> np.nda
     return box(a) * guide + box(b)
 
 
-def matte(frame, kind: str, person: Optional[int] = None) -> np.ndarray:
+def matte(frame, kind: str, person: Optional[int] = None, areas=None) -> np.ndarray:
     """How much of ``kind`` each part of the whole frame is, 0..1, as a float32
     picture about MATTE_SIZE on its longer side: everyone's, or with ``person``
-    (1 is the leftmost face) one person's. Kept on the frame."""
+    (1 is the leftmost face) one person's. People naming ``areas`` are those
+    parts of them (adjust.parts), at that module's own size. Kept on the frame."""
+    if kind == "people" and areas:
+        from adjust import parts
+
+        return parts.matte(frame, areas, person)
     key = (kind, int(person)) if person else kind
     kept = frame._mattes.get(key)
     if kept is not None:
@@ -395,12 +400,12 @@ def sample(full: np.ndarray, shape: tuple, window: tuple) -> np.ndarray:
     return cv2.remap(full, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
 
-def whole_matte(frame, kind: str, person: Optional[int] = None) -> Optional[np.ndarray]:
+def whole_matte(frame, kind: str, person: Optional[int] = None, areas=None) -> Optional[np.ndarray]:
     """The whole frame's matte for ``frame`` (a loupe patch reads its anchor's),
     or ``None`` when the model cannot be had."""
     whole = getattr(frame, "anchor_of", None) or frame
     try:
-        return matte(whole, kind, person)
+        return matte(whole, kind, person, areas)
     except ModelsUnavailable as exc:
         logger.warning("[masks] cannot select %s: %s", kind, exc)
         return None

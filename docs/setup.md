@@ -138,6 +138,7 @@ folder. Each download is checked against a known hash.
 | Smart search ("kids at the beach") | Search, *Describe* | 305 MB |
 | Noise reduction | Develop, Detail | 22 MB |
 | Subject, sky and people masks | Develop, Masks | 4.6 MB and 15 MB |
+| Parts of people (hair, skin, eyes…) | Develop, Masks, People | 450 MB |
 | Object masks (SAM 2.1; SAM 3 if chosen) | Develop, Masks | 330 MB; 1.8 GB |
 | Place names | Library, a folder's About | ~10 MB (GeoNames town list) |
 
