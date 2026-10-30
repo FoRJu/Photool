@@ -1,6 +1,7 @@
 import { Component, Fragment, useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 import DevelopView from "./DevelopView.jsx";
+import { enterFullscreen } from "./fullscreen.js";
 import FolderOverview, { FolderAbout } from "./FolderOverview.jsx";
 import PersonReview from "./PersonReview.jsx";
 import Slideshow from "./Slideshow.jsx";
@@ -262,23 +263,51 @@ function useStoredState(key, initial) {
 // laptop five, instead of both getting six.
 const THUMB_SIZES = { S: 140, M: 190, L: 260, XL: 360 };
 
-// A phone: a narrow screen worked with a finger. There the layout gets out of
-// the photos' way (a tab bar at the bottom, the filters folded, a viewer swiped
-// through); a wide touch screen, an iPad, keeps the desktop layout.
-const PHONE_QUERY = "(max-width: 640px) and (pointer: coarse)";
-function usePhone() {
-  const [phone, setPhone] = useState(() => !!window.matchMedia?.(PHONE_QUERY).matches);
-  useEffect(() => {
-    const m = window.matchMedia?.(PHONE_QUERY);
-    if (!m) return undefined;
-    const on = () => setPhone(m.matches);
-    m.addEventListener("change", on);
-    return () => m.removeEventListener("change", on);
-  }, []);
-  return phone;
+// The mobile layout: the photos first (a tab bar at the bottom, the filters
+// folded, a viewer swiped through). A touch screen, a phone or an iPad, has it
+// whichever way it is turned; the desktop layout is there when asked for, and
+// the choice is kept on the device.
+const LAYOUT_KEY = "photool.layout";
+const layoutHeard = new Set();
+function layoutChoice() {
+  try {
+    const v = localStorage.getItem(LAYOUT_KEY);
+    return v === "mobile" || v === "desktop" ? v : null;
+  } catch {
+    return null;
+  }
 }
-// Thumbnails on a phone: three across.
-const PHONE_CELL = 100;
+function chooseLayout(v) {
+  try { localStorage.setItem(LAYOUT_KEY, v); } catch { /* this visit only */ }
+  layoutHeard.forEach((f) => f());
+}
+function useMedia(query) {
+  const [on, setOn] = useState(() => !!window.matchMedia?.(query).matches);
+  useEffect(() => {
+    const m = window.matchMedia?.(query);
+    if (!m) return undefined;
+    const hear = () => setOn(m.matches);
+    m.addEventListener("change", hear);
+    return () => m.removeEventListener("change", hear);
+  }, [query]);
+  return on;
+}
+function useLayout() {
+  const touch = useMedia("(pointer: coarse)");
+  const [choice, setChoice] = useState(layoutChoice);
+  useEffect(() => {
+    const hear = () => setChoice(layoutChoice());
+    layoutHeard.add(hear);
+    return () => layoutHeard.delete(hear);
+  }, []);
+  return { mobile: choice ? choice === "mobile" : touch, touch, choice };
+}
+const usePhone = () => useLayout().mobile;
+// A tablet, by its shorter side, which turning it does not change: it gets
+// larger thumbnails, and the viewer offers Develop.
+const TABLET = typeof window !== "undefined" && Math.min(window.screen?.width || 0, window.screen?.height || 0) >= 600;
+// Thumbnails in the mobile layout: three across a phone, larger on a tablet.
+const PHONE_CELL = TABLET ? 170 : 100;
 // A screen worked with a finger and opened as an app from the home screen:
 // there is no Esc key and no browser to swipe back in (in a browser, the swipe
 // in from the left edge goes back a step, the develop view's layers included),
@@ -2065,7 +2094,8 @@ function CullView({ photos, folderPath, startIndex, onClose, onRate, basketSet, 
       <PhoneCull photos={photos} index={index} folderPath={folderPath} photo={photo} onGo={go} onClose={onClose}
         rate={rate} basketSet={basketSet} onToggleBasket={onToggleBasket} exif={exif} burst={burst}
         photoByPath={photoByPath} memberFlag={memberFlag} onJump={jumpTo} onRejectBurst={rejectBurst}
-        hint={hint} proposal={proposal} onProposal={onProposal} imgRef={imgRef} videoRef={videoRef} />
+        hint={hint} proposal={proposal} onProposal={onProposal} imgRef={imgRef} videoRef={videoRef}
+        onDevelop={onDevelop} />
     );
   }
 
@@ -2314,7 +2344,7 @@ function CullView({ photos, folderPath, startIndex, onClose, onRate, basketSet, 
 // look closer, then drag about. At the whole picture a swipe moves on; zoomed
 // in, a drag moves the picture instead.
 const EDGE = 0.2;          // the share of the width at each side a tap moves on from
-function usePhotoGestures({ onNext, onPrev, onClose, canNext, canPrev, resetKey }) {
+function usePhotoGestures({ onNext, onPrev, onClose, canNext, canPrev, resetKey, onTap }) {
   const [view, setView] = useState({ s: 1, x: 0, y: 0 });
   const [drag, setDrag] = useState({ x: 0, y: 0 });
   // A photo leaving slides on the way it was pushed and fades; the next fades in.
@@ -2426,9 +2456,11 @@ function usePhotoGestures({ onNext, onPrev, onClose, canNext, canPrev, resetKey 
         // A tap at either edge moves on, once it is clear it is not the first
         // of a double tap.
         const at = (e.clientX - (st.box.cx - st.box.w / 2)) / st.box.w;
+        clearTimeout(tapTimer.current);
         if (viewRef.current.s === 1 && (at < EDGE || at > 1 - EDGE)) {
-          clearTimeout(tapTimer.current);
           tapTimer.current = setTimeout(() => leave(at < EDGE ? -1 : 1, st.box.w), 300);
+        } else if (onTap) {
+          tapTimer.current = setTimeout(onTap, 300);
         }
       }
       setDrag({ x: 0, y: 0 });
@@ -2459,12 +2491,15 @@ function usePhotoGestures({ onNext, onPrev, onClose, canNext, canPrev, resetKey 
 // Reject under the thumb. Picks, colours, tags and developing are left to a
 // bigger screen.
 function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, basketSet, onToggleBasket,
-  exif, burst, photoByPath, memberFlag, onJump, onRejectBurst, hint, proposal, onProposal, imgRef, videoRef }) {
+  exif, burst, photoByPath, memberFlag, onJump, onRejectBurst, hint, proposal, onProposal, imgRef, videoRef,
+  onDevelop }) {
   const [info, setInfo] = useState(false);
   const nextRef = useRef(null);
+  // A tap in the middle of the photo hides everything else, and shows it again.
+  const [bars, setBars] = useState(true);
   const { handlers, style, zoomed, next } = usePhotoGestures({
     onNext: () => onGo(1), onPrev: () => onGo(-1), onClose, resetKey: photo.filepath,
-    canNext: index < photos.length - 1, canPrev: index > 0,
+    canNext: index < photos.length - 1, canPrev: index > 0, onTap: () => setBars((b) => !b),
   });
   nextRef.current = next;
   const rejected = photo.flag === -1;
@@ -2480,10 +2515,19 @@ function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, bask
     <div data-modal="viewer" data-testid="phone-viewer"
       className="fixed inset-0 z-50 bg-black flex flex-col select-none"
       style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+      {bars && (
       <div className="flex items-center gap-1 px-1 h-12 shrink-0 text-neutral-300">
         <button onClick={onClose} aria-label="Back to the grid" className="w-11 h-11 text-xl">‹</button>
         <span className="text-sm font-mono text-neutral-400">{index + 1} / {photos.length}</span>
         <span className="flex-1" />
+        {/* Developing is for a screen the size of a tablet's, not a phone's. */}
+        {TABLET && onDevelop && !isVideo(photo) && (
+          <button onClick={() => onDevelop(photo)} data-testid="phone-develop"
+            className={`h-9 px-3 rounded-full text-sm border ${photo.edited
+              ? "border-amber-700 text-amber-300" : "border-neutral-800 text-neutral-300"}`}>
+            Develop{photo.edited ? " ●" : ""}
+          </button>
+        )}
         <button onClick={() => setInfo((v) => !v)} aria-label="About this photo" data-testid="phone-info"
           className={`w-11 h-11 rounded-full text-lg ${info ? "text-white" : "text-neutral-500"}`}>ⓘ</button>
         <button onClick={() => onToggleBasket(photo)} aria-label="Basket" data-testid="phone-basket"
@@ -2492,6 +2536,7 @@ function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, bask
           ⬡{basketSet.has(photo.filepath) ? " In basket" : ""}
         </button>
       </div>
+      )}
 
       <div className="flex-1 min-h-0 relative overflow-hidden" style={{ touchAction: "none" }}
         {...(video ? {} : handlers)} data-testid="phone-photo">
@@ -2524,7 +2569,7 @@ function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, bask
         )}
       </div>
 
-      {info && (
+      {bars && info && (
         <div className="px-4 py-2 text-xs text-neutral-400 space-y-0.5 border-t border-neutral-900" data-testid="phone-exif">
           <div className="text-neutral-300 truncate">{photo.filename}</div>
           {(photo.capture_date || exif?.date) && <div>{takenAt(photo.capture_date || exif.date)}</div>}
@@ -2537,7 +2582,7 @@ function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, bask
         </div>
       )}
 
-      {hint && (hint.soft_frame || hint.blown_highlights || hint.eyes_closed) && (
+      {bars && hint && (hint.soft_frame || hint.blown_highlights || hint.eyes_closed) && (
         <div className="px-4 py-1 text-[11px] flex flex-wrap gap-x-3">
           {hint.soft_frame && <span className="text-amber-300/90">⚠ softer than the rest</span>}
           {hint.blown_highlights && <span className="text-red-300/90">⚠ highlights clipped</span>}
@@ -2545,7 +2590,7 @@ function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, bask
         </div>
       )}
 
-      {proposal && onProposal && (
+      {bars && proposal && onProposal && (
         <div className="px-3 py-1.5 bg-violet-950/70 text-xs flex items-center gap-2" data-testid="phone-proposal">
           <span className="text-violet-200 flex-1 truncate">✦ {proposalText(proposal)}{proposal.reason ? ` — ${proposal.reason}` : ""}</span>
           <button onClick={() => onProposal("accept", photo)} className="px-3 py-1.5 rounded bg-violet-700 text-white">Accept</button>
@@ -2553,7 +2598,7 @@ function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, bask
         </div>
       )}
 
-      {burst && (
+      {bars && burst && (
         <div className="px-2 py-1.5 flex items-center gap-2 border-t border-neutral-900" data-testid="phone-burst">
           <div className="flex gap-1 overflow-x-auto flex-1">
             {(burst.members || []).map((m) => (
@@ -2573,6 +2618,7 @@ function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, bask
         </div>
       )}
 
+      {bars && (
       <div className="flex items-center justify-between px-2 py-1 border-t border-neutral-900" data-testid="phone-marks">
         <div className="flex">
           {[1, 2, 3, 4, 5].map((n) => (
@@ -2587,6 +2633,7 @@ function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, bask
           ✕ {rejected ? "Rejected" : "Reject"}
         </button>
       </div>
+      )}
     </div>
   );
 }
@@ -3972,12 +4019,16 @@ function PhotoolApp({ access }) {
   // A slideshow over the screen: { photos, start, title }, or null.
   const [slideshow, setSlideshow] = useState(null);
   const playSlides = useCallback((list, start = 0, title = "") => {
+    // Asked for in the tap that starts the slideshow: a browser lets a page
+    // have the whole screen only in answer to one.
+    if (list && list.length && window.matchMedia?.("(pointer: coarse)").matches) enterFullscreen();
     if (list && list.length) setSlideshow({ photos: list, start, title });
   }, []);
   const [folderStats, setFolderStats] = useState(null);
   const [filter, setFilter] = useState({ flag: null, minRating: 0, color: null, tag: null, unreviewed: false, edited: false, pairMode: "paired",
     camera: null, matches: null, hidden: [], showDemoted: false });
-  const phone = usePhone();
+  const layout = useLayout();
+  const phone = layout.mobile;
   const touch = useHomeScreenTouch();
   const [moreOpen, setMoreOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -5260,6 +5311,12 @@ function PhotoolApp({ access }) {
           ))}
         </nav>
         <BackgroundBadge onOpen={() => setTab("activity")} />
+        {!phone && (layout.touch || layout.choice) && (
+          <button onClick={() => chooseLayout("mobile")} data-testid="layout-mobile"
+            className="text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-400 hover:text-white">
+            Mobile layout
+          </button>
+        )}
         {!access.local && access.device && (
           <span className="text-xs text-neutral-500">{access.device}</span>
         )}
@@ -5297,6 +5354,10 @@ function PhotoolApp({ access }) {
                 <button key={t} onClick={() => { setMoreOpen(false); setTab(t); }}
                   className={`block w-full text-left px-4 py-3 text-sm capitalize ${tab === t ? "text-white" : "text-neutral-300"}`}>{t}</button>
               ))}
+              <button onClick={() => { setMoreOpen(false); chooseLayout("desktop"); }} data-testid="layout-desktop"
+                className="block w-full text-left px-4 py-3 text-sm text-neutral-400 border-t border-neutral-800">
+                Desktop layout
+              </button>
             </div>
           )}
         </nav>
