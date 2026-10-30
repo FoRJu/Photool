@@ -78,7 +78,7 @@ def retouched(frame, masks: list, reach):
 
 def retouch(frame, masks: list, reach) -> np.ndarray:
     """The frame's linear RGB with the skin retouched (a new array)."""
-    from adjust.segment import face_boxes, sample, whole_matte
+    from adjust.segment import face_boxes, sample
 
     rgb = frame.rgb
     h, w = rgb.shape[:2]
@@ -91,7 +91,7 @@ def retouch(frame, masks: list, reach) -> np.ndarray:
         if weight is None or not weight.any():
             continue
         person = m.get("person") if m["kind"] in ("people", "faces") else None
-        skin = whole_matte(frame, "people", person, SKIN_AREAS)
+        skin = _skin(whole, person)
         if skin is None:
             continue
         here = weight * sample(skin, (h, w), frame.window)
@@ -123,6 +123,21 @@ def retouch(frame, masks: list, reach) -> np.ndarray:
 # A blur wider than this is made on a smaller copy and brought back up: it has
 # no fine detail to lose, and a 200 px blur over a whole headshot took seconds.
 _SMALL_SIGMA = 4.0
+
+
+def _skin(whole, person):
+    """The skin to retouch over the whole frame (adjust.parts.skin_matte), or
+    ``None`` when the parsers are not here."""
+    import logging
+
+    from adjust import parts
+    from faces.models import ModelsUnavailable
+
+    try:
+        return parts.skin_matte(whole, person)
+    except ModelsUnavailable as exc:
+        logging.getLogger(__name__).warning("[skin] cannot find the skin: %s", exc)
+        return None
 
 
 def _blur(x: np.ndarray, sigma: float) -> np.ndarray:
