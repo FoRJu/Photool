@@ -3796,6 +3796,50 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   ), []);
   const [matchPicker, setMatchPicker] = useState(false);
   const [showKeys, setShowKeys] = useState(false);
+
+  // The develop view's own layers (the shortcut list, the crop, the masks, the
+  // spots, the loupe) are steps in the browser's history, as the view itself
+  // is: Back, and the swipe in from the screen's left edge on a phone or an
+  // iPad, backs out of one as Esc does.
+  const layer = showKeys ? "keys" : cropMode ? "crop" : maskMode ? "masks" : spotMode ? "spots"
+    : loupe ? "loupe" : null;
+  const layerRef = useRef(null);
+  const poppedRef = useRef(false);
+  const leaveLayer = useRef(null);
+  leaveLayer.current = () => {
+    if (showKeys) setShowKeys(false);
+    else if (cropMode) endCrop();
+    else if (maskMode) endMasks();
+    else if (spotMode) setSpotMode(false);
+    else if (loupe) placeLoupe(null);
+  };
+  useEffect(() => {
+    const was = layerRef.current;
+    layerRef.current = layer;
+    if (was === layer) return;
+    const st = window.history.state || {};
+    if (layer && !was) {
+      window.history.pushState({ ...st, layer }, "", window.location.href);
+    } else if (layer && was) {
+      window.history.replaceState({ ...st, layer }, "", window.location.href);
+    } else if (!layer && was) {
+      // Left by its own button or key: its step is taken off the history too,
+      // unless the history is what left it.
+      if (poppedRef.current) poppedRef.current = false;
+      else if (st.layer) window.history.back();
+    }
+  }, [layer]);
+  useEffect(() => {
+    const onPop = () => {
+      const open = layerRef.current;
+      if (open && window.history.state?.layer !== open) {
+        poppedRef.current = true;
+        leaveLayer.current();
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   const [folds, setFolds] = useState(readFolds);
   const foldsRef = useRef(folds);
   const setOpen = useCallback((id, open) => {

@@ -279,10 +279,12 @@ function usePhone() {
 }
 // Thumbnails on a phone: three across.
 const PHONE_CELL = 100;
-// A screen worked with a finger, of any size: there is no Esc key to back out
-// with, so a Back button stands in for it.
-const TOUCH_QUERY = "(pointer: coarse)";
-function useTouch() {
+// A screen worked with a finger and opened as an app from the home screen:
+// there is no Esc key and no browser to swipe back in (in a browser, the swipe
+// in from the left edge goes back a step, the develop view's layers included),
+// so a Back button stands in for them.
+const TOUCH_QUERY = "(pointer: coarse) and (display-mode: standalone)";
+function useHomeScreenTouch() {
   const [touch, setTouch] = useState(() => !!window.matchMedia?.(TOUCH_QUERY).matches);
   useEffect(() => {
     const m = window.matchMedia?.(TOUCH_QUERY);
@@ -3976,7 +3978,7 @@ function PhotoolApp({ access }) {
   const [filter, setFilter] = useState({ flag: null, minRating: 0, color: null, tag: null, unreviewed: false, edited: false, pairMode: "paired",
     camera: null, matches: null, hidden: [], showDemoted: false });
   const phone = usePhone();
-  const touch = useTouch();
+  const touch = useHomeScreenTouch();
   const [moreOpen, setMoreOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   // How many filters narrow the grid, said on the phone's folded Filters button.
@@ -4453,7 +4455,9 @@ function PhotoolApp({ access }) {
     const outOfFolder = !prev.develop && !prev.viewer && prev.folder && !route.folder && prev.tab === route.tab;
     if ((outOfDevelop || outOfViewer || outOfFolder) && st && st.photool && sameRoute(st.photool, prev) && st.depth > 0) {
       expectPopRef.current = true;
-      window.history.back();
+      // The develop view closed with one of its own layers open (the crop, the
+      // masks) leaves that step too.
+      window.history.go(outOfDevelop && st.layer ? -2 : -1);
       return;
     }
     window.history.pushState({ photool: route, depth: ((st && st.depth) || 0) + 1 }, "", routeHash(route));
