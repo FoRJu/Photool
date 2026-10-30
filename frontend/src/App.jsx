@@ -2270,18 +2270,50 @@ function CullView({ photos, folderPath, startIndex, onClose, onRate, basketSet, 
   );
 }
 
-// Gestures on the photo: swipe sideways for the next or previous one, down to
-// leave; pinch or double-tap to look closer, then drag about. At the whole
-// picture a swipe moves on; zoomed in, a drag moves the picture instead.
-function usePhotoGestures({ onNext, onPrev, onClose, resetKey }) {
+// Gestures on the photo: swipe sideways for the next or previous one, or tap
+// the screen's left or right edge; swipe down to leave; pinch or double-tap to
+// look closer, then drag about. At the whole picture a swipe moves on; zoomed
+// in, a drag moves the picture instead.
+const EDGE = 0.2;          // the share of the width at each side a tap moves on from
+function usePhotoGestures({ onNext, onPrev, onClose, canNext, canPrev, resetKey }) {
   const [view, setView] = useState({ s: 1, x: 0, y: 0 });
   const [drag, setDrag] = useState({ x: 0, y: 0 });
+  // A photo leaving slides on the way it was pushed and fades; the next fades in.
+  const [anim, setAnim] = useState({ x: 0, o: 1, t: "" });
   const pointers = useRef(new Map());
   const start = useRef(null);
   const lastTap = useRef({ t: 0, x: 0, y: 0 });
+  const tapTimer = useRef(null);
+  const leaving = useRef(false);
   const viewRef = useRef(view);
   viewRef.current = view;
-  useEffect(() => { setView({ s: 1, x: 0, y: 0 }); setDrag({ x: 0, y: 0 }); }, [resetKey]);
+  useEffect(() => {
+    setView({ s: 1, x: 0, y: 0 });
+    setDrag({ x: 0, y: 0 });
+    if (!leaving.current) return undefined;
+    leaving.current = false;
+    setAnim({ x: 0, o: 0, t: "none" });
+    let raf = requestAnimationFrame(() => {
+      raf = requestAnimationFrame(() => setAnim({ x: 0, o: 1, t: "opacity 0.18s ease-out" }));
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [resetKey]);
+  useEffect(() => () => clearTimeout(tapTimer.current), []);
+
+  // dir +1 for the next photo, -1 for the previous; from where the finger left it.
+  const leave = (dir, width, from = 0) => {
+    if (leaving.current) return;
+    if (dir > 0 ? !canNext : !canPrev) {
+      setDrag({ x: 0, y: 0 });
+      return;
+    }
+    leaving.current = true;
+    setDrag({ x: 0, y: 0 });
+    setAnim({ x: from, o: 1, t: "none" });
+    requestAnimationFrame(() => setAnim({ x: -dir * width * 0.6, o: 0,
+      t: "transform 0.18s ease-out, opacity 0.18s linear" }));
+    setTimeout(() => (dir > 0 ? onNext : onPrev)(), 180);
+  };
 
   const centre = (el) => {
     const r = el.getBoundingClientRect();
@@ -2343,6 +2375,7 @@ function usePhotoGestures({ onNext, onPrev, onClose, resetKey }) {
       // A double tap: in to 2.5x about the tap, or back out to the whole picture.
       const prev = lastTap.current;
       if (e.timeStamp - prev.t < 320 && Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < 30) {
+        clearTimeout(tapTimer.current);
         lastTap.current = { t: 0, x: 0, y: 0 };
         if (viewRef.current.s > 1) setView({ s: 1, x: 0, y: 0 });
         else {
@@ -2351,21 +2384,36 @@ function usePhotoGestures({ onNext, onPrev, onClose, resetKey }) {
         }
       } else {
         lastTap.current = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+        // A tap at either edge moves on, once it is clear it is not the first
+        // of a double tap.
+        const at = (e.clientX - (st.box.cx - st.box.w / 2)) / st.box.w;
+        if (viewRef.current.s === 1 && (at < EDGE || at > 1 - EDGE)) {
+          clearTimeout(tapTimer.current);
+          tapTimer.current = setTimeout(() => leave(at < EDGE ? -1 : 1, st.box.w), 300);
+        }
       }
       setDrag({ x: 0, y: 0 });
       return;
     }
     if (st.kind === "swipe") {
-      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) (dx < 0 ? onNext : onPrev)();
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) leave(dx < 0 ? 1 : -1, st.box.w, dx);
       else if (dy > 110 && dy > Math.abs(dx)) onClose();
-      setDrag({ x: 0, y: 0 });
+      else setDrag({ x: 0, y: 0 });
     }
   };
   const handlers = { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp };
-  const transform = view.s > 1
-    ? `translate(${view.x}px, ${view.y}px) scale(${view.s})`
-    : `translate(${drag.x}px, ${drag.y}px)`;
-  return { handlers, transform, zoomed: view.s > 1, dragging: !!(drag.x || drag.y) };
+  const dragging = !!(drag.x || drag.y);
+  const zoomed = view.s > 1;
+  const style = {
+    transform: zoomed
+      ? `translate(${view.x}px, ${view.y}px) scale(${view.s})`
+      : `translate(${drag.x + anim.x}px, ${drag.y}px)`,
+    opacity: anim.o,
+    transition: dragging || zoomed ? "none" : anim.t || "transform 0.2s ease-out",
+  };
+  // Moving on from a button (a reject) goes the same way as a swipe.
+  const next = () => leave(1, window.innerWidth);
+  return { handlers, style, zoomed, next };
 }
 
 // The viewer on a phone: the photo as large as the screen allows, stars and
@@ -2374,16 +2422,19 @@ function usePhotoGestures({ onNext, onPrev, onClose, resetKey }) {
 function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, basketSet, onToggleBasket,
   exif, burst, photoByPath, memberFlag, onJump, onRejectBurst, hint, proposal, onProposal, imgRef, videoRef }) {
   const [info, setInfo] = useState(false);
-  const { handlers, transform, zoomed, dragging } = usePhotoGestures({
+  const nextRef = useRef(null);
+  const { handlers, style, zoomed, next } = usePhotoGestures({
     onNext: () => onGo(1), onPrev: () => onGo(-1), onClose, resetKey: photo.filepath,
+    canNext: index < photos.length - 1, canPrev: index > 0,
   });
+  nextRef.current = next;
   const rejected = photo.flag === -1;
   // A reject is usually the end of looking at a frame: it moves on, after a
   // moment to see it marked.
   const reject = () => {
     if (rejected) { rate("flag", 0); return; }
     rate("flag", -1);
-    if (index < photos.length - 1) setTimeout(() => onGo(1), 350);
+    if (index < photos.length - 1) setTimeout(() => nextRef.current?.(), 350);
   };
   const video = isVideo(photo);
   return (
@@ -2410,8 +2461,7 @@ function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, bask
             <VideoPlayer photo={photo} folderPath={folderPath} videoRef={videoRef} onFocusBack={() => {}} />
           </div>
         ) : (
-          <div className="absolute inset-0 flex items-center justify-center"
-            style={{ transform, transition: dragging || zoomed ? "none" : "transform 0.2s ease-out" }}>
+          <div className="absolute inset-0 flex items-center justify-center" style={style}>
             <img ref={imgRef} draggable={false} alt={photo.filename}
               src={thumbUrl(photo.folder || folderPath, photo.filename, "preview", editKey(photo))}
               className={`max-h-full max-w-full object-contain ${rejected ? "opacity-40" : ""}`} />
@@ -2419,6 +2469,13 @@ function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, bask
         )}
         {rejected && (
           <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-red-900/80 text-red-100 text-xs">Rejected</span>
+        )}
+        {/* A tap at either edge moves on: said, faintly, by a chevron there. */}
+        {!video && !zoomed && index > 0 && (
+          <span className="absolute left-1 top-1/2 -translate-y-1/2 text-3xl text-white/20 pointer-events-none">‹</span>
+        )}
+        {!video && !zoomed && index < photos.length - 1 && (
+          <span className="absolute right-1 top-1/2 -translate-y-1/2 text-3xl text-white/20 pointer-events-none">›</span>
         )}
         {video && index > 0 && (
           <button onClick={() => onGo(-1)} className="absolute left-0 top-1/2 -translate-y-1/2 w-11 h-20 text-4xl text-white/40">‹</button>
