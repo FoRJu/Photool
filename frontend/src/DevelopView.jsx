@@ -993,13 +993,19 @@ const PEOPLE_AREAS = [
   ["clothes", "Clothes", "Clothes, hats and shoes"],
 ];
 const AREA_LABEL = Object.fromEntries(PEOPLE_AREAS.map(([id, label]) => [id, label]));
+// The parts that make a whole face (the Face button), in place of the oval of
+// the old Faces mask.
+const FACE_AREAS = ["face_skin", "eyes", "brows", "lips", "teeth"];
 
 function maskName(m, i) {
   const set = [...MASK_SLIDERS, ...SKIN_SLIDERS].filter((d) => Number(m[d.key] || 0) !== 0)
     .map((d) => `${d.label} ${d.format(m[d.key])}`);
   const names = MASK_NAMES[m.kind];
+  const faceAll = FACE_AREAS.every((a) => m.areas?.includes(a));
+  const named = faceAll ? ["Face", ...m.areas.filter((a) => !FACE_AREAS.includes(a)).map((a) => AREA_LABEL[a])]
+    : (m.areas || []).map((a) => AREA_LABEL[a]);
   const kind = m.areas?.length
-    ? `${m.invert ? "All but " : ""}${m.areas.map((a) => AREA_LABEL[a]).join(", ")}`
+    ? `${m.invert ? "All but " : ""}${named.join(", ")}`
     : names ? names[m.invert ? 1 : 0] : m.kind;
   const who = (m.person ? ` (person ${m.person})` : "")
     + (m.range ? ` · ${m.range.kind === "color" ? "colour" : "brightness"} range` : "")
@@ -2221,6 +2227,13 @@ function PeopleAreas({ mask, onChange }) {
     latest.current = PEOPLE_AREAS.map(([a]) => a).filter((a) => next.includes(a));
     onChange(latest.current);
   };
+  // The face, whole: its parts all on, or all off again.
+  const toggleFace = async () => {
+    if (!latest.current.length && !(await ready())) return;
+    const now = latest.current;
+    const all = FACE_AREAS.every((a) => now.includes(a));
+    choose(all ? now.filter((a) => !FACE_AREAS.includes(a)) : [...new Set([...now, ...FACE_AREAS])]);
+  };
   const toggle = async (id) => {
     // The first part chosen needs the parsers.
     if (!latest.current.length && !(await ready())) return;
@@ -2237,6 +2250,9 @@ function PeopleAreas({ mask, onChange }) {
         <div className="flex flex-wrap gap-1">
           <button onClick={() => choose([])} disabled={!!state.busy} className={chip(!areas.length)}
             title="The whole of each person">All</button>
+          <button onClick={() => toggleFace()} disabled={!!state.busy} data-testid="area-face"
+            className={chip(FACE_AREAS.every((a) => areas.includes(a)))}
+            title="The whole face as the parser draws it: skin, eyes, brows, lips and teeth">Face</button>
           {PEOPLE_AREAS.map(([id, label, title]) => (
             <button key={id} onClick={() => toggle(id)} disabled={!!state.busy} title={title}
               data-testid={`area-${id}`} className={chip(areas.includes(id))}>{label}</button>
@@ -2266,8 +2282,7 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
           ["brush", "+ Brush", "Only where you paint it: a face, a doorway, a tree."],
           ["subject", "+ Subject", "The picture's subject, as a model finds it: the runners in front, not the crowd. Invert it for the background."],
           ["sky", "+ Sky", "The sky, as a model finds it. Invert it for everything below."],
-          ["people", "+ People", "Everyone in the picture, or one of them: pick a number on a face. Invert it for the background."],
-          ["faces", "+ Faces", "The faces in the picture, or one person's: lift them with exposure, soften skin with negative clarity."],
+          ["people", "+ People", "Everyone in the picture, or one of them: pick a number on a face. Parts narrows it to their face, hair, skin or clothes; Skin retouches it. Invert it for the background."],
           ["object", "+ Object", "One thing you point at: drag a box round it or click on it. Zoom in for something small."]].map(([kind, label, title]) => (
           <button key={kind} onClick={() => onAdd(kind)} title={title} disabled={!!choosing.busy}
             className="text-[11px] px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-50">

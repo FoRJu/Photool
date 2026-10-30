@@ -12,7 +12,13 @@ again the same way.
   sky      SegFormer-B0 trained on ADE20K, its "sky" class. NVIDIA's weights
            are released for non-commercial use, which a family album is.
            15 MB.
-  people   the same model's "person" class: everyone in the frame, whole.
+  people   everyone in the frame, whole: when SAM 2.1 and the people parsers
+           are here (adjust.objects, adjust.parts), each person whose face is
+           found is outlined by SAM, given a box round what the parsers read
+           as theirs and a click on the face, and of SAM's three answers the
+           one that best matches the parsers' is taken (so a frame decoded at
+           another size chooses the same). Everyone else, a back with no face
+           found, comes from SegFormer's "person" class as before.
   faces    the faces in it, found by the face detector the People tab uses
            (YuNet) and drawn as a soft oval each, brought to the picture's edges
            and kept inside the people: light on the faces of a group, softer
@@ -223,7 +229,14 @@ def matte(frame, kind: str, person: Optional[int] = None, areas=None) -> np.ndar
     kept = frame._mattes.get(key)
     if kept is not None:
         return kept
-    if kind == "faces":
+    sam = _people_by_sam(frame) if kind == "people" else None
+    if sam is not None:
+        if person:
+            mine = sam["people"][int(person) - 1:int(person)]
+            fine = mine[0] if mine else np.zeros_like(sam["faceless"])
+        else:
+            fine = np.maximum(sam["faceless"], np.max(sam["people"], axis=0)) if sam["people"] else sam["faceless"]
+    elif kind == "faces":
         fine = _faces_matte(frame, person)
     elif person and kind == "people":
         fine = _one_person(frame, int(person))
@@ -262,6 +275,69 @@ def _model_matte(frame, kind: str) -> np.ndarray:
     h, w = rgb8.shape[:2]
     rough = cv2.resize(_rough(kind, rgb8, frame._mattes), (w, h), interpolation=cv2.INTER_LINEAR)
     return _refined(rgb8, rough)
+
+
+def _people_by_sam(frame) -> Optional[dict]:
+    """Each person whose face is found, outlined by SAM 2.1, and everyone else
+    from the people model: ``{"people": [matte, …], "faceless": matte}`` at the
+    parsers' picture size, or ``None`` when SAM or the parsers are not here (the
+    people model alone then). Kept on the frame."""
+    import cv2
+
+    kept = frame._mattes.get("_people_sam")
+    if kept is not None:
+        return kept or None
+    from adjust import objects, parts
+
+    if not (objects.available("sam2.1") and parts.available()):
+        frame._mattes["_people_sam"] = False
+        return None
+    boxes = face_boxes(frame)
+    if not boxes:
+        frame._mattes["_people_sam"] = False
+        return None
+    rgb8 = parts._picture(frame)
+    h, w = rgb8.shape[:2]
+    grey = cv2.cvtColor(rgb8, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    # The picture SAM reads is this frame's, kept by a token of its own.
+    key = ("people", frame._mattes.setdefault("_sam_token", object()))
+    zone = np.zeros((h, w), bool)
+    mattes = []
+    for box, read in zip(boxes, parts.people_read(frame)):
+        if not parts.is_a_face(read, box, h, w):
+            # The face detector's mistake (a hand, a pattern): no one there.
+            mattes.append(np.zeros((h, w), np.float32))
+            continue
+        for (x0, y0, x1, y1), _ in read.values():
+            zone[y0:y1, x0:x1] = True
+        rough = parts.outline(read, h, w)
+        on = rough > 0.5
+        if not on.any():
+            mattes.append(np.zeros((h, w), np.float32))
+            continue
+        ys, xs = np.nonzero(on)
+        pad = 0.02
+        x, y, bw, bh = box
+        part = {"view": [0.0, 0.0, 1.0, 1.0],
+                "box": [max(0.0, xs.min() / w - pad), max(0.0, ys.min() / h - pad),
+                        min(1.0, (xs.max() + 1) / w + pad), min(1.0, (ys.max() + 1) / h + pad)],
+                "points": [[x + bw / 2, y + bh / 2, 1]]}
+        logits, _ = objects.predict(rgb8, part, "sam2.1", key)
+        lh, lw = logits.shape[1:]
+        small = cv2.resize(rough, (lw, lh), interpolation=cv2.INTER_AREA) > 0.5
+
+        def iou(candidate):
+            mine = candidate > 0
+            union = (mine | small).sum()
+            return (mine & small).sum() / union if union else 0.0
+        part["pick"] = int(np.argmax([iou(c) for c in logits]))
+        mattes.append(objects._part_matte(rgb8, grey, part, "sam2.1", key))
+    # Someone the face detector did not find (a back, a crowd) is the people
+    # model's, outside every found person's crops.
+    old = cv2.resize(_model_matte(frame, "people"), (w, h), interpolation=cv2.INTER_LINEAR)
+    found = {"people": mattes, "faceless": (old * ~zone).astype(np.float32)}
+    frame._mattes["_people_sam"] = found
+    return found
 
 
 # Smaller faces than this (pixels across, in the matte's picture) are a crowd in
@@ -335,6 +411,11 @@ def _faces_matte(frame, person: Optional[int]) -> np.ndarray:
     # wall beside it. A face the people model missed (side-on, in costume)
     # keeps its oval as it is.
     people = matte(frame, "people")
+    if people.shape != (h, w):
+        import cv2
+
+        # The people outlined by SAM are at the parsers' picture size.
+        people = cv2.resize(people, (w, h), interpolation=cv2.INTER_AREA)
     missed = np.zeros((h, w), dtype=np.float32)
     for box in boxes:
         x, y, bw, bh = box

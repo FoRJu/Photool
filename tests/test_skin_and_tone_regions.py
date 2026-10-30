@@ -74,6 +74,7 @@ def _skin_frame(seed=1):
     frame._mattes["_faces"] = [FACE]
     frame._mattes[("_parts", tuple(sorted(skin.SKIN_AREAS)), 0)] = skin_matte
     frame._mattes["people"] = skin_matte
+    frame._mattes["_parts_read"] = []           # read by the parsers: nothing more to it
     return frame, region
 
 

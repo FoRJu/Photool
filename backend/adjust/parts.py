@@ -224,6 +224,105 @@ def _read_people(frame) -> list:
     return people
 
 
+def outline(read: dict, h: int, w: int) -> np.ndarray:
+    """One person as the parsers see them, 0..1 over the 2048 px picture:
+    everything of theirs (hair, face, skin, clothes, a bag) where either
+    model reads it, from that person's crops."""
+    out = np.zeros((h, w), np.float32)
+    for (x0, y0, x1, y1), probs in read.values():
+        np.maximum(out[y0:y1, x0:x1], 1.0 - probs[0], out=out[y0:y1, x0:x1])
+    return out
+
+
+# The share of a face box the face parser must read as face (skin, nose, eyes,
+# brows, lips, mouth) for the face detector's box to be a face.
+FACE_SHARE = 0.25
+_FACE_PARTS = ("skin", "nose", "l_eye", "r_eye", "l_brow", "r_brow", "mouth", "u_lip", "l_lip")
+
+
+def is_a_face(read: dict, box: tuple, h: int, w: int) -> bool:
+    """Whether the face parser agrees that the face detector's ``box`` holds a
+    face: a second opinion that drops a hand or a pattern taken for one. True
+    when the face parser did not read it."""
+    if "face" not in read:
+        return True
+    (x0, y0, x1, y1), probs = read["face"]
+    bx, by, bw, bh = box
+    fx0, fy0 = max(int(bx * w), x0), max(int(by * h), y0)
+    fx1, fy1 = min(int((bx + bw) * w), x1), min(int((by + bh) * h), y1)
+    if fx1 <= fx0 or fy1 <= fy0:
+        return True
+    face = probs[[FACE_CLASSES.index(c) for c in _FACE_PARTS]].sum(axis=0)
+    return float(face[fy0 - y0:fy1 - y0, fx0 - x0:fx1 - x0].mean()) >= FACE_SHARE
+
+
+def people_read(frame) -> list:
+    """Each person's parsing (see _read_people): for adjust.segment."""
+    return _read_people(frame)
+
+
+# Classes that cover skin as often as not: the glasses (the skin seen through
+# the lenses) and the lips' outer edge (the parser's lips run onto the skin
+# round the mouth). A pixel of them counts as skin when it looks like this
+# person's own skin. Only the edge of the lips: pale lips look like the skin
+# too, and are not to be evened toward it.
+_LIPS = ("u_lip", "l_lip")
+# How far from the face's own skin a pixel may be, in its own spread.
+_LIKE_SPREAD = 2.5
+
+
+def skin_matte(frame, person: Optional[int] = None) -> np.ndarray:
+    """The skin of everyone, or of one person, for retouching: their face and
+    body skin, and what the parsers call glasses or lips but which looks like
+    that face's own skin (behind a lens, round the mouth). Compared with the
+    same face, not with a colour, so it is the same for any complexion. At the
+    2048 px picture's size; kept on the frame."""
+    key = ("_skin", int(person or 0))
+    kept = frame._mattes.get(key)
+    if kept is not None:
+        return kept
+    base = matte(frame, ("face_skin", "body_skin"), person)
+    rgb8 = _picture(frame)
+    people = _read_people(frame)
+    if person:
+        people = people[int(person) - 1:int(person)]
+    out = base.copy()
+    glasses = FACE_CLASSES.index("glasses")
+    lip_classes = [FACE_CLASSES.index(c) for c in _LIPS]
+    for read in people:
+        if "face" not in read:
+            continue
+        (x0, y0, x1, y1), probs = read["face"]
+        crop = rgb8[y0:y1, x0:x1].astype(np.float32) / 255.0
+        sure = base[y0:y1, x0:x1] > 0.8
+        if sure.sum() < 50:
+            continue
+        feats = _skin_features(crop)
+        mean = feats[sure].mean(axis=0)
+        spread = np.maximum(feats[sure].std(axis=0), (0.04, 0.01, 0.01))
+        far = (((feats - mean) / (_LIKE_SPREAD * spread)) ** 2).sum(axis=-1)
+        like = _firm(np.exp(-0.5 * far), 0.3, 0.7)
+        lips = np.minimum(probs[lip_classes].sum(axis=0), 1.0)
+        # The lips' own body: what is lips a little way in from their edge.
+        import cv2
+
+        reach = max(1, round((x1 - x0) / 2.2 / 45))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * reach + 1, 2 * reach + 1))
+        body = cv2.erode((lips > 0.5).astype(np.uint8), kernel).astype(np.float32)
+        body = cv2.GaussianBlur(body, (0, 0), max(0.5, reach / 2))
+        maybe = np.maximum(probs[glasses], lips * (1.0 - body))
+        np.maximum(out[y0:y1, x0:x1], maybe * like, out=out[y0:y1, x0:x1])
+    frame._mattes[key] = out
+    return out
+
+
+def _skin_features(rgb: np.ndarray) -> np.ndarray:
+    """Per pixel: its brightness in stops, and its colour as shares of the
+    whole (red and blue), which do not change with the light on it."""
+    total = rgb.sum(axis=-1) + 1e-4
+    return np.stack([np.log2(total / 3.0 + 1e-4), rgb[..., 0] / total, rgb[..., 2] / total], axis=-1)
+
+
 def matte(frame, areas, person: Optional[int] = None) -> np.ndarray:
     """How much of the named ``areas`` each part of the whole frame is, 0..1,
     float32 at the 2048 px picture's size: everyone's, or with ``person``
