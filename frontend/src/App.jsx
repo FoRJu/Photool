@@ -262,6 +262,24 @@ function useStoredState(key, initial) {
 // laptop five, instead of both getting six.
 const THUMB_SIZES = { S: 140, M: 190, L: 260, XL: 360 };
 
+// A phone: a narrow screen worked with a finger. There the layout gets out of
+// the photos' way (a tab bar at the bottom, the filters folded, a viewer swiped
+// through); a wide touch screen, an iPad, keeps the desktop layout.
+const PHONE_QUERY = "(max-width: 640px) and (pointer: coarse)";
+function usePhone() {
+  const [phone, setPhone] = useState(() => !!window.matchMedia?.(PHONE_QUERY).matches);
+  useEffect(() => {
+    const m = window.matchMedia?.(PHONE_QUERY);
+    if (!m) return undefined;
+    const on = () => setPhone(m.matches);
+    m.addEventListener("change", on);
+    return () => m.removeEventListener("change", on);
+  }, []);
+  return phone;
+}
+// Thumbnails on a phone: three across.
+const PHONE_CELL = 100;
+
 function thumbUrl(folderPath, filename, size = "grid", edit = "") {
   const version = edit ? `&v=${edit}` : "";
   return `${API}/thumb/${folderPath}/${encodeURIComponent(filename)}?size=${size}${version}`;
@@ -1750,6 +1768,7 @@ function CullView({ photos, folderPath, startIndex, onClose, onRate, basketSet, 
   const [exif, setExif] = useState(null);
   const [tagDraft, setTagDraft] = useState("");
   const [showFaces, setShowFaces] = useStoredState("photool.viewer.faces", false);
+  const phone = usePhone();
   const imgRef = useRef(null);
   const videoRef = useRef(null);
   const containerRef = useRef(null);
@@ -2002,6 +2021,15 @@ function CullView({ photos, folderPath, startIndex, onClose, onRate, basketSet, 
 
   if (!photo) return null;
 
+  if (phone) {
+    return (
+      <PhoneCull photos={photos} index={index} folderPath={folderPath} photo={photo} onGo={go} onClose={onClose}
+        rate={rate} basketSet={basketSet} onToggleBasket={onToggleBasket} exif={exif} burst={burst}
+        photoByPath={photoByPath} memberFlag={memberFlag} onJump={jumpTo} onRejectBurst={rejectBurst}
+        hint={hint} proposal={proposal} onProposal={onProposal} imgRef={imgRef} videoRef={videoRef} />
+    );
+  }
+
   return (
     <div
       ref={containerRef} tabIndex={0} onKeyDown={handleKey} data-modal="viewer"
@@ -2237,6 +2265,231 @@ function CullView({ photos, folderPath, startIndex, onClose, onRate, basketSet, 
             {burst && <span className="text-neutral-500">C compare</span>}
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Gestures on the photo: swipe sideways for the next or previous one, down to
+// leave; pinch or double-tap to look closer, then drag about. At the whole
+// picture a swipe moves on; zoomed in, a drag moves the picture instead.
+function usePhotoGestures({ onNext, onPrev, onClose, resetKey }) {
+  const [view, setView] = useState({ s: 1, x: 0, y: 0 });
+  const [drag, setDrag] = useState({ x: 0, y: 0 });
+  const pointers = useRef(new Map());
+  const start = useRef(null);
+  const lastTap = useRef({ t: 0, x: 0, y: 0 });
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  useEffect(() => { setView({ s: 1, x: 0, y: 0 }); setDrag({ x: 0, y: 0 }); }, [resetKey]);
+
+  const centre = (el) => {
+    const r = el.getBoundingClientRect();
+    return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, w: r.width, h: r.height };
+  };
+  const clampView = (v, box) => {
+    const mx = ((v.s - 1) * box.w) / 2;
+    const my = ((v.s - 1) * box.h) / 2;
+    return { s: v.s, x: Math.max(-mx, Math.min(mx, v.x)), y: Math.max(-my, Math.min(my, v.y)) };
+  };
+
+  const onPointerDown = (e) => {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pts = [...pointers.current.values()];
+    const box = centre(e.currentTarget);
+    if (pts.length === 2) {
+      const [a, b] = pts;
+      start.current = { kind: "pinch", dist: Math.hypot(a.x - b.x, a.y - b.y), view: viewRef.current,
+        mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, box };
+      setDrag({ x: 0, y: 0 });
+    } else if (pts.length === 1) {
+      start.current = { kind: viewRef.current.s > 1 ? "pan" : "swipe", x: e.clientX, y: e.clientY,
+        view: viewRef.current, box, t: e.timeStamp };
+    }
+  };
+  const onPointerMove = (e) => {
+    if (!pointers.current.has(e.pointerId) || !start.current) return;
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const st = start.current;
+    if (st.kind === "pinch" && pointers.current.size >= 2) {
+      const [a, b] = [...pointers.current.values()];
+      const s = Math.max(1, Math.min(6, (st.view.s * Math.hypot(a.x - b.x, a.y - b.y)) / st.dist));
+      // The point under the fingers' middle stays under it.
+      const qx = (st.mid.x - st.box.cx - st.view.x) / st.view.s;
+      const qy = (st.mid.y - st.box.cy - st.view.y) / st.view.s;
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      setView(clampView({ s, x: mid.x - st.box.cx - s * qx, y: mid.y - st.box.cy - s * qy }, st.box));
+    } else if (st.kind === "pan") {
+      setView(clampView({ s: st.view.s, x: st.view.x + e.clientX - st.x, y: st.view.y + e.clientY - st.y }, st.box));
+    } else if (st.kind === "swipe") {
+      setDrag({ x: e.clientX - st.x, y: Math.max(0, e.clientY - st.y) });
+    }
+  };
+  const onPointerUp = (e) => {
+    pointers.current.delete(e.pointerId);
+    const st = start.current;
+    if (!st) return;
+    if (st.kind === "pinch") {
+      if (pointers.current.size === 0) start.current = null;
+      if (viewRef.current.s < 1.05) setView({ s: 1, x: 0, y: 0 });
+      return;
+    }
+    start.current = null;
+    const dx = e.clientX - st.x;
+    const dy = e.clientY - st.y;
+    const moved = Math.hypot(dx, dy);
+    if (moved < 10 && e.timeStamp - st.t < 300) {
+      // A double tap: in to 2.5x about the tap, or back out to the whole picture.
+      const prev = lastTap.current;
+      if (e.timeStamp - prev.t < 320 && Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < 30) {
+        lastTap.current = { t: 0, x: 0, y: 0 };
+        if (viewRef.current.s > 1) setView({ s: 1, x: 0, y: 0 });
+        else {
+          const d = { x: e.clientX - st.box.cx, y: e.clientY - st.box.cy };
+          setView(clampView({ s: 2.5, x: -1.5 * d.x, y: -1.5 * d.y }, st.box));
+        }
+      } else {
+        lastTap.current = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+      }
+      setDrag({ x: 0, y: 0 });
+      return;
+    }
+    if (st.kind === "swipe") {
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) (dx < 0 ? onNext : onPrev)();
+      else if (dy > 110 && dy > Math.abs(dx)) onClose();
+      setDrag({ x: 0, y: 0 });
+    }
+  };
+  const handlers = { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp };
+  const transform = view.s > 1
+    ? `translate(${view.x}px, ${view.y}px) scale(${view.s})`
+    : `translate(${drag.x}px, ${drag.y}px)`;
+  return { handlers, transform, zoomed: view.s > 1, dragging: !!(drag.x || drag.y) };
+}
+
+// The viewer on a phone: the photo as large as the screen allows, stars and
+// Reject under the thumb. Picks, colours, tags and developing are left to a
+// bigger screen.
+function PhoneCull({ photos, index, folderPath, photo, onGo, onClose, rate, basketSet, onToggleBasket,
+  exif, burst, photoByPath, memberFlag, onJump, onRejectBurst, hint, proposal, onProposal, imgRef, videoRef }) {
+  const [info, setInfo] = useState(false);
+  const { handlers, transform, zoomed, dragging } = usePhotoGestures({
+    onNext: () => onGo(1), onPrev: () => onGo(-1), onClose, resetKey: photo.filepath,
+  });
+  const rejected = photo.flag === -1;
+  // A reject is usually the end of looking at a frame: it moves on, after a
+  // moment to see it marked.
+  const reject = () => {
+    if (rejected) { rate("flag", 0); return; }
+    rate("flag", -1);
+    if (index < photos.length - 1) setTimeout(() => onGo(1), 350);
+  };
+  const video = isVideo(photo);
+  return (
+    <div data-modal="viewer" data-testid="phone-viewer"
+      className="fixed inset-0 z-50 bg-black flex flex-col select-none"
+      style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+      <div className="flex items-center gap-1 px-1 h-12 shrink-0 text-neutral-300">
+        <button onClick={onClose} aria-label="Back to the grid" className="w-11 h-11 text-xl">‹</button>
+        <span className="text-sm font-mono text-neutral-400">{index + 1} / {photos.length}</span>
+        <span className="flex-1" />
+        <button onClick={() => setInfo((v) => !v)} aria-label="About this photo" data-testid="phone-info"
+          className={`w-11 h-11 rounded-full text-lg ${info ? "text-white" : "text-neutral-500"}`}>ⓘ</button>
+        <button onClick={() => onToggleBasket(photo)} aria-label="Basket" data-testid="phone-basket"
+          className={`h-9 px-3 rounded-full text-sm ${basketSet.has(photo.filepath)
+            ? "bg-orange-600 text-white" : "text-neutral-500 border border-neutral-800"}`}>
+          ⬡{basketSet.has(photo.filepath) ? " In basket" : ""}
+        </button>
+      </div>
+
+      <div className="flex-1 min-h-0 relative overflow-hidden" style={{ touchAction: "none" }}
+        {...(video ? {} : handlers)} data-testid="phone-photo">
+        {video ? (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <VideoPlayer photo={photo} folderPath={folderPath} videoRef={videoRef} onFocusBack={() => {}} />
+          </div>
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center"
+            style={{ transform, transition: dragging || zoomed ? "none" : "transform 0.2s ease-out" }}>
+            <img ref={imgRef} draggable={false} alt={photo.filename}
+              src={thumbUrl(photo.folder || folderPath, photo.filename, "preview", editKey(photo))}
+              className={`max-h-full max-w-full object-contain ${rejected ? "opacity-40" : ""}`} />
+          </div>
+        )}
+        {rejected && (
+          <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-red-900/80 text-red-100 text-xs">Rejected</span>
+        )}
+        {video && index > 0 && (
+          <button onClick={() => onGo(-1)} className="absolute left-0 top-1/2 -translate-y-1/2 w-11 h-20 text-4xl text-white/40">‹</button>
+        )}
+        {video && index < photos.length - 1 && (
+          <button onClick={() => onGo(1)} className="absolute right-0 top-1/2 -translate-y-1/2 w-11 h-20 text-4xl text-white/40">›</button>
+        )}
+      </div>
+
+      {info && (
+        <div className="px-4 py-2 text-xs text-neutral-400 space-y-0.5 border-t border-neutral-900" data-testid="phone-exif">
+          <div className="text-neutral-300 truncate">{photo.filename}</div>
+          {(photo.capture_date || exif?.date) && <div>{takenAt(photo.capture_date || exif.date)}</div>}
+          {exif && (
+            <div className="font-mono">
+              {[exif.camera, exif.lens, exif.focal_length, exif.aperture, exif.shutter_speed, exif.iso && `ISO ${exif.iso}`]
+                .filter(Boolean).join(" · ")}
+            </div>
+          )}
+        </div>
+      )}
+
+      {hint && (hint.soft_frame || hint.blown_highlights || hint.eyes_closed) && (
+        <div className="px-4 py-1 text-[11px] flex flex-wrap gap-x-3">
+          {hint.soft_frame && <span className="text-amber-300/90">⚠ softer than the rest</span>}
+          {hint.blown_highlights && <span className="text-red-300/90">⚠ highlights clipped</span>}
+          {hint.eyes_closed && <span className="text-sky-300/90">⚠ eyes may be closed</span>}
+        </div>
+      )}
+
+      {proposal && onProposal && (
+        <div className="px-3 py-1.5 bg-violet-950/70 text-xs flex items-center gap-2" data-testid="phone-proposal">
+          <span className="text-violet-200 flex-1 truncate">✦ {proposalText(proposal)}{proposal.reason ? ` — ${proposal.reason}` : ""}</span>
+          <button onClick={() => onProposal("accept", photo)} className="px-3 py-1.5 rounded bg-violet-700 text-white">Accept</button>
+          <button onClick={() => onProposal("dismiss", photo)} className="px-3 py-1.5 rounded border border-neutral-700 text-neutral-300">No</button>
+        </div>
+      )}
+
+      {burst && (
+        <div className="px-2 py-1.5 flex items-center gap-2 border-t border-neutral-900" data-testid="phone-burst">
+          <div className="flex gap-1 overflow-x-auto flex-1">
+            {(burst.members || []).map((m) => (
+              <button key={m.filepath} onClick={() => onJump(m.filepath)}
+                className={`relative shrink-0 rounded overflow-hidden border ${m.filepath === photo.filepath
+                  ? "border-white" : "border-transparent"} ${memberFlag(m) === -1 ? "opacity-30" : ""}`}>
+                <img src={thumbUrl(m.folder || folderPath, m.filename, "grid", editKey(photoByPath.get(m.filepath)))}
+                  alt="" className="h-11 w-11 object-cover" />
+                {memberFlag(m) !== -1 && m.filepath === burst.keep && (
+                  <span className="absolute bottom-0 inset-x-0 text-[8px] text-center bg-emerald-900/90 text-emerald-200">sharpest</span>
+                )}
+              </button>
+            ))}
+          </div>
+          <button onClick={onRejectBurst} className="shrink-0 px-2.5 py-2 rounded bg-red-900/60 text-red-200 text-xs"
+            title="Keep the sharpest frame and reject the rest">Keep sharpest</button>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between px-2 py-1 border-t border-neutral-900" data-testid="phone-marks">
+        <div className="flex">
+          {[1, 2, 3, 4, 5].map((n) => (
+            <button key={n} onClick={() => rate("rating", photo.rating === n ? 0 : n)}
+              aria-label={`${n} star${n > 1 ? "s" : ""}`} data-testid={`phone-star-${n}`}
+              className={`w-12 h-14 text-[28px] leading-none ${n <= (photo.rating || 0) ? "text-yellow-400" : "text-neutral-700"}`}>★</button>
+          ))}
+        </div>
+        <button onClick={reject} data-testid="phone-reject"
+          className={`h-11 px-4 rounded-full text-sm font-medium ${rejected
+            ? "bg-red-700 text-white" : "border border-red-900 text-red-300"}`}>
+          ✕ {rejected ? "Rejected" : "Reject"}
+        </button>
       </div>
     </div>
   );
@@ -3628,6 +3881,12 @@ function PhotoolApp({ access }) {
   const [folderStats, setFolderStats] = useState(null);
   const [filter, setFilter] = useState({ flag: null, minRating: 0, color: null, tag: null, unreviewed: false, edited: false, pairMode: "paired",
     camera: null, matches: null, hidden: [], showDemoted: false });
+  const phone = usePhone();
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  // How many filters narrow the grid, said on the phone's folded Filters button.
+  const activeFilters = [filter.flag != null, filter.minRating > 0, filter.color != null, !!filter.tag,
+    filter.unreviewed, filter.edited, filter.camera != null, !!filter.matches, filter.showDemoted].filter(Boolean).length;
   // The open folder's cameras, for the chips; and whether a search typed in a
   // folder is of that folder (the default) or of the whole library.
   const [cameras, setCameras] = useState([]);
@@ -4881,9 +5140,10 @@ function PhotoolApp({ access }) {
           onRejectBurst={rejectBurstRest} />
       )}
 
-      <header className="border-b border-neutral-800 px-4 lg:px-6 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
+      <header className={`border-b border-neutral-800 px-4 lg:px-6 flex flex-wrap items-center gap-x-6 gap-y-2 ${phone ? "py-2" : "py-3"}`}
+        style={phone ? { paddingTop: "max(0.5rem, env(safe-area-inset-top))" } : undefined}>
         <h1 className="text-lg font-semibold tracking-tight whitespace-nowrap">Photool</h1>
-        <nav className="flex flex-wrap gap-1">
+        <nav className={phone ? "hidden" : "flex flex-wrap gap-1"}>
           {["import", "library", "people", "activity", "export", ...(access.local ? ["devices"] : [])].map((t) => (
             <button key={t} onClick={() => { setTab(t); if (t === "library") loadFolders(); if (t === "export") loadBasket(); }}
               className={`px-3 py-1.5 rounded text-sm capitalize transition-colors ${
@@ -4898,6 +5158,34 @@ function PhotoolApp({ access }) {
       </header>
 
       {access.local && <PairingRequests />}
+
+      {/* On a phone the tabs are at the bottom, under the thumb. Import, Activity
+          and Devices are things for the computer, under More. */}
+      {phone && cullIndex === null && developFile === null && !(picked.size > 0 || picking) && (
+        <nav className="fixed inset-x-0 bottom-0 z-40 bg-neutral-950/95 backdrop-blur border-t border-neutral-800 flex"
+          style={{ paddingBottom: "env(safe-area-inset-bottom)" }} data-testid="tab-bar">
+          {[["library", "Library", "▦"], ["people", "People", "☺"],
+            ["export", basketCount > 0 ? `Export ${basketCount}` : "Export", "⬡"]].map(([t, label, icon]) => (
+            <button key={t} onClick={() => { setMoreOpen(false); setTab(t); if (t === "library") loadFolders(); if (t === "export") loadBasket(); }}
+              className={`flex-1 h-14 flex flex-col items-center justify-center text-[11px] ${tab === t ? "text-white" : "text-neutral-500"}`}>
+              <span className="text-lg leading-none">{icon}</span>{label}
+            </button>
+          ))}
+          <button onClick={() => setMoreOpen((o) => !o)} data-testid="tab-more"
+            className={`flex-1 h-14 flex flex-col items-center justify-center text-[11px] ${
+              ["import", "activity", "devices"].includes(tab) || moreOpen ? "text-white" : "text-neutral-500"}`}>
+            <span className="text-lg leading-none">⋯</span>More
+          </button>
+          {moreOpen && (
+            <div className="absolute bottom-full right-2 mb-2 w-44 rounded-lg border border-neutral-800 bg-neutral-900 py-1 shadow-xl">
+              {["import", "activity", ...(access.local ? ["devices"] : [])].map((t) => (
+                <button key={t} onClick={() => { setMoreOpen(false); setTab(t); }}
+                  className={`block w-full text-left px-4 py-3 text-sm capitalize ${tab === t ? "text-white" : "text-neutral-300"}`}>{t}</button>
+              ))}
+            </div>
+          )}
+        </nav>
+      )}
 
       {storageWarning && (
         <div className="bg-red-950/60 border-b border-red-900 px-6 py-3 text-sm">
@@ -4932,7 +5220,7 @@ function PhotoolApp({ access }) {
 
       {/* Library and People use the whole width of the window; the form-like
           tabs keep a reading width so a line of text does not run 3000px. */}
-      <main className={`mx-auto px-4 py-4 lg:px-6 ${
+      <main className={`mx-auto lg:px-6 ${phone ? "px-2 pt-2 pb-24" : "px-4 py-4"} ${
         tab === "library" || tab === "people" ? "w-full" : "max-w-6xl"}`}>
         {tab === "import" && (
           <div className="space-y-6">
@@ -5091,8 +5379,23 @@ function PhotoolApp({ access }) {
                           smart={smartSearch} onSetup={setupSmartSearch}
                           folder={selectedFolder} inFolder={searchInFolder} onInFolder={setSearchInFolder} />
                       </div>
-                      {!searchResult && <FilterBar filter={filter} onFilterChange={setFilter} tags={tags} />}
-                      {!searchResult && (cameras.length > 1 || filter.showDemoted || shown?.hidden > 0) && (
+                      {phone && !searchResult && (
+                        <button onClick={() => setFiltersOpen((o) => !o)} data-testid="phone-filters"
+                          className={`h-9 px-3 rounded border text-sm ${activeFilters
+                            ? "border-sky-700 text-sky-300" : "border-neutral-700 text-neutral-300"}`}>
+                          Filters{activeFilters ? ` · ${activeFilters}` : ""} {filtersOpen ? "▴" : "▾"}
+                        </button>
+                      )}
+                      {phone && !searchResult && !filtersOpen && (
+                        <button onClick={() => { setCullIndex(null); setFilter((f) => ({ ...f, unreviewed: !f.unreviewed })); }}
+                          data-testid="phone-undecided"
+                          className={`h-9 px-3 rounded border text-sm ${filter.unreviewed
+                            ? "border-sky-700 text-sky-300 bg-sky-950/40" : "border-neutral-700 text-neutral-300"}`}>
+                          Undecided only
+                        </button>
+                      )}
+                      {!searchResult && (!phone || filtersOpen) && <FilterBar filter={filter} onFilterChange={setFilter} tags={tags} />}
+                      {!searchResult && (!phone || filtersOpen) && (cameras.length > 1 || filter.showDemoted || shown?.hidden > 0) && (
                         <div className="flex items-center gap-1.5 flex-wrap self-center" data-testid="camera-group">
                           <CameraChips cameras={cameras} value={filter.camera}
                             demoted={new Set(demoted.filter((d) => d.folder === selectedFolder).map((d) => d.camera))}
@@ -5112,7 +5415,7 @@ function PhotoolApp({ access }) {
                   {/* Acting on what is in view, how far the review has got, and
                       how big the thumbnails are. */}
                   <div className="border-t border-neutral-800 px-3 py-2 flex items-center gap-x-4 gap-y-2 flex-wrap">
-                    <FolderActions
+                    {(!phone || filtersOpen) && <FolderActions
                       count={photos.length}
                       tags={tags}
                       busy={bulkBusy}
@@ -5131,14 +5434,14 @@ function PhotoolApp({ access }) {
                       onMeasure={() => measureFolder(selectedFolder, filter)}
                       selecting={picking || picked.size > 0}
                       onSelect={() => (picking || picked.size ? clearPicked() : setPicking(true))}
-                    />
+                    />}
                     <div className="flex items-center gap-4 sm:ml-auto flex-wrap">
                       <ReviewProgress
                         stats={shown && folderStats ? { ...folderStats, ...shown } : folderStats}
                         resume={resumeTarget >= 0 ? resumeAt : null}
                         onResume={() => setCullIndex(resumeTarget)}
                         onClearResume={clearResumePoint} />
-                      <div className="flex items-center gap-1 text-xs text-neutral-500" title="Thumbnail size">
+                      <div className={`${phone ? "hidden" : "flex"} items-center gap-1 text-xs text-neutral-500`} title="Thumbnail size">
                         {Object.keys(THUMB_SIZES).map((k) => (
                           <button key={k} onClick={() => setThumbSize(k)}
                             className={`px-1.5 py-0.5 rounded ${thumbSize === k
@@ -5172,7 +5475,7 @@ function PhotoolApp({ access }) {
                     onRate={handleRate}
                     basketSet={basketSet} onToggleBasket={toggleBasket}
                     burstSizes={burstSizes}
-                    cellSize={THUMB_SIZES[thumbSize] || THUMB_SIZES.M}
+                    cellSize={phone ? PHONE_CELL : THUMB_SIZES[thumbSize] || THUMB_SIZES.M}
                     hintByPath={hintsWithEyes}
                     proposalByPath={proposals}
                     selected={picked} selecting={picking} onPick={pickPhoto} />
