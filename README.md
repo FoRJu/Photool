@@ -29,7 +29,7 @@ make the keepers look right, and share them.
   which Photool learns from each camera's JPEGs:
   - exposure (±5 EV), highlights and shadows, white balance, tone curve, colour
     mixer, black & white
-  - local masks: gradients, brushes, subject, sky, people and faces, and any object you point at
+  - local masks: gradients, brushes, subject, sky, people and faces, and any object you point at or name
     (a box or clicks, chosen by Segment Anything), with zoom and pan to work on small things
   - spot healing, noise reduction (AI), sharpening, lens correction, upright
   - virtual copies, presets, copy/paste and "match this look"
@@ -105,7 +105,7 @@ Optional models are downloaded on first use. They are not part of this
 repository, and each has its own licence. **Check them before any commercial
 use.** In particular, the ArcFace weights (InsightFace) and SegFormer (NVIDIA)
 are released for non-commercial use only. SAM 3 is under Meta's SAM License,
-which is not an open-source licence; it is fetched only if you choose it.
+which is not an open-source licence; it is fetched only if you choose it and agree to it.
 
 | Used for | Model | Source |
 |---|---|---|
@@ -115,7 +115,7 @@ which is not an open-source licence; it is fetched only if you choose it.
 | Noise reduction | TreeNet denoise (RawForge) | github.com/rymuelle/RawForge |
 | Subject mask | U²-Net-p | rembg releases |
 | Sky and people masks | SegFormer-B0 (ADE20K) | Hugging Face, `Xenova/segformer-b0-finetuned-ade-512-512` |
-| Object masks | SAM 2.1 Hiera base+ (Apache-2.0); SAM 3 tracker if chosen (SAM License) | Hugging Face, `onnx-community/sam2.1-hiera-base-plus-ONNX`, `onnx-community/sam3-tracker-ONNX` |
+| Object masks | SAM 2.1 Hiera base+ (Apache-2.0); SAM 3 if chosen (SAM License), our ONNX export of Meta's weights | Hugging Face, `onnx-community/sam2.1-hiera-base-plus-ONNX`, `Photool/sam3-ONNX` |
 | Place names | GeoNames `cities5000` | geonames.org (CC BY 4.0) |
 
 ## Built with

@@ -3,8 +3,9 @@ Object masks: one thing pointed at — a box round it, clicks on it — chosen b
 Segment Anything model, kept as a picture and read back at render time.
 
 The model is not needed: a stand-in with the same inputs and outputs selects the
-box it is given (or a square round the first click), so what is tested is how a
-prompt reaches the model and how its answer reaches the frame, not the model.
+box it is given (or a square round the first click), and one for SAM 3's words
+finds the same two squares whatever is named, so what is tested is how a prompt
+reaches the model and how its answer reaches the frame, not the model.
 """
 
 import sys
@@ -22,15 +23,54 @@ from adjust.render import LinearFrame, develop_frame  # noqa: E402
 from test_develop_routes import PHOTO, client  # noqa: E402,F401  (a fixture)
 
 
+class _Output:
+    def __init__(self, name):
+        self.name = name
+
+
 class _Encoder:
-    def __init__(self, n):
-        self.n = n
+    def __init__(self, n, names=("image_embeddings.0", "image_embeddings.1", "image_embeddings.2")):
+        self.n, self.names = n, names
         self.runs = 0
+
+    def get_outputs(self):
+        return [_Output(n) for n in self.names]
 
     def run(self, _names, feeds):
         self.runs += 1
         assert feeds["pixel_values"].shape == (1, 3, self.n, self.n)
-        return [np.zeros((1, 1, 1, 1), np.float32)] * 3
+        return [np.zeros((1, 1, 1, 1), np.float32)] * len(self.names)
+
+
+class _Text:
+    def __init__(self):
+        self.runs = 0
+
+    def run(self, _names, feeds):
+        self.runs += 1
+        assert feeds["input_ids"].shape == feeds["attention_mask"].shape == (1, 32)
+        return [np.zeros((1, 32, 4), np.float32)]
+
+
+class _Detector:
+    """Finds a square at the view's top left (score 0.9) and one at its bottom
+    right (0.8), and a third it is not sure of (0.2), whatever is named."""
+
+    side = 64
+
+    def get_outputs(self):
+        return [_Output(n) for n in ("pred_logits", "pred_boxes", "presence_logits", "pred_masks", "semantic_seg")]
+
+    def run(self, _names, feeds):
+        assert {"features_288", "features_144", "features_72", "text_features", "text_mask"} <= set(feeds)
+        n = self.side
+        masks = np.full((1, 3, n, n), -20.0, np.float32)
+        masks[0, 0, : n // 4, : n // 4] = 20.0
+        masks[0, 1, n // 2:, : n // 4] = 20.0
+        masks[0, 2, 3 * n // 4:, 3 * n // 4:] = 20.0
+        logit = lambda p: np.log(p / (1 - p))  # noqa: E731
+        scores = np.array([[logit(0.9), logit(0.2), logit(0.8)]], np.float32)
+        return scores, np.zeros((1, 3, 4), np.float32), np.full((1, 1), 20.0, np.float32), masks, masks[:, :1]
 
 
 class _Decoder:
@@ -69,6 +109,23 @@ def model(monkeypatch, tmp_path):
     objects._embeds.clear()
 
 
+@pytest.fixture()
+def sam3(monkeypatch, tmp_path):
+    n = objects.MODELS["sam3"]["input"]
+    names = ("features_288", "features_144", "features_72",
+             "image_embeddings.0", "image_embeddings.1", "image_embeddings.2")
+    encoder, text = _Encoder(n, names), _Text()
+    monkeypatch.setattr(objects, "_session_pair", lambda _model: (encoder, _Decoder(n)))
+    monkeypatch.setattr(objects, "_find_pair", lambda _model: (text, _Detector()))
+    monkeypatch.setattr(objects, "_tokens", lambda phrase: (np.zeros((1, 32), np.int64), np.ones((1, 32), np.int64)))
+    objects._embeds.clear()
+    objects._texts.clear()
+    objects.configure(str(tmp_path / "models"), str(tmp_path / "mattes"))
+    yield encoder, text
+    objects._embeds.clear()
+    objects._texts.clear()
+
+
 def _picture(h=200, w=300):
     # Flat grey: the guided filter has no edge to pull a selection to.
     return np.full((h, w, 3), 128, np.uint8)
@@ -90,6 +147,14 @@ class TestTheEdit:
                 {"view": [0.2, 0.1, 0.6, 0.5], "points": [[0.3, 0.2, 1], [1.0, 0.2, 0]], "pick": 2},
                 {"view": [0.0, 0.0, 1.0, 1.0], "box": [0.4, 0.3, 0.8, 0.9]},
             ]}]
+        assert from_crs(to_crs(clean)) == clean
+
+    def test_a_named_part_keeps_its_words_and_choices(self):
+        clean = normalize({"masks": [{"kind": "object", "model": "sam3", "parts": [
+            {"view": [0, 0, 1, 1], "text": "  the   dog\n", "keep": [2, 0, 2, 99, "x"], "points": [[0.5, 0.5, 1]]},
+            {"text": "   "},                                     # named nothing: nothing chosen
+        ]}]})
+        assert clean["masks"][0]["parts"] == [{"view": [0.0, 0.0, 1.0, 1.0], "text": "the dog", "keep": [0, 2]}]
         assert from_crs(to_crs(clean)) == clean
 
     def test_a_matte_name_is_only_hex(self):
@@ -137,6 +202,47 @@ class TestChoosing:
         for x in (0.3, 0.5, 0.7):
             objects.predict(rgb8, {"view": [0, 0, 1, 1], "points": [[x, 0.5, 1]]}, "sam2.1", key="frame")
         assert encoder.runs == 1
+
+
+class TestFinding:
+    def test_every_instance_named_is_found_best_first(self, sam3):
+        logits, scores = objects.find(_picture(), {"view": [0, 0, 1, 1], "text": "dog"}, "sam3")
+        assert np.allclose(scores, [0.9, 0.8], atol=1e-3)       # the unsure one is left out
+        assert logits.shape == (2, 64, 64) and logits[1, 63, 63] > 0
+
+    def test_a_named_part_selects_what_it_keeps(self, sam3):
+        rgb8 = _picture()
+        every = objects.selection(rgb8, [{"view": [0, 0, 1, 1], "text": "dog"}], "sam3")
+        assert every[10, 10] > 0.95 and every[190, 290] > 0.95 and every[100, 150] < 0.05
+        second = objects.selection(rgb8, [{"view": [0, 0, 1, 1], "text": "dog", "keep": [1]}], "sam3")
+        assert second[10, 10] < 0.05 and second[190, 290] > 0.95
+
+    def test_words_and_clicks_share_one_reading(self, sam3):
+        encoder, text = sam3
+        rgb8 = _picture()
+        objects.predict(rgb8, {"view": [0, 0, 1, 1], "points": [[0.5, 0.5, 1]]}, "sam3", key="frame")
+        for word in ("dog", "hair", "dog"):
+            objects.find(rgb8, {"view": [0, 0, 1, 1], "text": word}, "sam3", key="frame")
+        assert encoder.runs == 1
+        assert text.runs == 2                    # each phrase read once
+
+    def test_words_on_an_older_view_read_it_again(self, sam3):
+        # The detector's features are kept only for the latest views; a click's
+        # embeddings are kept longer.
+        encoder, _ = sam3
+        rgb8 = _picture()
+        views = [[0, 0, 1, 1], [0, 0, 0.5, 0.5], [0.5, 0.5, 1, 1]]
+        for view in views:
+            objects.predict(rgb8, {"view": view, "points": [[view[0] + 0.1, view[1] + 0.1, 1]]}, "sam3", key="f")
+        objects.predict(rgb8, {"view": views[0], "points": [[0.2, 0.2, 1]]}, "sam3", key="f")
+        assert encoder.runs == 3
+        objects.find(rgb8, {"view": views[0], "text": "dog"}, "sam3", key="f")   # the oldest read
+        assert encoder.runs == 4
+
+    def test_sam21_does_not_find(self):
+        assert objects.finds("sam3") and not objects.finds("sam2.1")
+        with pytest.raises(objects.ModelsUnavailable):
+            objects._find_pair("sam2.1")
 
 
 class TestOneAtATime:
@@ -218,6 +324,22 @@ class TestRoutes:
         assert kept["model"] == "sam2.1" and kept["parts"][0]["view"] == [0.0, 0.0, 1.0, 1.0]
         png = client.get(f"/api/export/develop/object-matte/{kept['matte']}")
         assert png.status_code == 200 and png.headers["content-type"] == "image/png"
+
+    def test_find_then_keep(self, client, sam3):
+        res = client.post("/api/export/develop/object-find",
+                          json={"filepath": PHOTO, "model": "sam3", "part": {"text": "dog"}})
+        assert res.status_code == 200
+        found = res.json()
+        assert found["text"] == "dog" and [f["score"] for f in found["found"]] == [0.9, 0.8]
+        assert found["found"][0]["box"] == [0.0, 0.0, 0.25, 0.25]
+        res = client.post("/api/export/develop/object-commit",
+                          json={"filepath": PHOTO, "model": "sam3", "parts": [{"text": "dog", "keep": [1]}]})
+        assert res.status_code == 200 and res.json()["parts"][0]["keep"] == [1]
+
+    def test_finding_needs_sam3(self, client, model):
+        res = client.post("/api/export/develop/object-find",
+                          json={"filepath": PHOTO, "model": "sam2.1", "part": {"text": "dog"}})
+        assert res.status_code == 400
 
     def test_nothing_pointed_at_is_refused(self, client, model):
         res = client.post("/api/export/develop/object-commit",

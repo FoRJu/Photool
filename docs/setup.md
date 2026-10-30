@@ -138,7 +138,7 @@ folder. Each download is checked against a known hash.
 | Smart search ("kids at the beach") | Search, *Describe* | 305 MB |
 | Noise reduction | Develop, Detail | 22 MB |
 | Subject, sky and people masks | Develop, Masks | 4.6 MB and 15 MB |
-| Object masks (SAM 2.1; SAM 3 if chosen) | Develop, Masks | 330 MB; 960 MB |
+| Object masks (SAM 2.1; SAM 3 if chosen) | Develop, Masks | 330 MB; 1.8 GB |
 | Place names | Library, a folder's About | ~10 MB (GeoNames town list) |
 
 **Graphics cards.** Noise reduction and object masks use a graphics card.
@@ -146,6 +146,8 @@ On Windows they use any card through DirectML: NVIDIA, AMD or Intel. On a Mac
 they use Core ML, the Apple Silicon GPU and Neural Engine. Without one they run on
 the CPU, more slowly (an object mask's first click on a view then takes seconds,
 not a fifth of one). Everything else runs on the CPU and needs no graphics card.
+SAM 3 holds about 6.5 GB of graphics memory while it is in use, and lets go of
+it three minutes after the last click or word.
 
 ## 7. Other computers and phones
 

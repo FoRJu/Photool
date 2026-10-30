@@ -23,8 +23,10 @@ An edit's ``masks`` is a list of them, each with its own few controls:
   object   one thing the person pointed at (adjust.objects): ``parts``, each a
            prompt on a ``view`` of the frame (left, top, right, bottom) — a
            ``box`` (x1, y1, x2, y2) dragged round it and ``points`` [x, y, 1]
-           on it or [x, y, 0] off it, and the candidate it took, ``pick`` — with
-           the ``model`` that read them. The selection they made is kept as a
+           on it or [x, y, 0] off it, and the candidate it took, ``pick``; or
+           (SAM 3) the ``text`` naming it and which of the instances found it
+           ``keep``s, all when not said — with the ``model`` that read them.
+           The selection they made is kept as a
            picture named ``matte``, since the same prompts on the frame decoded
            at another size can choose another candidate; ``invert`` for
            everything else.
@@ -101,6 +103,8 @@ MATTED = CHOSEN + ("object",)
 OBJECT_MODELS = ("sam2.1", "sam3")
 MAX_PARTS = 12
 MAX_PART_POINTS = 24
+MAX_PART_TEXT = 60
+MAX_FOUND = 20
 MAX_STROKES = 200
 # A stroke longer than this is thinned (every other point, and so on): the
 # hand's path is sampled far more finely than a soft brush needs.
@@ -169,6 +173,15 @@ def _normalize_part(part) -> Optional[dict]:
     if right - left < 0.005 or bottom - top < 0.005:
         left, top, right, bottom = 0.0, 0.0, 1.0, 1.0
     out: dict = {"view": [round(left, 5), round(top, 5), round(right, 5), round(bottom, 5)]}
+    text = part.get("text")
+    if isinstance(text, str) and text.strip():
+        # A thing named: every instance found, or those it keeps.
+        out["text"] = " ".join("".join(c for c in text if c.isprintable()).split())[:MAX_PART_TEXT]
+        keep = part.get("keep")
+        if isinstance(keep, (list, tuple)):
+            out["keep"] = sorted({int(k) for k in keep
+                                  if isinstance(k, (int, float)) and 0 <= k < MAX_FOUND})
+        return out if out["text"] else None
     points = []
     for point in part.get("points") or ():
         if isinstance(point, (list, tuple)) and len(point) == 3:

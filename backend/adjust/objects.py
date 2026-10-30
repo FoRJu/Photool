@@ -1,12 +1,15 @@
 """
 Masks of one thing in the picture, chosen by pointing at it: a box dragged
 round it, clicks on it (and Alt-clicks on what is not it), as Segment Anything
-takes them.
+takes them. With SAM 3, also by naming it: "hair", "sky", "dog".
 
   sam2.1  SAM 2.1 Hiera base+ (Meta), Apache-2.0, 330 MB. The default.
-  sam3    SAM 3's tracker: the same prompts, a larger image encoder that keeps
+  sam3    SAM 3 (Meta), under Meta's SAM License; 1.8 GB, fetched only when
+          chosen. The same prompts, read by a larger image encoder that keeps
           small and thin things (a drummer across a stage, a trombone's slide)
-          better. Under Meta's SAM License; 960 MB, fetched only when chosen.
+          better, and words: every instance of what is named, each with its own
+          selection. One reading of the view serves both (the graphs are our
+          own export of Meta's weights, made to run on DirectML).
 
 A model reads a *view* of the frame (all of it, or the part the develop view is
 zoomed into) at about 1024 px, and answers each prompt with three candidate
@@ -38,14 +41,17 @@ from typing import Optional
 
 import numpy as np
 
+from analysis import clip
 from faces.models import ModelSpec, ModelsUnavailable, _download, verify
 
 logger = logging.getLogger(__name__)
 
 _SAM21 = ("https://huggingface.co/onnx-community/sam2.1-hiera-base-plus-ONNX/resolve/"
           "bab18593f44e652f04cf18b60b3690f60e8996b0/onnx/")
-_SAM3 = ("https://huggingface.co/onnx-community/sam3-tracker-ONNX/resolve/"
-         "429305c8a5b3de597243d919a07e4e6bdcd00ef7/onnx/")
+# Our export: vision (one reading for clicks and words), text and detector
+# graphs from Meta's SAM 3 weights, and onnx-community's prompt decoder.
+_SAM3 = ("https://huggingface.co/Photool/sam3-ONNX/resolve/"
+         "main/")
 
 
 def _spec(folder: str, base: str, name: str, sha256: str, size: int) -> ModelSpec:
@@ -75,20 +81,37 @@ MODELS = {
     },
     "sam3": {
         "label": "SAM 3",
+        "license": "https://github.com/facebookresearch/sam3/blob/main/LICENSE",
         "input": 1008,
         "mean": (0.5, 0.5, 0.5),
         "std": (0.5, 0.5, 0.5),
-        "encoder": "sam3-tracker/vision_encoder_fp16.onnx",
-        "decoder": "sam3-tracker/prompt_encoder_mask_decoder.onnx",
+        "encoder": "sam3/vision_fp16.onnx",
+        "decoder": "sam3/prompt_encoder_mask_decoder.onnx",
+        "text": "sam3/text_fp16.onnx",
+        "detector": "sam3/detector.onnx",
         "files": (
-            _spec("sam3-tracker", _SAM3, "vision_encoder_fp16.onnx",
-                  "f8c52be6de99124bb17f25792054406abc482ce3502166f948d5c5849cd14d02", 1263005),
-            _spec("sam3-tracker", _SAM3, "vision_encoder_fp16.onnx_data",
-                  "4b021a4d3068c9e9153f2f2fcc9e6d280156228671c00ab6c2ddfa737da7f151", 934729728),
-            _spec("sam3-tracker", _SAM3, "prompt_encoder_mask_decoder.onnx",
+            _spec("sam3", _SAM3, "vision_fp16.onnx",
+                  "e47a46c3facb14675eaafb2841c592897f84d09e80b6e805d4ec3f0eb1084220", 5780933),
+            _spec("sam3", _SAM3, "vision_fp16.onnx.data",
+                  "e7fea269dbebea013537810b1a05affa677b3f5053ef6a93c131726e1ce0608e", 921428992),
+            _spec("sam3", _SAM3, "prompt_encoder_mask_decoder.onnx",
                   "4f9ac85291d634ae36a21ce940e3c09671cc05b6511966e5d3d96988b12b95f8", 213114),
-            _spec("sam3-tracker", _SAM3, "prompt_encoder_mask_decoder.onnx_data",
+            _spec("sam3", _SAM3, "prompt_encoder_mask_decoder.onnx_data",
                   "2d870726d484cb496760fd139c21f115cf1b945c6b69583489faa2ac79f1d2ae", 22072320),
+            _spec("sam3", _SAM3, "text_fp16.onnx",
+                  "bc4c4cc5976e2eba35afb2f7f599005dc26fba149d3accfacbb103273f30bb2d", 2261534),
+            _spec("sam3", _SAM3, "text_fp16.onnx.data",
+                  "57b5e29bd7010dd8888549f49de2524c2437cefc7b9d40841171f194ac651ed0", 706401280),
+            _spec("sam3", _SAM3, "detector.onnx",
+                  "f90162580a07b018fd2af7db3960b24435d0802b073078b3f8e55e23c1fa9979", 2690377),
+            _spec("sam3", _SAM3, "detector.onnx.data",
+                  "9d34bac595f6feffb3f01116aebf01c343e87e711a4852557b440af0d5d0dae7", 101799296),
+            # Meta's terms, which come with the files.
+            _spec("sam3", _SAM3, "LICENSE",
+                  "4dea99bfaa016e21bc860d73f344236bd1e5c4977d1a9a8fd32f822b500ae1be", 7353),
+            # Its words are CLIP's: the same vocabulary, the files smart search uses.
+            clip.MODELS[clip.VOCAB],
+            clip.MODELS[clip.MERGES],
         ),
     },
 }
@@ -101,20 +124,34 @@ DEFAULT_MODEL = "sam2.1"
 PICTURE_SIZE = 2560
 ZOOMED_PICTURE_SIZE = 4096
 # Views kept read, by frame, view and model: zooming back out, or a second part
-# on the same view, does not read it again. Each is about 17 MB.
+# on the same view, does not read it again. Each is about 17 MB; SAM 3's reading
+# for words is 56 MB more, kept only for the latest two.
 _EMBED_LIMIT = 6
+_FEATURES_LIMIT = 2
 _MATTE_LIMIT = 8
+# Words: what counts as found (the model's score for an instance times its
+# score for the phrase being in the picture at all), and how many at most.
+FIND_THRESHOLD = 0.5
+MAX_FOUND = 20
+_TEXT_TOKENS = 32
+_TEXT_LIMIT = 32
+# The graphics card is let go of when nothing has been chosen for a while: SAM 3
+# holds 6.5 GB of an 8 GB card while it works (its working memory is kept
+# between runs), and loading it again takes a few seconds.
+IDLE_RELEASE = 180.0
 
 _models_dir: Optional[str] = None
 _mattes_dir: Optional[str] = None
 _sessions: dict = {}
 _failed: dict = {}
+_idle: Optional[threading.Timer] = None
 _lock = threading.Lock()
 # DirectML runs one model call at a time per session: two at once (a click made
 # while the last one is being answered) crash the process. Every model call
 # takes this lock.
 _run_lock = threading.Lock()
-_embeds: "OrderedDict[tuple, list]" = OrderedDict()
+_embeds: "OrderedDict[tuple, dict]" = OrderedDict()
+_texts: "OrderedDict[tuple, tuple]" = OrderedDict()
 _mattes: "OrderedDict[str, np.ndarray]" = OrderedDict()
 _cache_lock = threading.Lock()
 
@@ -133,6 +170,11 @@ def configure(models_dir: str, mattes_dir: Optional[str] = None) -> None:
 
 def model_name(model) -> str:
     return model if model in MODELS else DEFAULT_MODEL
+
+
+def finds(model) -> bool:
+    """Whether ``model`` can find things by name."""
+    return "detector" in MODELS[model_name(model)]
 
 
 def ensure(model: str, download: bool = True) -> Path:
@@ -174,11 +216,33 @@ def download_size(model: str) -> int:
     return sum(spec.size for spec in MODELS[model_name(model)]["files"])
 
 
-def _session_pair(model: str):
+def release() -> None:
+    """Let go of every model loaded, and the graphics memory it holds."""
+    with _run_lock, _lock:
+        if _sessions:
+            logger.info("[objects] models released")
+        _sessions.clear()
+
+
+def _keep_awake() -> None:
+    """Hold the models for :data:`IDLE_RELEASE` seconds more."""
+    global _idle
+    if _idle is not None:
+        _idle.cancel()
+    _idle = threading.Timer(IDLE_RELEASE, release)
+    _idle.daemon = True
+    _idle.start()
+
+
+def _sessions_of(model: str, parts: tuple) -> tuple:
     model = model_name(model)
     with _lock:
-        pair = _sessions.get(model)
-        if pair is None:
+        _keep_awake()
+        missing = [part for part in parts if (model, part) not in _sessions]
+        if missing:
+            # One model at a time: the other's memory is wanted for this one.
+            for other in [k for k in _sessions if k[0] != model]:
+                del _sessions[other]
             import onnxruntime as ort
 
             folder = ensure(model)
@@ -191,12 +255,24 @@ def _session_pair(model: str):
             options.enable_mem_pattern = False
             options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             spec = MODELS[model]
-            pair = tuple(ort.InferenceSession(str(folder / spec[part]), sess_options=options,
-                                              providers=providers)
-                         for part in ("encoder", "decoder"))
-            logger.info("[objects] %s loaded on %s", spec["label"], pair[0].get_providers()[0])
-            _sessions[model] = pair
-    return pair
+            for part in missing:
+                session = ort.InferenceSession(str(folder / spec[part]), sess_options=options,
+                                               providers=providers)
+                logger.info("[objects] %s %s loaded on %s", spec["label"], part, session.get_providers()[0])
+                _sessions[(model, part)] = session
+        return tuple(_sessions[(model, part)] for part in parts)
+
+
+def _session_pair(model: str):
+    """The image encoder and the prompt decoder."""
+    return _sessions_of(model, ("encoder", "decoder"))
+
+
+def _find_pair(model: str):
+    """The text encoder and the detector, loaded the first time words are used."""
+    if not finds(model):
+        raise ModelsUnavailable(f"{MODELS[model_name(model)]['label']} cannot find things by name: choose SAM 3")
+    return _sessions_of(model, ("text", "detector"))
 
 
 # ── The picture ─────────────────────────────────────────────────────────
@@ -236,14 +312,16 @@ def _view_box(view, h: int, w: int) -> tuple:
     return max(0, min(x0, x1 - 8)), max(0, min(y0, y1 - 8)), x1, y1
 
 
-def _embedding(rgb8: np.ndarray, view: tuple, model: str, key) -> list:
-    """The model's reading of one view of the picture, kept by ``key``."""
+def _embedding(rgb8: np.ndarray, view: tuple, model: str, key, need: str = "image_embeddings.0") -> dict:
+    """The model's reading of one view of the picture, by output name, kept by
+    ``key``. ``need`` is an output the caller reads: one dropped from an older
+    reading (the features for words) has the view read again."""
     model = model_name(model)
     full_key = (key, tuple(round(v, 5) for v in view), model)
     if key is not None:
         with _cache_lock:
             kept = _embeds.get(full_key)
-            if kept is not None:
+            if kept is not None and need in kept:
                 _embeds.move_to_end(full_key)
                 return kept
     with _run_lock:
@@ -251,12 +329,12 @@ def _embedding(rgb8: np.ndarray, view: tuple, model: str, key) -> list:
             # A second click on the same view, sent while the first was reading it.
             with _cache_lock:
                 kept = _embeds.get(full_key)
-            if kept is not None:
+            if kept is not None and need in kept:
                 return kept
         return _read_view(rgb8, view, model, key, full_key)
 
 
-def _read_view(rgb8: np.ndarray, view: tuple, model: str, key, full_key) -> list:
+def _read_view(rgb8: np.ndarray, view: tuple, model: str, key, full_key) -> dict:
     """Run the image encoder over one view. Called with ``_run_lock`` held."""
     import cv2
 
@@ -270,12 +348,18 @@ def _read_view(rgb8: np.ndarray, view: tuple, model: str, key, full_key) -> list
                        else cv2.INTER_CUBIC)
     x = (small.astype(np.float32) / 255.0 - np.array(spec["mean"], np.float32)) / np.array(spec["std"], np.float32)
     encoder, _ = _session_pair(model)
-    feats = encoder.run(None, {"pixel_values": x.transpose(2, 0, 1)[None].astype(np.float32)})
+    outs = encoder.run(None, {"pixel_values": x.transpose(2, 0, 1)[None].astype(np.float32)})
+    feats = {o.name: v for o, v in zip(encoder.get_outputs(), outs)}
+    # The detector's features are large: kept at half precision, and only for
+    # the latest few views.
+    feats.update({k: v.astype(np.float16) for k, v in feats.items() if k.startswith("features_")})
     if key is not None:
         with _cache_lock:
             _embeds[full_key] = feats
             while len(_embeds) > _EMBED_LIMIT:
                 _embeds.popitem(last=False)
+            for old in list(_embeds)[:-_FEATURES_LIMIT]:
+                _embeds[old] = {k: v for k, v in _embeds[old].items() if not k.startswith("features_")}
     return feats
 
 
@@ -299,11 +383,61 @@ def predict(rgb8: np.ndarray, part: dict, model: str, key=None) -> tuple:
                          (box[2] - left) * sx, (box[3] - top) * sy]]], np.float32)
              if box else np.zeros((1, 0, 4), np.float32))
     _, decoder = _session_pair(model)
-    feeds = {f"image_embeddings.{i}": f for i, f in enumerate(feats)}
+    feeds = {f"image_embeddings.{i}": feats[f"image_embeddings.{i}"] for i in range(3)}
     with _run_lock:
         scores, masks, _ = decoder.run(None, {**feeds, "input_points": points, "input_labels": labels,
                                               "input_boxes": boxes})
     return masks[0, 0].astype(np.float32), scores[0, 0].astype(np.float32)
+
+
+def _tokens(phrase: str) -> tuple:
+    """SAM 3's input for a phrase: CLIP's tokens, at most 32, padded with the end
+    mark, and which of them are the phrase."""
+    ids = clip.tokenize(phrase)
+    if len(ids) > _TEXT_TOKENS:
+        ids = ids[:_TEXT_TOKENS - 1] + ids[-1:]
+    mask = [1] * len(ids) + [0] * (_TEXT_TOKENS - len(ids))
+    ids = ids + [ids[-1]] * (_TEXT_TOKENS - len(ids))
+    return np.array([ids], np.int64), np.array([mask], np.int64)
+
+
+def _text_features(phrase: str, model: str) -> tuple:
+    """A phrase's encoding, kept: the same word on the next photo is not read again."""
+    key = (model, phrase)
+    with _cache_lock:
+        kept = _texts.get(key)
+        if kept is not None:
+            _texts.move_to_end(key)
+            return kept
+    ids, mask = _tokens(phrase)
+    text, _ = _find_pair(model)
+    with _run_lock:
+        features = text.run(None, {"input_ids": ids, "attention_mask": mask})[0]
+    with _cache_lock:
+        _texts[key] = (features, mask)
+        while len(_texts) > _TEXT_LIMIT:
+            _texts.popitem(last=False)
+    return features, mask
+
+
+def find(rgb8: np.ndarray, part: dict, model: str, key=None) -> tuple:
+    """Every instance of what a part names on its view: ``(logits, scores)``,
+    logits (n, h, w) at the detector's mask size, best first, scores 0..1.
+    Nothing found is ``n == 0``."""
+    model = model_name(model)
+    _, detector = _find_pair(model)
+    features, mask = _text_features(part["text"], model)
+    feats = _embedding(rgb8, part["view"], model, key, need="features_72")
+    feeds = {k: feats[k].astype(np.float32) for k in ("features_288", "features_144", "features_72")}
+    with _run_lock:
+        outs = detector.run(None, {**feeds, "text_features": features, "text_mask": mask})
+    got = {o.name: v for o, v in zip(detector.get_outputs(), outs)}
+    sig = lambda v: 1.0 / (1.0 + np.exp(-np.clip(v, -30.0, 30.0)))  # noqa: E731
+    scores = sig(got["pred_logits"][0].reshape(-1)) * sig(got["presence_logits"].reshape(-1)[0])
+    masks = got["pred_masks"][0]
+    order = [int(i) for i in np.argsort(-scores)
+             if scores[i] > FIND_THRESHOLD and (masks[i] > 0).any()][:MAX_FOUND]
+    return masks[order].astype(np.float32), scores[order].astype(np.float32)
 
 
 def chosen(scores: np.ndarray, pick) -> int:
@@ -321,10 +455,19 @@ def _part_matte(rgb8: np.ndarray, grey: np.ndarray, part: dict, model: str, key)
     from adjust.segment import _guided
 
     h, w = rgb8.shape[:2]
-    logits, scores = predict(rgb8, part, model, key)
     x0, y0, x1, y1 = _view_box(part["view"], h, w)
     vw, vh = x1 - x0, y1 - y0
-    rough = cv2.resize(logits[chosen(scores, part.get("pick"))], (vw, vh), interpolation=cv2.INTER_LINEAR)
+    if part.get("text"):
+        # The instances found that the part keeps (all of them, unless it says).
+        logits, _ = find(rgb8, part, model, key)
+        keep = [i for i in part.get("keep", range(len(logits))) if i < len(logits)]
+        if not keep:
+            return np.zeros((h, w), np.float32)
+        logit = logits[keep].max(axis=0)
+    else:
+        logits, scores = predict(rgb8, part, model, key)
+        logit = logits[chosen(scores, part.get("pick"))]
+    rough = cv2.resize(logit, (vw, vh), interpolation=cv2.INTER_LINEAR)
     rough = 1.0 / (1.0 + np.exp(-np.clip(rough, -30.0, 30.0)))
     # Followed to the picture's own edges, on the view's scale: a part chosen at
     # 4x keeps a finer edge than one chosen on the whole frame.

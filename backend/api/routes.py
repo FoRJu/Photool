@@ -3132,12 +3132,13 @@ class ObjectModelRequest(BaseModel):
 @router.get("/export/develop/object-models")
 async def develop_object_models():
     """The models an object mask can be chosen with: whether each is here yet,
-    and how much a first use fetches."""
+    how much a first use fetches, and whether it finds things by name."""
     from adjust import objects
 
     def _list():
         return [{"model": name, "label": spec["label"], "available": objects.available(name),
-                 "download_mb": round(objects.download_size(name) / 1e6)}
+                 "download_mb": round(objects.download_size(name) / 1e6), "finds": objects.finds(name),
+                 "license": spec.get("license")}
                 for name, spec in objects.MODELS.items()]
 
     return {"models": await _run_blocking(_list), "default": objects.DEFAULT_MODEL}
@@ -3203,6 +3204,54 @@ async def develop_object_predict(req: ObjectPredictRequest, request: Request):
 
     try:
         found = await _run_blocking(_predict)
+    except ModelsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Could not read this frame")
+    return found
+
+
+@router.post("/export/develop/object-find")
+async def develop_object_find(req: ObjectPredictRequest, request: Request):
+    """Every instance of what a part names (its ``text``) on its view, best
+    first: each a grey PNG over the view (a data URL), its score, and the box it
+    fills as fractions of the whole frame. SAM 3 only; the first use loads its
+    text model."""
+    import base64
+
+    import numpy as np
+
+    from adjust import objects
+    from adjust.masks import _normalize_part
+    from faces.models import ModelsUnavailable
+
+    part = _normalize_part(req.part)
+    if part is None or not part.get("text"):
+        raise HTTPException(status_code=400, detail="Name what to find")
+    if not objects.finds(req.model):
+        raise HTTPException(status_code=400, detail="Finding by name needs SAM 3")
+    config = request.app.state.config
+
+    def _find():
+        size = objects.picture_size([part])
+        frame = _mask_frame(config, req.filepath, size, req)
+        if frame is None:
+            return None
+        logits, scores = objects.find(objects.picture(frame), part, req.model, _object_key(req, size))
+        left, top, right, bottom = part["view"]
+        found = []
+        for logit, score in zip(logits, scores):
+            soft = 1.0 / (1.0 + np.exp(-np.clip(logit, -30.0, 30.0)))
+            ys, xs = np.nonzero(soft > 0.5)
+            mh, mw = soft.shape
+            box = [left + (right - left) * xs.min() / mw, top + (bottom - top) * ys.min() / mh,
+                   left + (right - left) * (xs.max() + 1) / mw, top + (bottom - top) * (ys.max() + 1) / mh]
+            found.append({"score": round(float(score), 3), "box": [round(v, 4) for v in box],
+                          "image": "data:image/png;base64," + base64.b64encode(objects.png(soft)).decode()})
+        return {"view": part["view"], "text": part["text"], "found": found}
+
+    try:
+        found = await _run_blocking(_find)
     except ModelsUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     if found is None:

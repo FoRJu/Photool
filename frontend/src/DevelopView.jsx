@@ -992,6 +992,7 @@ const matteKey = (m) => (m.person ? `${m.kind}:${m.person}` : m.kind);
 
 // An object mask's prompt being worked on, as the part the mask keeps.
 function draftPart(d) {
+  if (d.text) return { view: d.view, text: d.text, ...(d.keep ? { keep: d.keep } : {}) };
   return { view: d.view, ...(d.points.length ? { points: d.points } : {}),
     ...(d.box ? { box: d.box } : {}), ...(d.pick != null ? { pick: d.pick } : {}) };
 }
@@ -1314,6 +1315,40 @@ function MaskOverlay({ masks, selected, dims, brush, showShade, mattes, people, 
     const cand = d.candidates?.[d.pick ?? d.best ?? 0];
     const id = `od${selected}`;
     const sw = unit * 0.0018;
+    if (d.found) {
+      // Everything found, numbered as the panel lists it: those kept tinted.
+      const kept = d.found.map((f, k) => ({ ...f, k })).filter(({ k }) => !d.keep || d.keep.includes(k));
+      const fs = (unit * 0.018) / zoom;
+      return (
+        <g pointerEvents="none" data-testid="object-draft">
+          {!d.kept && kept.map(({ image, k }) => (
+            <g key={k}>
+              <defs>
+                <mask id={`${id}f${k}`} maskUnits="userSpaceOnUse" x="0" y="0" width={W} height={H}>
+                  <image href={image} x={l * W} y={t * H} width={(r - l) * W} height={(b - t) * H}
+                    preserveAspectRatio="none" />
+                </mask>
+              </defs>
+              <rect x="0" y="0" width={W} height={H} fill="rgba(251,191,36,0.45)" mask={`url(#${id}f${k})`} />
+            </g>
+          ))}
+          {d.found.map((f, k) => {
+            const on = !d.keep || d.keep.includes(k);
+            return (
+              <g key={k} opacity={on ? 1 : 0.55}>
+                <rect x={f.box[0] * W} y={f.box[1] * H} width={(f.box[2] - f.box[0]) * W} height={(f.box[3] - f.box[1]) * H}
+                  fill="none" stroke={on ? "rgb(251,191,36)" : "white"} strokeWidth={sw / zoom}
+                  strokeDasharray={on ? undefined : `${unit * 0.006 / zoom} ${unit * 0.005 / zoom}`} />
+                <text x={f.box[0] * W + fs * 0.3} y={f.box[1] * H + fs * 1.05} fontSize={fs} fontWeight="700"
+                  fill={on ? "rgb(251,191,36)" : "white"} stroke="black" strokeWidth={fs * 0.12} paintOrder="stroke">
+                  {k + 1}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      );
+    }
     return (
       <g pointerEvents="none" data-testid="object-draft">
         {cand && !d.kept && (
@@ -1796,29 +1831,68 @@ function HistoryPanel({ history, onJump }) {
 
 // What an object mask is chosen with, and the prompt being worked on: which of
 // the model's three candidates it took, and the parts it is made of.
-function ObjectControls({ mask, draft, models, state, onModel, onPick, onUndo, onNewPart }) {
+function ObjectControls({ mask, draft, models, state, onModel, onPick, onUndo, onNewPart, onFind, onKeepFound }) {
   const parts = mask.parts?.length || 0;
   const mine = draft && draft.candidates;
   const pick = mine ? (draft.pick ?? draft.best ?? 0) : 0;
+  const finds = !!models?.find((m) => m.model === (mask.model || "sam2.1"))?.finds;
+  const [words, setWords] = useState("");
+  const found = draft?.found;
   return (
     <div className="space-y-1.5" data-testid="object-controls">
       <p className="text-[11px] text-neutral-500 leading-snug">
         Drag a box round it, or click on it; Alt-click what is not it. Zoom in (scroll, or Z) for
         something small: a click there starts a new part. Tab tries the next of the model's guesses.
+        {finds && " Or name it: every one found is chosen, and you can keep only some."}
       </p>
       <label className="flex items-center gap-2 text-xs text-neutral-400"
-        title="SAM 2.1 is quick and small. SAM 3 keeps small and thin things better, and is fetched the first time it is chosen.">
+        title="SAM 2.1 is quick and small. SAM 3 keeps small and thin things better and finds things by name; it is fetched the first time it is chosen, under Meta's SAM License.">
         <span className="w-20 shrink-0">Model</span>
         <select value={mask.model || "sam2.1"} onChange={(e) => onModel(e.target.value)} disabled={!!state.busy}
           data-testid="object-model"
           className="flex-1 bg-neutral-900 border border-neutral-700 rounded px-1 py-0.5 text-xs text-neutral-200">
-          {(models || [{ model: "sam2.1", label: "SAM 2.1", available: true }, { model: "sam3", label: "SAM 3" }]).map((m) => (
+          {(models || [{ model: "sam2.1", label: "SAM 2.1", available: true }, { model: "sam3", label: "SAM 3", finds: true }]).map((m) => (
             <option key={m.model} value={m.model}>
               {m.label}{m.available ? "" : m.download_mb ? ` (fetches ${m.download_mb} MB)` : ""}
             </option>
           ))}
         </select>
       </label>
+      {finds && (
+        <form className="flex items-center gap-1" data-testid="object-find"
+          onSubmit={(e) => { e.preventDefault(); if (words.trim()) onFind(words.trim()); }}>
+          <input value={words} onChange={(e) => setWords(e.target.value)} disabled={!!state.busy}
+            placeholder="Find… hair, sky, dog, red shirt" data-testid="object-find-text"
+            onKeyDown={(e) => e.stopPropagation()}
+            className="flex-1 min-w-0 bg-neutral-900 border border-neutral-700 rounded px-1.5 py-0.5 text-xs text-neutral-200 placeholder:text-neutral-600" />
+          <button type="submit" disabled={!!state.busy || !words.trim()}
+            title="Find every one of these in what is on the screen (zoom in to look in part of the frame); a new part each time"
+            className="px-2 py-0.5 rounded border border-neutral-700 text-[11px] text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-50">
+            Find
+          </button>
+        </form>
+      )}
+      {found && found.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 text-[11px]" data-testid="object-found">
+          <span className="text-neutral-500 mr-0.5">“{draft.text}”:</span>
+          {found.length > 1 && (
+            <button onClick={() => onKeepFound(null)} disabled={!!state.busy}
+              className={`px-1.5 py-0.5 rounded border ${!draft.keep ? "border-amber-400 text-amber-300" : "border-neutral-700 text-neutral-400 hover:text-white"}`}>
+              all {found.length}
+            </button>
+          )}
+          {found.map((f, k) => {
+            const on = !draft.keep || draft.keep.includes(k);
+            return (
+              <button key={k} disabled={!!state.busy} title={`Keep only this one, or Ctrl-click to add it to or take it from those kept · ${Math.round(100 * f.score)}%`}
+                onClick={(e) => onKeepFound(k, e.ctrlKey || e.metaKey)}
+                className={`w-6 py-0.5 rounded border ${on && draft.keep ? "border-amber-400 text-amber-300" : on ? "border-neutral-600 text-neutral-200" : "border-neutral-800 text-neutral-500 hover:text-white"}`}>
+                {k + 1}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="flex items-center gap-1 text-[11px]">
         {mine && (
           <button onClick={onPick} title="The model's next guess at what you meant (Tab): the person or their shirt, her or her hair"
@@ -1850,7 +1924,8 @@ function ObjectControls({ mask, draft, models, state, onModel, onPick, onUndo, o
 
 function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, onBrush,
   choosing, people, picking, onPicking, onSelect, onAdd, onRemove, onChange, onDone,
-  objectDraft, objectModels, objectState, onObjectModel, onObjectPick, onObjectUndo, onObjectNewPart }) {
+  objectDraft, objectModels, objectState, onObjectModel, onObjectPick, onObjectUndo, onObjectNewPart,
+  onObjectFind, onObjectKeepFound }) {
   const m = selected >= 0 ? masks[selected] : null;
   const set = (key, value) => onChange(selected, { ...m, [key]: value });
   return (
@@ -1897,7 +1972,8 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
           {m.kind === "object" && (
             <ObjectControls mask={m} draft={objectDraft?.mask === selected ? objectDraft : null}
               models={objectModels} state={objectState} onModel={onObjectModel} onPick={onObjectPick}
-              onUndo={onObjectUndo} onNewPart={onObjectNewPart} />
+              onUndo={onObjectUndo} onNewPart={onObjectNewPart} onFind={onObjectFind}
+              onKeepFound={onObjectKeepFound} />
           )}
           <BrushControls mask={m} brush={brush} onBrush={onBrush}
             onUndo={() => onChange(selected, { ...m, strokes: (m.strokes || []).slice(0, -1) })}
@@ -3516,6 +3592,13 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   }, []);
   const readyObjectModel = useCallback(async (model) => {
     const known = objectModels?.find((m) => m.model === model);
+    // A model under its maker's own terms is fetched only once they are agreed to.
+    if (known && !known.available && known.license && !window.confirm(
+      `${known.label} is Meta's, under the SAM License:
+${known.license}
+
+`
+      + `Fetching it (${known.download_mb} MB, once) means you agree to its terms. Fetch it?`)) return false;
     setObjectState({ busy: known && !known.available
       ? `fetching ${known.label} (${known.download_mb} MB, once)…` : "loading the model…", error: "" });
     setChoosing({ busy: "object", error: "" });
@@ -3644,7 +3727,7 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
     if (m?.kind !== "object" || objectState.busy.startsWith("fetching")) return;
     const view = visibleView();
     let d = objectDraftRef.current;
-    const sameView = d && d.mask === index && !d.fresh && d.part <= (m.parts?.length || 0)
+    const sameView = d && d.mask === index && !d.fresh && !d.text && d.part <= (m.parts?.length || 0)
       && d.view.every((v, k) => Math.abs(v - view[k]) < 0.005);
     if (!sameView) d = { mask: index, part: m.parts?.length || 0, view, points: [], box: null };
     d = box ? { ...d, box, pick: null }
@@ -3673,6 +3756,51 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
     }
   }, [maskSel, objectState.busy, visibleView, filepath, setObjectDraft, keepDraft]);
 
+  const objectFind = useCallback(async (text) => {
+    const index = maskSel;
+    const m = settingsRef.current.masks?.[index];
+    if (m?.kind !== "object") return;
+    const view = visibleView();
+    const seq = ++objectSeq.current;
+    setObjectState({ busy: `finding “${text}”…`, error: "" });
+    try {
+      const res = await fetch(`${API}/export/develop/object-find`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filepath, model: m.model || "sam2.1", part: { view, text },
+          ...frameGeometry(settingsRef.current) }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (seq !== objectSeq.current) return;
+      if (!res.ok) { setObjectState({ busy: "", error: body.detail || "The model did not answer" }); return; }
+      if (!body.found.length) {
+        setObjectState({ busy: "", error: `No “${body.text}” found${view.join() === "0,0,1,1" ? "" : " in this view"}.` });
+        return;
+      }
+      const d = { mask: index, part: settingsRef.current.masks[index].parts?.length || 0, view: body.view,
+        text: body.text, found: body.found, keep: null, points: [], box: null, kept: false };
+      setObjectDraft(d);
+      keepDraft(d);
+    } catch {
+      if (seq === objectSeq.current) setObjectState({ busy: "", error: "The server did not answer" });
+    }
+  }, [maskSel, visibleView, filepath, setObjectDraft, keepDraft]);
+  // Keep one of what was found (null: all of them), or with ``add`` add it to
+  // those kept or take it away.
+  const objectKeepFound = useCallback((k, add) => {
+    const d = objectDraftRef.current;
+    if (!d?.found) return;
+    let keep = k == null ? null : [k];
+    if (k != null && add) {
+      const now = d.keep || d.found.map((_, i) => i);
+      keep = now.includes(k) ? now.filter((i) => i !== k) : [...now, k].sort((a, b) => a - b);
+      if (!keep.length) return;
+      if (keep.length === d.found.length) keep = null;
+    }
+    const next = { ...d, keep, kept: false };
+    setObjectDraft(next);
+    keepDraft(next);
+  }, [setObjectDraft, keepDraft]);
+
   const objectNextGuess = useCallback(() => {
     const d = objectDraftRef.current;
     if (!d?.candidates) return false;
@@ -3699,10 +3827,12 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
     lastObjectModel = model;
     setObjectDraft(null);
     // The parts are chosen again by the other model, each with its best guess.
-    const parts = (m.parts || []).map(({ pick, ...rest }) => rest);   // eslint-disable-line no-unused-vars
+    const finds = !!objectModels?.find((o) => o.model === model)?.finds;
+    const parts = (m.parts || []).filter((p) => finds || !p.text)
+      .map(({ pick, ...rest }) => rest);   // eslint-disable-line no-unused-vars
     updateMask(index, { ...settingsRef.current.masks[index], model, parts });
     if (parts.length) commitObject(index, parts, model);
-  }, [maskSel, readyObjectModel, updateMask, commitObject, setObjectDraft]);
+  }, [maskSel, readyObjectModel, updateMask, commitObject, setObjectDraft, objectModels]);
 
   const selectMask = useCallback((index) => {
     setMaskSel(index);
@@ -4893,7 +5023,7 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
             onSelect={selectMask} onAdd={addMask} onRemove={removeMask} onChange={updateMask}
             onDone={endMasks} objectDraft={objectDraft} objectModels={objectModels} objectState={objectState}
             onObjectModel={objectModel} onObjectPick={objectNextGuess} onObjectUndo={objectUndo}
-            onObjectNewPart={objectNewPart} />
+            onObjectNewPart={objectNewPart} onObjectFind={objectFind} onObjectKeepFound={objectKeepFound} />
 
           {section("effects")}
 
