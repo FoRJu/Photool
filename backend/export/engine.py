@@ -893,6 +893,23 @@ def style_preview(files, like: Optional[Path] = None) -> dict:
     return out
 
 
+def _style_sample(source: Path, size: int = 1000):
+    """What one RAW teaches a style: its decode against the JPEG beside it, or
+    else the one inside it, the lens's vignetting corrected first. ``None`` when
+    neither matches the RAW."""
+    from adjust.look import fit_with_lens
+
+    rgb = _load_linear(source, size)
+    if rgb is None:
+        return None
+    camera = _sibling_jpeg_rgb(source)
+    found = fit_with_lens(rgb, camera) if camera is not None else (None, None)
+    if found[0] is None:
+        camera = _embedded_camera_rgb(source)
+        found = fit_with_lens(rgb, camera) if camera is not None else (None, None)
+    return found[0]
+
+
 def learn_style(name: str, files, like: Optional[Path] = None, size: int = 1000) -> dict:
     """Learn a style from ``files`` (RAWs), on this thread; callers run it on a
     worker. ``like`` keeps only the frames shot with the same camera and the same
@@ -900,16 +917,15 @@ def learn_style(name: str, files, like: Optional[Path] = None, size: int = 1000)
     the Picture Style changed half way, teaches one rendering and not an average
     of two. One run at a time; the answer is also kept in :func:`style_job`."""
     from adjust import styles
-    from adjust.look import fit_with_lens
 
     with _STYLE_LOCK:
         if _STYLE_JOB.get("status") == "running":
             return dict(_STYLE_JOB)
         _STYLE_JOB.clear()
-        _STYLE_JOB.update(status="running", name=name, done=0, total=0, used=0,
+        _STYLE_JOB.update(status="running", kind="learn", name=name, done=0, total=0, used=0,
                           skipped=0, error="", style=None)
     try:
-        files, like, _keys = _style_frames(files, like)
+        files, like, keys = _style_frames(files, like)
         if not files:
             _STYLE_JOB.update(status="failed",
                               error="No RAW frame here was shot with this frame's camera and settings.")
@@ -917,21 +933,16 @@ def learn_style(name: str, files, like: Optional[Path] = None, size: int = 1000)
         files = styles.spread(files)
         _STYLE_JOB["total"] = len(files)
         samples = []
+        used = []
         for source in files:
             try:
-                rgb = _load_linear(source, size)
-                camera = None
-                if rgb is not None:
-                    camera = _sibling_jpeg_rgb(source)
-                    found = fit_with_lens(rgb, camera) if camera is not None else (None, None)
-                    if found[0] is None:
-                        camera = _embedded_camera_rgb(source)
-                        found = fit_with_lens(rgb, camera) if camera is not None else (None, None)
-                    if found[0] is not None:
-                        samples.append(found[0])
-                        _STYLE_JOB["used"] += 1
-                    else:
-                        _STYLE_JOB["skipped"] += 1
+                sample = _style_sample(source, size)
+                if sample is not None:
+                    samples.append(sample)
+                    used.append(source)
+                    _STYLE_JOB["used"] += 1
+                else:
+                    _STYLE_JOB["skipped"] += 1
             except Exception as e:
                 logger.warning(f"Learning a style from {source.name} failed: {e}")
                 _STYLE_JOB["skipped"] += 1
@@ -941,8 +952,14 @@ def learn_style(name: str, files, like: Optional[Path] = None, size: int = 1000)
                               error="No frame here has a JPEG that matches its RAW to learn from.")
             return dict(_STYLE_JOB)
         described = like or files[0]
-        style = styles.from_samples(name, samples,
-                                    source=_describe_style(_style_strings([described]).get(described, "")))
+        settings = _style_strings([described]).get(described, "")
+        style = styles.from_samples(name, samples, source=_describe_style(settings))
+        if style is not None:
+            # What frames from other folders must share to be added later
+            # (improve_style): the camera, its settings, and where these came from.
+            style.key = keys.get(described) or _camera_keys([described]).get(described) or ""
+            style.settings = settings
+            style.folders = sorted({str(Path(f).parent) for f in used})
         if style is None:
             _STYLE_JOB.update(status="failed",
                               error="These frames do not agree on one rendering; try fewer, or one camera setting.")
@@ -951,6 +968,111 @@ def learn_style(name: str, files, like: Optional[Path] = None, size: int = 1000)
         _STYLE_JOB.update(status="done", style=style.summary())
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"Learning style {name!r} failed: {e}")
+        _STYLE_JOB.update(status="failed", error=str(e))
+    return dict(_STYLE_JOB)
+
+
+def improve_style(style_id: str, folders, size: int = 1000) -> dict:
+    """Try to make a style better with frames from other folders, on this
+    thread; callers run it on a worker. ``folders`` are the folders to look in
+    (the caller narrows them to the style's camera). Only frames shot with the
+    style's camera and settings are read, a few per folder and at most
+    MAX_ADDED_FRAMES in all; the result is kept only when styles.improve says it
+    does no worse on the style's own frames, and the version before is kept to
+    undo. Steps aside while someone is using the app (background.py)."""
+    import random
+    import time
+
+    import background as gate
+    from adjust import styles
+
+    style = styles.load(style_id)
+    with _STYLE_LOCK:
+        if _STYLE_JOB.get("status") == "running":
+            return dict(_STYLE_JOB)
+        _STYLE_JOB.clear()
+        _STYLE_JOB.update(status="running", kind="improve", name=style.name if style else style_id,
+                          style_id=style_id, phase="looking", done=0, total=0, used=0,
+                          skipped=0, folders=0, error="", style=None, report=None)
+    try:
+        if style is None:
+            _STYLE_JOB.update(status="failed", error="No such style")
+            return dict(_STYLE_JOB)
+        if not style.key:
+            _STYLE_JOB.update(status="failed", error=(
+                "This style was learned before styles remembered their camera settings; "
+                "learn it again to improve it from other folders."))
+            return dict(_STYLE_JOB)
+        own = styles.samples_of(style_id)
+        room = min(styles.MAX_ADDED_FRAMES, styles.MAX_TOTAL_FRAMES - len(own))
+        if room <= 0:
+            _STYLE_JOB.update(status="failed", error="It already has as many frames as a style keeps.")
+            return dict(_STYLE_JOB)
+        skip = {str(Path(f)) for f in style.folders}
+        folders = [Path(f) for f in folders if str(Path(f)) not in skip]
+        random.Random(style_id).shuffle(folders)
+        _STYLE_JOB["total"] = len(folders)
+        # Three per folder spreads what is added over many shoots and lights, so
+        # the style learns the rendering rather than one more evening's scenes.
+        # Twice what can be added is read, for the screen to choose from.
+        per_folder, wanted = 3, room * 2
+        found, from_folders = [], []
+        for folder in folders:
+            if len(found) >= wanted:
+                break
+            if not gate.wait_turn("Improving a style"):
+                break
+            raws = raw_files_in(folder)
+            if raws:
+                # The settings of a sample of the folder first: reading every
+                # file's would cost minutes on a big folder that has none.
+                sample = styles.spread(raws, 12)
+                keys = _camera_keys(sample)
+                matching = [f for f in sample if keys.get(f) == style.key]
+                if matching:
+                    from_folders.append(str(folder))
+                    found += [(f, str(folder)) for f in matching[:per_folder]]
+            _STYLE_JOB["done"] += 1
+        _STYLE_JOB["folders"] = len(from_folders)
+        if not found:
+            _STYLE_JOB.update(status="done", phase="", report={
+                "offered": 0, "added": 0, "reason": "no other folder has frames shot with this camera and settings"})
+            return dict(_STYLE_JOB)
+
+        _STYLE_JOB.update(phase="reading", done=0, total=len(found))
+        candidates, folder_of = [], {}
+        for source, folder in found:
+            gate.wait_turn("Improving a style")
+            try:
+                sample = _style_sample(source, size)
+            except Exception as e:
+                logger.warning(f"Reading {source.name} for a style failed: {e}")
+                sample = None
+            if sample is not None:
+                candidates.append(sample)
+                folder_of[id(sample)] = folder
+                _STYLE_JOB["used"] += 1
+            else:
+                _STYLE_JOB["skipped"] += 1
+            _STYLE_JOB["done"] += 1
+
+        _STYLE_JOB.update(phase="checking")
+        better, report, added = styles.improve(style, own, candidates)
+        added_from = {folder_of[id(s)] for s in added}
+        report["looked_in"] = len(from_folders)
+        report["folders"] = len(added_from)
+        if better is not None:
+            report["when"] = time.time()
+            better.improved = report
+            better.folders = sorted(set(style.folders) | added_from)
+            styles.keep_previous(style_id)
+            styles.save(better, list(own) + added)
+            # Previews drawn through the old version are stale now.
+            clear_preview_cache()
+            _STYLE_JOB.update(style=styles.load(style_id).summary())
+        _STYLE_JOB.update(status="done", phase="", report=report)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"Improving style {style_id!r} failed: {e}")
         _STYLE_JOB.update(status="failed", error=str(e))
     return dict(_STYLE_JOB)
 

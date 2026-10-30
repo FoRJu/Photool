@@ -2436,13 +2436,27 @@ function StyleGallery({ styles, value, onChange, filepath, edit }) {
   );
 }
 
-function StylePicker({ value, onChange, folder, filepath, edit }) {
+// What an improvement from other folders came to, in a line.
+function improveText(report) {
+  if (!report) return "";
+  if (report.added > 0) {
+    const pct = report.before > 0 ? Math.round((1 - report.after / report.before) * 100) : 0;
+    return `Improved: added ${report.added} frame${report.added === 1 ? "" : "s"} from ${report.folders} other folder${report.folders === 1 ? "" : "s"}`
+      + (pct > 0 ? `; ${pct}% closer to the camera on its own frames held out.` : "; no worse on its own frames.");
+  }
+  const looked = report.looked_in ? ` (looked in ${report.looked_in} folder${report.looked_in === 1 ? "" : "s"} with matching frames)` : "";
+  return `Kept as it was: ${report.reason || "nothing to add"}${looked}.`;
+}
+
+function StylePicker({ value, onChange, folder, filepath, edit, onRefitted }) {
   const [list, setList] = useState([]);
   const [gallery, setGallery] = useState(false);
   const [job, setJob] = useState(null);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState("");
+  // What the last improvement from other folders came to.
+  const [note, setNote] = useState("");
   // What the style would learn from, asked for while it is being named: null
   // while counting (the first look at a folder reads every RAW's settings).
   const [preview, setPreview] = useState(null);
@@ -2474,7 +2488,11 @@ function StylePicker({ value, onChange, folder, filepath, edit }) {
       try {
         const state = await fetch(`${API}/styles/learn`).then((r) => r.json());
         setJob(state);
-        if (state.status === "done" && state.style) {
+        if (state.status === "done" && state.kind === "improve") {
+          await load();
+          setNote(improveText(state.report));
+          if (state.style) onRefitted?.();
+        } else if (state.status === "done" && state.style) {
           await load();
           onChange(state.style.id);
         } else if (state.status === "failed") {
@@ -2483,7 +2501,7 @@ function StylePicker({ value, onChange, folder, filepath, edit }) {
       } catch { /* try again on the next tick */ }
     }, 1500);
     return () => clearInterval(timer);
-  }, [job, load, onChange]);
+  }, [job, load, onChange, onRefitted]);
 
   const learn = async () => {
     setError("");
@@ -2512,8 +2530,34 @@ function StylePicker({ value, onChange, folder, filepath, edit }) {
     load();
   };
 
-  const known = list.some((s) => s.id === value);
+  // Frames shot with the style's camera and settings in other folders, added
+  // only if the style does no worse on its own frames held out (backend
+  // adjust/styles.improve). The version before is kept for one undo.
+  const improve = async () => {
+    setError("");
+    setNote("");
+    try {
+      const res = await fetch(`${API}/styles/${encodeURIComponent(value)}/improve`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { setError(data.detail || "Could not start"); return; }
+      setJob(data);
+    } catch { setError("Could not start"); }
+  };
+  const undo = async () => {
+    setError("");
+    try {
+      const res = await fetch(`${API}/styles/${encodeURIComponent(value)}/restore`, { method: "POST" });
+      if (!res.ok) { setError("No earlier version to go back to"); return; }
+      setNote("Back to the version before the last improvement.");
+      await load();
+      onRefitted?.();
+    } catch { setError("Could not undo"); }
+  };
+
+  const chosen = list.find((s) => s.id === value);
+  const known = !!chosen;
   const running = job?.status === "running";
+  const phase = { looking: "looking in folders", reading: "reading frames", checking: "checking it is better" };
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2 text-xs">
@@ -2544,7 +2588,9 @@ function StylePicker({ value, onChange, folder, filepath, edit }) {
       )}
       <div className="text-[10px] text-neutral-600">
         {running ? (
-          <span>Learning “{job.name}”… {job.done}/{job.total || "?"}</span>
+          job.kind === "improve"
+            ? <span>Improving “{job.name}”: {phase[job.phase] || "working"}{job.phase !== "checking" ? ` ${job.done}/${job.total || "?"}` : "…"}</span>
+            : <span>Learning “{job.name}”… {job.done}/{job.total || "?"}</span>
         ) : naming ? (
           <span className="flex items-center gap-1">
             <input autoFocus value={name} onChange={(e) => setName(e.target.value)}
@@ -2565,10 +2611,25 @@ function StylePicker({ value, onChange, folder, filepath, edit }) {
           {stylePreviewText(preview)}
         </span>}
         {value && known && !running && !naming && (
+          <button onClick={improve} disabled={!chosen.improvable} data-testid="style-improve"
+            title={chosen.improvable
+              ? "Look in other folders for frames shot with this style's camera and settings, and add them only if the style gets no worse on its own frames. Runs in the background."
+              : "This style was learned before styles remembered their camera settings: learn it again to improve it from other folders."}
+            className="ml-2 underline decoration-neutral-800 hover:text-neutral-300 disabled:opacity-40 disabled:no-underline">
+            improve from other folders
+          </button>
+        )}
+        {value && known && !running && !naming && chosen.has_previous && (
+          <button onClick={undo} data-testid="style-undo"
+            title="Go back to the version of this style before its last improvement"
+            className="ml-2 underline decoration-neutral-800 hover:text-neutral-300">undo improvement</button>
+        )}
+        {value && known && !running && !naming && (
           <button onClick={remove} data-testid="style-delete"
             title="Delete this style from this computer, for every photo and folder"
             className="ml-2 underline decoration-neutral-800 hover:text-red-400">delete style…</button>
         )}
+        {note && !running && <span className="block mt-0.5 leading-snug text-neutral-400" data-testid="style-note">{note}</span>}
         {error && <span className="block text-red-400/80">{error}</span>}
       </div>
     </div>
@@ -4015,7 +4076,8 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
         })()}
         {id === "profile" && (
           <StylePicker value={settings.style || ""} folder={current?.folder} filepath={filepath}
-            edit={activeOnly(settings)} onChange={(style) => change("style", style)} />
+            edit={activeOnly(settings)} onChange={(style) => change("style", style)}
+            onRefitted={() => setLookRefresh((n) => n + 1)} />
         )}
         {id === "light" && (
           <div className="flex flex-wrap gap-1">
