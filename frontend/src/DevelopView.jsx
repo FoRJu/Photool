@@ -1817,20 +1817,20 @@ function keepFolds(open) {
 function Fold({ id, title, hint, edited, open, onToggle, extra, summary, children }) {
   return (
     <section id={`fold-${id}`} className="space-y-2" data-testid={`fold-${id}`}>
-      <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-500">
+      <div className="flex items-center justify-between text-xs text-neutral-200">
         <button onClick={() => onToggle(id)} title={hint} aria-expanded={open}
-          className="flex items-center gap-1 uppercase tracking-wide hover:text-neutral-200">
-          <span className="w-2.5 text-left">{open ? "▾" : "▸"}</span>
+          className="flex items-center gap-1.5 font-medium hover:text-white">
+          <span className="w-3 text-left text-neutral-500">{open ? "▾" : "▸"}</span>
           {title}
           {edited && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-0.5" title="Changed in this edit" />}
         </button>
         {!open && summary && (
           <button onClick={() => onToggle(id)} data-testid={`fold-${id}-summary`}
-            className="flex-1 min-w-0 truncate text-right normal-case tracking-normal text-neutral-500 hover:text-neutral-300 ml-2">
+            className="flex-1 min-w-0 truncate text-right text-[11px] text-neutral-400 hover:text-neutral-200 ml-2">
             {summary}
           </button>
         )}
-        <span className="flex items-center gap-2 normal-case tracking-normal">{extra}</span>
+        <span className="flex items-center gap-2 text-[11px]">{extra}</span>
       </div>
       {open && children}
     </section>
@@ -1842,7 +1842,7 @@ function Part({ title, hint, extra, children, testid }) {
   return (
     <div className="space-y-2" data-testid={testid}>
       <div className="flex items-center justify-between text-[11px]">
-        <span className="text-neutral-300" title={hint}>{title}</span>
+        <span className="text-neutral-300 font-medium" title={hint}>{title}</span>
         <span className="flex items-center gap-2">{extra}</span>
       </div>
       {children}
@@ -5171,6 +5171,7 @@ ${known.license}
               <button onClick={() => applyGroup(CURVE_KEYS, {}, "Tone curve reset")}
                 className="text-neutral-600 hover:text-neutral-300" title="Reset every curve">reset</button>
             )}>
+            <CurveEditor settings={settings} onChange={change} />
           </Fold>
 
           {Number(settings.mono) ? (
