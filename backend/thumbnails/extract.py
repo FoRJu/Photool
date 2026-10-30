@@ -510,6 +510,18 @@ def _sibling_jpeg_bytes(source: Path) -> Optional[bytes]:
 
 
 def _extract_source_jpeg(source: Path) -> Optional[bytes]:
+    """The file's own picture as JPEG bytes (see _source_jpeg); ``None`` for a
+    file with none, which is remembered until the file changes, so the grid,
+    the face scan and smart search do not each try it again and again."""
+    if has_no_picture(source):
+        return None
+    data = _source_jpeg(source)
+    if not data:
+        _remember_no_picture(source)
+    return data
+
+
+def _source_jpeg(source: Path) -> Optional[bytes]:
     """Get a viewable JPEG from any supported source file."""
     suffix = source.suffix.lower()
 
@@ -544,6 +556,39 @@ def _extract_source_jpeg(source: Path) -> Optional[bytes]:
     return None
 
 
+# Files with no picture to give (an empty recording, a damaged file), by path,
+# with the size and time they had then: asked again, they are not read again
+# until the file changes. Without this, every view of a folder and every
+# background pass tried the same two empty clips again, hundreds of times.
+_NO_PICTURE: dict[str, tuple[int, int]] = {}
+_NO_PICTURE_LIMIT = 4096
+_no_picture_lock = threading.Lock()
+
+
+def _stamp(source: Path) -> Optional[tuple[int, int]]:
+    try:
+        st = source.stat()
+    except OSError:
+        return None
+    return st.st_size, st.st_mtime_ns
+
+
+def has_no_picture(source: Path) -> bool:
+    """Whether ``source`` was found to have no picture, as it is now."""
+    kept = _NO_PICTURE.get(str(source))
+    return kept is not None and kept == _stamp(source)
+
+
+def _remember_no_picture(source: Path) -> None:
+    stamp = _stamp(source)
+    if stamp is None:
+        return
+    with _no_picture_lock:
+        if len(_NO_PICTURE) >= _NO_PICTURE_LIMIT:
+            _NO_PICTURE.pop(next(iter(_NO_PICTURE)))
+        _NO_PICTURE[str(source)] = stamp
+
+
 # Renders in progress, by file and size. The grid, the face scan, smart search
 # and the measuring pass all ask for the same pictures, often at the same moment:
 # the log showed one preview made four times over, side by side, each taking
@@ -558,10 +603,13 @@ def get_thumbnail(
     cache: ThumbnailCache,
     size: ThumbnailSize = ThumbnailSize.GRID,
 ) -> Optional[bytes]:
-    """Get a thumbnail as JPEG bytes, generating and caching if needed."""
+    """Get a thumbnail as JPEG bytes, generating and caching if needed; ``None``
+    for a file with no picture, which is remembered (until it changes)."""
     cached = cache.get(source, size)
     if cached:
         return cached
+    if has_no_picture(source):
+        return None
 
     key = (str(source), size.name)
     with _rendering_lock:

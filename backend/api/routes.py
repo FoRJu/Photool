@@ -640,7 +640,14 @@ async def get_thumb(
         # caller can act on.
         raise HTTPException(status_code=503, detail=f"Thumbnail cache not writable: {exc}")
     if not thumb_data:
-        raise HTTPException(status_code=500, detail="Could not generate thumbnail")
+        # A file with no picture (an empty recording, a damaged file) shows as a
+        # tile that says so, wherever a picture of it is asked for.
+        from config import is_video
+        from thumbnails.placeholder import no_picture_jpeg
+
+        what = "No video in this file" if is_video(full_path.suffix.lower()) else "No picture in this file"
+        return Response(content=no_picture_jpeg(what, thumb_size), media_type="image/jpeg",
+                        headers={"Cache-Control": "no-cache", "X-Photool-No-Picture": "1"})
 
     # An edited frame can change under the same URL, so it may be kept only when
     # the URL carries the edit's version; without one, the browser must ask.

@@ -65,8 +65,20 @@ def poster_jpeg(source: Path) -> Optional[bytes]:
             return None
         if result.returncode == 0 and result.stdout:
             return result.stdout
+        if not has_video(result.stderr.decode(errors="replace")):
+            break                  # no picture at any time: an empty recording
     logger.warning("No frame from %s: %s", source.name, result.stderr.decode(errors="replace")[-300:])
     return None
+
+
+def has_video(ffmpeg_error: str) -> bool:
+    """Whether ffmpeg's complaint leaves the file with a picture to find
+    elsewhere: not when it holds no stream at all, which is what a camera leaves
+    when a clip stops as it starts (a DJI Pocket's 1 KB files)."""
+    text = ffmpeg_error.lower()
+    return not any(sign in text for sign in (
+        "does not contain any stream", "invalid data found when processing input",
+        "moov atom not found", "output file is empty"))
 
 
 def probe(source: Path) -> dict:
