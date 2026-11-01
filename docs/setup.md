@@ -120,8 +120,15 @@ no window:
   yet: open http://localhost:8000 in the browser (bookmark it). `./stop.sh` stops
   it until the next login.
 
-The server's log is `serve.log` beside the catalog (`<library_root>/.photomanager/`).
-On a Mac, anything that goes wrong before that log opens is in
+On Windows, if the background server crashes it's started again within seconds,
+and waits longer if it keeps crashing. Quit in the tray and `stop.bat` stop it for
+good. While someone is using Photool, from any device, or an export, import or
+scan they started is running, the computer is kept from going to sleep on its idle
+timer; `keep_awake_minutes` in `config.yaml` (15 by default, 0 for off) sets how
+long that lasts after the last use.
+
+The server's log is `serve.log` beside the catalog (`<library_root>/.photomanager/`);
+after a crash, `serve-crash.log` beside it shows what each thread was doing. On a Mac, anything that goes wrong before that log opens is in
 `~/Library/Logs/Photool/launchd.log`.
 
 If you move the project folder or remake the venv, run `install` again: the

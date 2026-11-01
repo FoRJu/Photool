@@ -18,10 +18,19 @@ already running on the port leaves quietly.
 ``--background`` (and running under ``pythonw``, which has no console) writes
 everything to ``serve.log`` beside the catalog instead, kept to a few megabytes.
 
+On Windows a background server is watched: this process runs the real one
+(``--worker``) as a child and starts it again if it dies. Native code can take the
+whole process down, and the computer may be somewhere nobody can get at it. Quit
+in the tray stays quit, and ``stop.bat`` stops both. If it does die, Python's view
+of every thread at that moment is in ``serve-crash.log`` beside ``serve.log``.
+
 For access from outside the house, leave this alone and use Tailscale instead:
 keep running the normal way (localhost only) and run ``tailscale serve --bg 8000``.
 """
 
+import blas_threads  # noqa: F401  (before anything loads numpy)
+
+import faulthandler
 import logging
 import logging.handlers
 import os
@@ -29,10 +38,9 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Optional
-
-import uvicorn
+from typing import Callable, Optional
 
 from config import load_config
 
@@ -44,6 +52,15 @@ LOG_BYTES = 5 * 1024 * 1024
 # npm is a .cmd on Windows: started from a process with no console it would open
 # a console window of its own.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# What the worker exits with for the watcher to start it again at once (Restart in
+# the tray); any other exit but 0 means it died.
+RESTART_EXIT = 75
+# A worker that lived this long is not stuck in a crash loop.
+SETTLED_SECONDS = 120.0
+FIRST_DELAY = 2.0
+LONGEST_DELAY = 300.0
+CRASH_LOG_BYTES = 1024 * 1024
+_crash_log = None     # kept open: faulthandler writes to it at the moment of a crash
 
 
 def _addresses() -> list[str]:
@@ -151,6 +168,69 @@ def _log_to_file(config) -> Path:
     return path
 
 
+def _record_crashes(log: Path) -> None:
+    """A crash in native code ends the process before Python can log anything, so
+    have faulthandler write every thread's Python stack to a file as it happens."""
+    global _crash_log
+    path = log.with_name("serve-crash.log")
+    try:
+        if path.is_file() and path.stat().st_size > CRASH_LOG_BYTES:
+            path.unlink()
+        _crash_log = path.open("a", encoding="utf-8")
+        faulthandler.enable(file=_crash_log, all_threads=True)
+    except OSError as exc:
+        print(f"Cannot keep a crash log at {path}: {exc}")
+
+
+def supervise(start: Callable[[], int], note: Callable[[str], None],
+              sleep: Callable[[float], None] = time.sleep,
+              clock: Callable[[], float] = time.monotonic) -> int:
+    """Run ``start`` (the worker, to its exit code) until it exits cleanly. It is
+    never given up on: a library drive that is not there yet may come back, and a
+    wait of minutes costs nothing, but crash after crash waits longer each time."""
+    quick = 0
+    while True:
+        began = clock()
+        code = start()
+        if code == 0:
+            return 0
+        if code == RESTART_EXIT:
+            quick = 0
+            continue
+        quick = quick + 1 if clock() - began < SETTLED_SECONDS else 1
+        delay = min(LONGEST_DELAY, FIRST_DELAY * 2 ** (quick - 1))
+        note(f"The server died (exit code {code & 0xFFFFFFFF:#x}); starting it again in {delay:.0f} s")
+        sleep(delay)
+
+
+def _watch(argv: list[str], log: Path) -> int:
+    """Be the watcher: no numpy, no server, and serve.log is only held open for a
+    line at a time, since Windows cannot rotate a file another process has open."""
+    from tray import python_for_restart
+
+    def note(text: str) -> None:
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open("a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} WARNING serve: {text}\n")
+        except OSError:
+            pass
+
+    command = [python_for_restart(), str(Path(__file__).resolve()), *argv, "--worker"]
+
+    def start() -> int:
+        return subprocess.call(command, cwd=os.getcwd(), creationflags=_NO_WINDOW)
+
+    return supervise(start, note)
+
+
+def _leave(code: int) -> None:
+    """Exit now. The server has stopped or had its chance to, and a helper thread
+    still running must not keep the process, and so the watcher's restart, waiting."""
+    logging.shutdown()
+    os._exit(code)
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     # config.yaml is read from the working folder, and a login item (login_item.py)
@@ -158,10 +238,16 @@ def main(argv=None) -> int:
     os.chdir(Path(__file__).resolve().parent)
     config = load_config()
     background = "--background" in argv or sys.stdout is None
+    worker = "--worker" in argv
+    port = int(config.port)
+    if background and os.name == "nt" and not worker:
+        if already_running(port):
+            return 0
+        return _watch(argv, Path(config.db_path).parent / "serve.log")
     log = None
     if background:
         log = _log_to_file(config)
-    port = int(config.port)
+        _record_crashes(log)
     if already_running(port):
         print(f"Photool is already running on port {port}; not starting a second one.")
         return 0
@@ -177,6 +263,8 @@ def main(argv=None) -> int:
     for address in _addresses():
         print(f"  On another device:  {scheme}://{address}:{port}")
     print(f"  On this computer:   {scheme}://localhost:{port}")
+    import uvicorn
+
     options = dict(host="0.0.0.0", port=port, proxy_headers=False)
     if scheme == "https":
         options.update(ssl_certfile=config.tls_cert, ssl_keyfile=config.tls_key)
@@ -192,8 +280,11 @@ def main(argv=None) -> int:
             # In the background there is no window to close: the tray icon is how
             # the server is opened, restarted and quit.
             server = uvicorn.Server(uvicorn.Config("main:app", **options))
-            tray.run(server, f"{scheme}://localhost:{port}",
-                     [f"{scheme}://{a}:{port}" for a in _addresses()], log, argv)
+            ended = tray.run(server, f"{scheme}://localhost:{port}",
+                             [f"{scheme}://{a}:{port}" for a in _addresses()], log, argv,
+                             watched=worker)
+            if worker:
+                _leave({"quit": 0, "restart": RESTART_EXIT}.get(ended, 1))
             return 0
         print("No tray icon (pystray is not installed); stop it with stop.bat.")
     uvicorn.run("main:app", **options)

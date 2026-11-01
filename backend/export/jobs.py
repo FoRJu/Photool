@@ -51,6 +51,11 @@ def recent(owner: Optional[str] = None, limit: int = 12) -> list[dict]:
     return [_public(s) for s in jobs[:limit]]
 
 
+def running() -> bool:
+    """Whether any export is under way."""
+    return any(s["status"] == "running" for s in list(_progress.values()))
+
+
 def _public(state: dict) -> dict:
     """A job as the API shows it: the written names are only counted, since a
     download serves them by name and nobody else needs the list."""

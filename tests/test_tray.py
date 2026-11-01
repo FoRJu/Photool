@@ -89,6 +89,71 @@ def test_a_server_that_will_not_stop_is_not_started_twice():
     assert started == []
 
 
+class _Item:
+    def __init__(self, text, action=None, **_):
+        self.text, self.action = text, action
+
+
+class _Icon:
+    """Stands in for pystray.Icon: runs ``setup`` and waits for stop()."""
+
+    def __init__(self, *_):
+        self.stopped = threading.Event()
+        _Icon.last = self
+
+    def run(self, setup):
+        threading.Thread(target=setup, args=(self,), daemon=True).start()
+        self.stopped.wait(30)
+
+    def stop(self):
+        self.stopped.set()
+
+
+@pytest.fixture
+def fake_pystray(monkeypatch):
+    menu = type("Menu", (), {"SEPARATOR": None, "__init__": lambda self, *items: setattr(self, "items", items)})
+    module = type(sys)("pystray")
+    module.Icon, module.MenuItem, module.Menu = _Icon, _Item, menu
+    monkeypatch.setitem(sys.modules, "pystray", module)
+
+
+def _run_and_click(watched, label=None, spawned=None):
+    import uvicorn
+
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(_app, host="127.0.0.1", port=port, log_config=None))
+    if spawned is not None:
+        tray.subprocess.Popen, real = (lambda *a, **k: spawned.append(a)), tray.subprocess.Popen
+    ended = []
+    runner = threading.Thread(target=lambda: ended.append(tray.run(server, "http://x", [], None, [], watched=watched)))
+    runner.start()
+    assert _serving(port)
+    time.sleep(0.2)
+    if label:
+        item = next(i for i in _Icon.last.menu.items if getattr(i, "text", "") == label)
+        item.action()
+    else:
+        server.should_exit = True           # stops by itself, nobody asked
+    runner.join(30)
+    if spawned is not None:
+        tray.subprocess.Popen = real
+    return ended[0]
+
+
+def test_run_says_how_it_ended_for_the_watcher(fake_pystray):
+    assert _run_and_click(True, "Quit") == "quit"
+    assert _run_and_click(True, "Restart") == "restart"
+    assert _run_and_click(True) == "stopped"
+
+
+def test_a_watched_restart_leaves_starting_to_the_watcher(fake_pystray):
+    spawned = []
+    _run_and_click(True, "Restart", spawned)
+    assert spawned == []
+    _run_and_click(False, "Restart", spawned)
+    assert len(spawned) == 1
+
+
 def test_the_icon_is_drawn():
     img = tray.icon_image(64)
     assert img.size == (64, 64) and img.getpixel((32, 4))[3] == 255 and img.getpixel((0, 0))[3] == 0

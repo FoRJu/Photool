@@ -5,6 +5,7 @@ Run with:
     uvicorn main:app --reload --port 8000
 """
 
+import blas_threads  # noqa: F401  (before anything loads numpy)
 import no_console  # noqa: F401  (before anything starts a helper program)
 import exiftool_path
 from contextlib import asynccontextmanager
@@ -15,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.routing import Route
 
+import keep_awake
 import mcp_server
 from config import load_config
 from storage_health import summarize
@@ -221,6 +223,10 @@ async def lifespan(app: FastAPI):
 
     face_jobs.wake(app, delay=face_jobs.STARTUP_DELAY_SECONDS)
 
+    from api.routes import requested_work_running
+
+    keep_awake.start(config.keep_awake_minutes, requested_work_running)
+
     # The MCP endpoint's HTTP app is made per lifespan: its session manager can
     # be run only once (see mcp_server.Endpoint).
     app.state.mcp_http = mcp.streamable_http_app(streamable_http_path="/mcp")
@@ -229,6 +235,7 @@ async def lifespan(app: FastAPI):
     async with mcp.session_manager.run():
         yield  # app runs
 
+    keep_awake.stop()
     queue_manager.stop()
     exif_fill.stop()
     clip.stop()
@@ -259,15 +266,23 @@ import background  # noqa: E402
 @app.middleware("http")
 async def note_use(request, call_next):
     """Background work steps aside while someone is using the app
-    (background.py). A long request counts from its start to its answer."""
-    using = background.counts_as_use(request.method, request.url.path)
+    (background.py), and the computer stays awake (keep_awake.py). A long request
+    counts from its start to its answer. An agent's tool call keeps the computer
+    awake too, without making background work wait for it."""
+    path = request.url.path
+    using = background.counts_as_use(request.method, path)
+    awake = using or (request.method == "POST" and path.startswith("/mcp"))
     if using:
         background.touch()
+    if awake:
+        keep_awake.touch()
     try:
         return await call_next(request)
     finally:
         if using:
             background.touch()
+        if awake:
+            keep_awake.touch()
 
 
 import access  # noqa: E402

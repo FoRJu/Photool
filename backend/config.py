@@ -78,6 +78,10 @@ class Config:
     # rendered JPEGs only, never originals; this keeps one click from copying
     # the whole library off this computer.
     remote_export_limit: int = 200
+    # Windows only: how long after someone last used the app the computer is kept
+    # from going to sleep on its idle timer, which sees only this computer's own
+    # keyboard and mouse. Work someone asked for also holds it. 0 turns this off.
+    keep_awake_minutes: int = 15
 
     # Thumbnail queue
     thumbnail_queue_enabled: bool = True

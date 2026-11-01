@@ -1786,6 +1786,23 @@ async def activity(request: Request):
     }
 
 
+def requested_work_running() -> bool:
+    """Whether work someone asked for and is waiting on is running: an import, an
+    export, a face or place scan they started, learning a style. Automatic work
+    is left out, since it should not keep the computer from going to sleep."""
+    from export import engine, jobs as export_jobs
+    from places import routes as places_routes
+
+    with _import_jobs_lock:
+        importing = any(j["status"] == "running" for j in _import_jobs.values())
+    style = engine.style_job()
+    return (importing
+            or export_jobs.running()
+            or (_face_job.get("status") == "running" and not _face_job.get("automatic"))
+            or places_routes._job.get("status") == "running"
+            or (style.get("status") == "running" and style.get("kind") != "improve"))
+
+
 def _background_work(request: Request) -> list[dict]:
     """The automatic work running now, one entry per kind, for the page's
     header: what it is, where it has got, and how far."""
