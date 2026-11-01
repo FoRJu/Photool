@@ -3,9 +3,10 @@ The server's icon in the system tray: open the album, see where it is reachable,
 read its log, restart it or quit it, without a console window or stop.bat.
 
 ``serve.py --background`` (how it starts at login) runs the server on a thread
-and this icon on the main one. Restart stops the server, starts a new
-``serve.py --background`` (which picks up new code, and rebuilds the page when
-its sources changed) and exits; Quit stops the server and exits.
+and this icon on the main one. Restart stops the server and has a new one started
+(which picks up new code, and rebuilds the page when its sources changed); Quit
+stops the server and exits. :func:`run` says which happened, for the process
+watching over this one (serve.py) to act on.
 
 Without ``pystray`` the server runs as it always did, with no icon: the icon is a
 convenience, and a missing package is no reason not to serve the album.
@@ -113,10 +114,12 @@ class Controls:
         self._quit_icon()
 
 
-def run(server, url: str, addresses: list[str], log: Optional[Path], argv: list[str]) -> None:
+def run(server, url: str, addresses: list[str], log: Optional[Path], argv: list[str],
+        watched: bool = False) -> str:
     """Serve with ``server`` (a ``uvicorn.Server``) on a thread and show the tray
-    icon until Quit or Restart. ``argv`` is how this process was started, for the
-    restart to start the same way."""
+    icon until Quit or Restart, or the server stops by itself: "quit", "restart" or
+    "stopped". ``argv`` is how this process was started, for the restart to start
+    the same way; when ``watched``, the process watching this one does the restart."""
     import pystray
 
     thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
@@ -130,6 +133,8 @@ def run(server, url: str, addresses: list[str], log: Optional[Path], argv: list[
     serve_py = Path(__file__).resolve().parent / "serve.py"
 
     def spawn():
+        if watched:
+            return
         args = [python_for_restart(), str(serve_py), *[a for a in argv if a != "--restarted"], "--restarted"]
         subprocess.Popen(args, cwd=os.getcwd(), close_fds=True,
                          creationflags=_NO_WINDOW | _DETACHED)
@@ -159,3 +164,4 @@ def run(server, url: str, addresses: list[str], log: Optional[Path], argv: list[
             icon_.stop()
 
     icon.run(setup=watch)
+    return "restart" if controls.restarting else "quit" if controls.quitting else "stopped"
