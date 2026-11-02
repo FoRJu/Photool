@@ -48,6 +48,7 @@ from typing import Optional
 
 import numpy as np
 
+from adjust import gpu
 from faces.models import ModelSpec, ModelsUnavailable, _download, verify
 
 logger = logging.getLogger(__name__)
@@ -110,7 +111,7 @@ _models_dir: Optional[str] = None
 _cache_dir: Optional[Path] = None
 _session = None
 _session_failed: Optional[str] = None
-_lock = threading.Lock()          # the session and the GPU: one frame at a time
+_lock = threading.Lock()          # one frame at a time; each model call also takes gpu.LOCK
 _state_lock = threading.Lock()
 _memory: "OrderedDict[str, np.ndarray]" = OrderedDict()
 _working: dict = {}               # key -> threading.Event, set when done
@@ -118,11 +119,11 @@ _failed: dict = {}                # key -> reason
 
 
 def configure(models_dir: Optional[str], cache_dir: Optional[str]) -> None:
-    global _models_dir, _cache_dir, _session, _session_failed
+    global _models_dir, _cache_dir, _session_failed
+    gpu.release_all()
     with _lock:
         _models_dir = models_dir
         _cache_dir = Path(cache_dir) if cache_dir else None
-        _session = None
         _session_failed = None
     with _state_lock:
         _memory.clear()
@@ -162,10 +163,18 @@ def _model_file() -> Path:
     return target
 
 
+def _forget_session() -> None:
+    global _session
+    _session = None
+
+
+gpu.register(_forget_session)
+
+
 def _get_session():
-    """The model, loaded once, on the GPU when onnxruntime has one (DirectML on
-    Windows, Core ML on a Mac, CUDA elsewhere), else on the CPU. Called with
-    ``_lock`` held."""
+    """The model, loaded when wanted, on the GPU when onnxruntime has one (DirectML on
+    Windows, Core ML on a Mac, CUDA elsewhere), else on the CPU. Called with ``gpu.LOCK``
+    held; not to be kept beyond it (see adjust.gpu)."""
     global _session, _session_failed
     if _session is not None:
         return _session
@@ -273,8 +282,8 @@ def cut_off(rgb: np.ndarray) -> np.ndarray:
 
 def _run_model(rgb: np.ndarray, conditioning: float) -> np.ndarray:
     """The model over a whole (H, W, 3) frame, in overlapping tiles blended
-    together; (H, W, 3) float32 back. Called with ``_lock`` held."""
-    session = _get_session()
+    together; (H, W, 3) float32 back. Called with ``_lock`` held. The card is taken a batch
+    at a time, so a click on a mask waits for a batch and not for the whole frame."""
     h0, w0 = rgb.shape[:2]
     if h0 < 16 or w0 < 16:
         rgb = np.pad(rgb, ((0, max(0, 16 - h0)), (0, max(0, 16 - w0)), (0, 0)), mode="edge")
@@ -300,7 +309,8 @@ def _run_model(rgb: np.ndarray, conditioning: float) -> np.ndarray:
         group = places[i:i + _BATCH]
         batch = np.stack([chw[:, y:y + tile, x:x + tile] for y, x in group])
         cond = np.full((len(group), 1), conditioning, np.float16)
-        result = session.run(["output"], {"input": batch, "cond": cond})[0].astype(np.float32)
+        with gpu.LOCK:
+            result = _get_session().run(["output"], {"input": batch, "cond": cond})[0].astype(np.float32)
         for (y, x), piece in zip(group, result):
             out[y:y + tile, x:x + tile] += piece.transpose(1, 2, 0) * weight[..., None]
             total[y:y + tile, x:x + tile] += weight
