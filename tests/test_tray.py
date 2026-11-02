@@ -154,6 +154,80 @@ def test_a_watched_restart_leaves_starting_to_the_watcher(fake_pystray):
     assert len(spawned) == 1
 
 
+class _Stuck:
+    """A server that never stops, however it is asked."""
+
+    should_exit = False
+
+    def run(self):
+        threading.Event().wait()
+
+
+def test_a_stuck_server_is_ended_so_the_watcher_can_start_a_new_one(fake_pystray, monkeypatch):
+    monkeypatch.setattr(tray, "STOP_WAIT", 0.1)
+    monkeypatch.setattr(tray, "FORCE_WAIT", 0.1)
+    # The icon never goes either: the process has to end regardless.
+    monkeypatch.setattr(_Icon, "stop", lambda self: None)
+    for label, how in (("Restart", "restart"), ("Quit", "quit")):
+        forced = threading.Event()
+        said = []
+        _Icon.last = None
+
+        def force_exit(what):
+            said.append(what)
+            forced.set()
+
+        threading.Thread(target=tray.run, args=(_Stuck(), "http://x", [], None, []),
+                         kwargs={"watched": True, "force_exit": force_exit}, daemon=True).start()
+        end = time.time() + 5
+        while time.time() < end and not getattr(getattr(_Icon, "last", None), "menu", None):
+            time.sleep(0.01)
+        item = next(i for i in _Icon.last.menu.items if getattr(i, "text", "") == label)
+        item.action()
+        assert forced.wait(5)
+        assert said == [how]
+
+
+def _stops_with_a_stream_open(**options) -> float:
+    """How long a real server takes to stop while a response is still being sent."""
+    import asyncio
+
+    import uvicorn
+
+    async def streams(scope, receive, send):
+        if scope["type"] != "http":
+            return
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"start", "more_body": True})
+        await asyncio.Event().wait()
+
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(streams, host="127.0.0.1", port=port, log_config=None, **options))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    assert _serving(port)
+    with socket.create_connection(("127.0.0.1", port)) as client:
+        client.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert client.recv(1024)
+        begun = time.time()
+        server.should_exit = True
+        thread.join(4)
+        took = time.time() - begun
+        stuck = thread.is_alive()
+        server.force_exit = True
+        thread.join(5)
+    return float("inf") if stuck else took
+
+
+def test_an_open_stream_cannot_hold_a_stopping_server():
+    assert _stops_with_a_stream_open() == float("inf")     # what happens with no limit
+    assert _stops_with_a_stream_open(timeout_graceful_shutdown=1) < 4
+
+
+def test_the_servers_limit_leaves_the_tray_time():
+    assert serve.GRACEFUL_SECONDS < tray.STOP_WAIT
+
+
 def test_the_icon_is_drawn():
     img = tray.icon_image(64)
     assert img.size == (64, 64) and img.getpixel((32, 4))[3] == 255 and img.getpixel((0, 0))[3] == 0
