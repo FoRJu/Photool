@@ -38,6 +38,40 @@ export function useCopiedEdit() {
   return value;
 }
 
+// The photo others are matched to from the folder view, kept on this device and
+// across folders: a reference from one day can be matched to from another.
+const REFERENCE_KEY = "photool.match-reference";
+let matchReference = null;
+try { matchReference = JSON.parse(localStorage.getItem(REFERENCE_KEY) || "null"); } catch { /* none kept */ }
+const referenceListeners = new Set();
+
+function setReference(value) {
+  matchReference = value;
+  try {
+    if (value) localStorage.setItem(REFERENCE_KEY, JSON.stringify(value));
+    else localStorage.removeItem(REFERENCE_KEY);
+  } catch { /* this visit only */ }
+  for (const listener of referenceListeners) listener(value);
+}
+
+export function useAsReference(filepath) {
+  setReference({ filepath, name: filepath.split("/").pop() });
+}
+
+export function clearMatchReference() {
+  setReference(null);
+}
+
+export function useMatchReference() {
+  const [value, setValue] = useState(matchReference);
+  useEffect(() => {
+    referenceListeners.add(setValue);
+    setValue(matchReference);
+    return () => { referenceListeners.delete(setValue); };
+  }, []);
+  return value;
+}
+
 // Which of the Copy checklist's sections are ticked, kept on this device: a
 // tripod session ticks Level once and every copy after carries it.
 const CHOICE_KEY = "photool.develop.copy-sections";

@@ -7,6 +7,8 @@ import PersonReview from "./PersonReview.jsx";
 import Slideshow from "./Slideshow.jsx";
 import CollageMaker from "./CollageMaker.jsx";
 import { recall, remember, forgetAll } from "./remembered.js";
+import BatchMatch from "./BatchMatch.jsx";
+import { useAsReference, useMatchReference } from "./editClipboard.js";
 import { copiedEdit, useCopiedEdit, PASTE_AS, pasteAs, keepPasteAs, usePasteAs, pasteSummary, lightChanged } from "./editClipboard.js";
 
 // Relative, so the page works from another computer on the network as well as
@@ -1187,9 +1189,19 @@ function FolderActions({ count, tags, busy, message, onAddToBasket, onSlideshow,
 // The bulk bar above acts on everything the filters show; this one acts on the
 // photos picked one by one (Ctrl/Cmd-click, Shift-click, or Select on a phone).
 
+function ReferenceBadge({ filepath }) {
+  const reference = useMatchReference();
+  if (reference?.filepath !== filepath) return null;
+  return (
+    <span data-testid="reference-badge" title="The reference photos are matched to"
+      className="px-1 rounded text-[9px] font-semibold leading-4 bg-amber-500 text-black">REF</span>
+  );
+}
+
 function SelectionBar({ photos, selected, tags, busy, message, selecting, onEdit, onBasket, onCollage, onSelectAll, onClear,
-  copied, onPaste, onUndoPaste }) {
+  copied, onPaste, onUndoPaste, onMatch }) {
   const pasteMode = usePasteAs();
+  const reference = useMatchReference();
   const [tagDraft, setTagDraft] = useState("");
   const picked = photos.filter((p) => selected.has(p.filepath));
   // The tags the picked photos carry, most common first: what there is to remove.
@@ -1261,6 +1273,17 @@ function SelectionBar({ photos, selected, tags, busy, message, selecting, onEdit
           className="bg-neutral-800 border border-neutral-700 rounded px-1 py-1 text-xs text-neutral-300 disabled:opacity-40">
           {PASTE_AS.map((opt) => <option key={opt.id} value={opt.id} title={opt.title}>{opt.short}</option>)}
         </select>
+        {/* Matching: one photo set as the reference, the selection brought to it. */}
+        <button disabled={off || n !== 1 || picked[0]?.filepath === reference?.filepath}
+          onClick={() => useAsReference(picked[0].filepath)} data-testid="use-reference"
+          title={n === 1 ? "Match other photos to this one, as it is edited. It stays the reference, across folders, until you change it."
+            : "Select one photo to use as the reference for Match"}
+          className={`${btn} text-amber-200`}>◎ Use as reference</button>
+        <button disabled={off || !reference || (n === 1 && picked[0]?.filepath === reference?.filepath)}
+          onClick={onMatch} data-testid="match-selected"
+          title={reference ? `Match the selected photos to ${reference.name}: its look, its light or both. You'll see examples first.`
+            : "Set a reference first: select one photo and choose Use as reference"}
+          className={`${btn} text-amber-200`}>≈ Match{reference ? ` to ${reference.name}` : "…"}</button>
         {onCollage && (
           <button disabled={busy || n < 2} onClick={onCollage} data-testid="make-collage"
             title={n < 2 ? "Select 2 or more photos for a collage" : n > 9 ? "A collage holds up to 9: the first 9 go in, and any of the rest can be swapped in" : "These photos as one picture: a story, a square or a print"}
@@ -1363,6 +1386,7 @@ function ImageGrid({ photos, folderPath, onSelect, onRate, basketSet, onToggleBa
             <FlagBadge flag={photo.flag} />
             <ColorDot color={photo.color_label} />
             <ExtBadge ext={photo.extension} />
+            <ReferenceBadge filepath={photo.filepath} />
             <VideoBadge photo={photo} />
             {burstSize > 1 && (
               <span
@@ -4042,6 +4066,8 @@ function PhotoolApp({ access }) {
   const [pickMessage, setPickMessage] = useState("");
   // What the last paste onto a selection replaced ({ filepath: edit }), for Undo.
   const [pasteUndo, setPasteUndo] = useState(null);
+  const [matching, setMatching] = useState(false);
+  const matchRef = useMatchReference();
   const clipboard = useCopiedEdit();
   const pickAnchorRef = useRef(null);
   // Bumped each time the develop view closes over the cull view, so the cull
@@ -4932,6 +4958,20 @@ function PhotoolApp({ access }) {
     } catch { setPickMessage("The backend is not reachable"); } finally { setPickBusy(false); }
   }, [photos, picked, handleEditSaved]);
 
+  // A batch match has finished, or was stopped: its edits are on the frames, and one undo
+  // takes them all back, the same as a paste.
+  const matchDone = useCallback((state, kind) => {
+    for (const [fp, stored] of Object.entries(state.edits || {})) handleEditSaved(fp, stored);
+    const n = Object.keys(state.edits || {}).length;
+    const what = kind === "both" ? "light and look" : kind;
+    const relit = lightChanged(state.notes).map((fp) => fp.split("/").pop());
+    setPickMessage(`Matched ${what} on ${n} photo${n === 1 ? "" : "s"}`
+      + (state.status === "stopped" ? " before stopping" : "")
+      + (state.failed?.length ? ` · ${state.failed.length} could not be read` : "")
+      + (relit.length ? ` · the light itself changed on ${relit.slice(0, 4).join(", ")}${relit.length > 4 ? ", …" : ""}: check those` : ""));
+    setPasteUndo(n ? state.previous : null);
+  }, [handleEditSaved]);
+
   const undoPaste = useCallback(async () => {
     if (!pasteUndo) return;
     setPickBusy(true);
@@ -5706,7 +5746,12 @@ function PhotoolApp({ access }) {
             message={pickMessage} selecting={picking} onEdit={editPicked} onBasket={basketPicked}
             onCollage={() => setCollageOf(photos.filter((p) => picked.has(p.filepath)).map((p) => p.filepath))}
             onSelectAll={() => setPicked(new Set(photos.map((p) => p.filepath)))} onClear={clearPicked}
-            copied={clipboard} onPaste={pastePicked} onUndoPaste={pasteUndo ? undoPaste : null} />
+            copied={clipboard} onPaste={pastePicked} onUndoPaste={pasteUndo ? undoPaste : null}
+            onMatch={() => setMatching(true)} />
+        )}
+        {matching && matchRef && (
+          <BatchMatch reference={matchRef} onDone={matchDone} onClose={() => setMatching(false)}
+            filepaths={photos.filter((p) => picked.has(p.filepath)).map((p) => p.filepath)} />
         )}
         {tab === "library" && (picked.size > 0 || picking) && <div className="h-28" />}
         {collageOf && <CollageMaker filepaths={collageOf} onClose={() => setCollageOf(null)} />}
