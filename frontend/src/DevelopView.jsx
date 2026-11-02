@@ -135,6 +135,23 @@ const GROUPS = [
     ],
   },
   {
+    // What a wider aperture would have done (backend adjust/depth.py). The focus and
+    // the range at 0 leave the choice to the blur.
+    id: "blur",
+    title: "Lens blur",
+    hint: "Blurs by how far away each part of the picture is, as read from the picture itself. Look closely round hair and other fine edges: that is where it can show.",
+    sliders: [
+      { key: "lens_blur", label: "Amount", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+        title: "How wide the aperture would have been. 0 is off. Far less than all the way is usually enough." },
+      { key: "blur_focus", label: "Focus", min: 0, max: 100, step: 1, needsBlur: true,
+        format: (v) => (v ? `${v}` : "auto"),
+        title: "The distance that stays sharp: low is far away, high is near. Auto takes what is near in the middle of the frame. Or pick it on the picture." },
+      { key: "blur_sharp", label: "Sharp range", min: 0, max: 100, step: 1, needsBlur: true,
+        format: (v) => (v ? `${v}` : "auto"),
+        title: "How deep a range of distance stays sharp round the focus. Raise it if part of the subject goes soft." },
+    ],
+  },
+  {
     // Lens corrections (backend adjust/lens.py). `lens_profile` is the switch
     // drawn above the slider (0 off, 1 the camera's own correction).
     id: "lens",
@@ -447,6 +464,7 @@ const COPY_SECTIONS = [
   { id: "light", label: "Light", keys: [...LIGHT_KEYS, "contrast"] },
   { id: "noise", label: "Noise reduction", keys: ["nr_luma", "nr_color"] },
   { id: "sharpen", label: "Sharpening", keys: ["sharpen", "sharpen_radius", "sharpen_detail", "sharpen_masking"] },
+  { id: "blur", label: "Lens blur", keys: ["lens_blur", "blur_focus", "blur_sharp"] },
   { id: "lens", label: "Lens corrections", keys: ["lens_profile", "distortion"] },
   { id: "presence", label: "Presence", keys: ["clarity", "vibrance", "saturation"] },
   { id: "curve", label: "Tone curve", keys: CURVE_KEYS },
@@ -462,7 +480,7 @@ const COPY_SECTIONS = [
 const TONE_SECTIONS = COPY_SECTIONS.filter((s) => !s.framing).map((s) => s.id);
 // What a look of your own can carry: the tone sections. Never the masks, which
 // are drawn on the frame they were made on.
-const LOOK_SECTIONS = COPY_SECTIONS.filter((s) => !s.framing && s.id !== "masks");
+const LOOK_SECTIONS = COPY_SECTIONS.filter((s) => !s.framing && s.id !== "masks" && s.id !== "blur");
 const keysOfSections = (ids) => LOOK_SECTIONS.filter((s) => ids.includes(s.id)).flatMap((s) => s.keys);
 // A look saved before looks said what they carry carries every tone section.
 const lookSections = (preset) => (preset.sections?.length ? preset.sections : LOOK_SECTIONS.map((s) => s.id));
@@ -967,6 +985,16 @@ const RANGE_LUM_DEFS = [
   { key: "smooth", label: "Smooth", min: 0, max: 100, step: 1, format: (v) => `${v}`,
     title: "How gently it fades out beyond the band." },
 ];
+// A depth mask's band of distance (backend adjust/depth.py).
+const DEPTH_DEFS = [
+  { key: "near", label: "Nearest", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+    title: "The near end of the band: 100 is the nearest thing in this frame." },
+  { key: "far", label: "Farthest", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+    title: "The far end of the band: 0 is the farthest thing in this frame." },
+  { key: "soft", label: "Soft", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+    title: "How gently it fades out beyond the band." },
+];
+const DEPTH_START = { near: 100, far: 50, soft: 20 };
 const RANGE_COLOUR_DEF = { key: "width", label: "Range", min: 0, max: 100, step: 1, format: (v) => `${v}`,
   title: "How wide a range of colours round the one picked is reached." };
 // The colour a range was sampled at, back to RGB for its swatch (BT.709, as the backend).
@@ -1033,10 +1061,11 @@ const CHOSEN_NAMES = {
 const MASK_NAMES = {
   linear: ["Linear", "Linear, turned round"], radial: ["Radial", "Outside radial"],
   brush: ["Brush", "All but brush"], ...CHOSEN_NAMES, object: ["Object", "All but object"],
+  depth: ["Depth", "All but depth"],
 };
 // The kinds whose reach is a picture of the whole frame: a model's choice, or an
 // object's kept selection (backend adjust/objects.py).
-const isMatted = (m) => !!CHOSEN_NAMES[m?.kind] || m?.kind === "object";
+const isMatted = (m) => !!CHOSEN_NAMES[m?.kind] || m?.kind === "object" || m?.kind === "depth";
 // An object's kept selection, named by its own hash: the same name is always the
 // same picture, so the browser keeps it.
 const objectMatteUrl = (m) => (m?.kind === "object" && m.matte ? `${API}/export/develop/object-matte/${m.matte}` : null);
@@ -1045,12 +1074,14 @@ function invertLabel(m) {
   if (m.kind === "linear") return "The other way round";
   if (m.kind === "radial") return "Outside the ellipse instead";
   if (m.kind === "brush") return "Everything but where it is painted";
+  if (m.kind === "depth") return "Everything outside the band instead";
   return `Everything but the ${m.person ? "person" : m.kind} instead`;
 }
 // The chosen kinds that can be narrowed to one person (1 = leftmost face).
 const OF_PEOPLE = ["people", "faces"];
 // Which selection a chosen mask shades with: one person's is its own picture.
-const matteKey = (m) => `${m.kind}${m.person ? `:${m.person}` : ""}${m.areas?.length ? `|${m.areas.join(",")}` : ""}`;
+const matteKey = (m) => (m.kind === "depth" ? `depth:${m.near},${m.far},${m.soft}`
+  : `${m.kind}${m.person ? `:${m.person}` : ""}${m.areas?.length ? `|${m.areas.join(",")}` : ""}`);
 
 // An object mask's prompt being worked on, as the part the mask keeps.
 function draftPart(d) {
@@ -1063,6 +1094,7 @@ function newMask(kind, dims) {
   if (kind === "brush") return { kind, strokes: [] };
   if (kind === "object") return { kind, invert: false, model: lastObjectModel, parts: [] };
   if (CHOSEN_NAMES[kind]) return { kind, invert: false };
+  if (kind === "depth") return { kind, invert: false, ...DEPTH_START };
   if (kind === "linear") return { kind, x1: 0.5, y1: 0.0, x2: 0.5, y2: 0.4 };
   const rx = 0.2;
   return { kind, cx: 0.5, cy: 0.5, rx, ry: Math.min(0.45, (rx * dims.w) / dims.h),
@@ -1451,7 +1483,8 @@ function MaskOverlay({ masks, selected, dims, brush, showShade, mattes, people, 
       onPointerLeave={() => setCursor(null)}>
       {(showShade || painting || picking || pointing) && masks[selected] && (
         <MaskShade mask={masks[selected]} extra={wet}
-          matte={objectMatteUrl(masks[selected]) || mattes[matteKey(masks[selected])]}
+          matte={objectMatteUrl(masks[selected]) || mattes[matteKey(masks[selected])]
+            || (masks[selected].kind === "depth" ? mattes._depth : undefined)}
           range={masks[selected].range ? range : null} W={W} H={H} unit={unit} />
       )}
       {/* The people a people or faces mask can be narrowed to, numbered from the
@@ -1879,11 +1912,11 @@ function keepFolds(open) {
 // The panel's sections in the order they come, and what each is called where
 // they are arranged. The order and the ones left out are kept on this device.
 const PANEL_ORDER = ["frame", "profile", "wb", "light", "presence", "looks", "curve", "mixer", "toning",
-  "masks", "sharpen", "noise", "effects"];
+  "masks", "blur", "sharpen", "noise", "effects"];
 const PANEL_NAMES = {
   frame: "Frame", profile: "Profile", wb: "White balance", light: "Light", presence: "Presence",
   looks: "Looks", curve: "Tone curve", mixer: "Colour mixer / B&W mix", toning: "Fade & toning",
-  masks: "Masks", sharpen: "Sharpening", noise: "Noise reduction", effects: "Effects",
+  masks: "Masks", blur: "Lens blur", sharpen: "Sharpening", noise: "Noise reduction", effects: "Effects",
 };
 const ORDER_KEY = "photool.develop.order";
 const HIDDEN_KEY = "photool.develop.hidden";
@@ -2292,7 +2325,8 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
           ["subject", "+ Subject", "The picture's subject, as a model finds it: the runners in front, not the crowd. Invert it for the background."],
           ["sky", "+ Sky", "The sky, as a model finds it. Invert it for everything below."],
           ["people", "+ People", "Everyone in the picture, or one of them: pick a number on a face. Parts narrows it to their face, hair, skin or clothes; Skin retouches it. Invert it for the background."],
-          ["object", "+ Object", "One thing you point at: drag a box round it or click on it. Zoom in for something small."]].map(([kind, label, title]) => (
+          ["object", "+ Object", "One thing you point at: drag a box round it or click on it. Zoom in for something small."],
+          ["depth", "+ Depth", "A band of distance, read from the picture: the foreground, the far hills. Set how near and how far on the sliders."]].map(([kind, label, title]) => (
           <button key={kind} onClick={() => onAdd(kind)} title={title} disabled={!!choosing.busy}
             className="text-[11px] px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-50">
             {choosing.busy === kind ? "finding…" : label}
@@ -2331,6 +2365,14 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
               className="accent-amber-400" />
             Show where it reaches
           </label>
+          {m.kind === "depth" && (
+            <Controls>
+              {DEPTH_DEFS.map((def) => (
+                <Slider key={def.key} def={def} value={Number(m[def.key]) || 0}
+                  onChange={(key, value) => set(key, value)} onReset={() => set(def.key, DEPTH_START[def.key])} />
+              ))}
+            </Controls>
+          )}
           <Controls>
             {MASK_SLIDERS.map((def) => (
               <Slider key={def.key} def={def} value={Number(m[def.key]) || 0}
@@ -3773,6 +3815,8 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
     setProbe({ u, v, rgb: [data[i], data[i + 1], data[i + 2]] });
   }, []);
 
+  // While the lens blur's focus is being picked, what a click on the picture does.
+  const focusPick = useRef(null);
   const onPictureClick = useCallback((e) => {
     if (panned.current) { panned.current = false; return; }
     if (fullView || !imgRef.current) return;
@@ -3780,6 +3824,7 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
     const u = (e.clientX - rect.left) / rect.width;
     const v = (e.clientY - rect.top) / rect.height;
     if (u < 0 || u > 1 || v < 0 || v > 1) return;
+    if (focusPick.current) { focusPick.current(u, v); return; }
     placeLoupe({ u, v });
   }, [fullView, placeLoupe]);
 
@@ -4181,7 +4226,7 @@ ${known.license}
   const addMask = useCallback(async (kind) => {
     if (kind === "object") {
       if (!(await readyObjectModel(lastObjectModel))) return;
-    } else if (CHOSEN_NAMES[kind]) {
+    } else if (CHOSEN_NAMES[kind] || kind === "depth") {
       // The model is fetched the first time (a few MB); the mask is added once
       // it can select anything.
       setChoosing({ busy: kind, error: "" });
@@ -4399,6 +4444,33 @@ ${known.license}
   const [people, setPeople] = useState(null);
   // Picking a colour for the selected mask's range: the next click on the picture.
   const [picking, setPicking] = useState(false);
+  const depthAsks = useRef({});
+  // The lens blur's model: asked for the first time the blur is used, since it is a
+  // download of about 100 MB, and said so while it comes.
+  const [pickingFocus, setPickingFocus] = useState(false);
+  const [blurNote, setBlurNote] = useState("");
+  const depthModel = useRef(false);
+  const blurOn = Number(settings.lens_blur) > 0;
+  useEffect(() => {
+    if (!blurOn || depthModel.current) return undefined;
+    depthModel.current = true;
+    const slow = setTimeout(() => setBlurNote("Getting the depth model, about 100 MB, the first time only…"), 500);
+    fetch(`${API}/export/develop/mask-model`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "depth" }),
+    }).then(async (res) => {
+      clearTimeout(slow);
+      const body = res.ok ? null : await res.json().catch(() => ({}));
+      setBlurNote(body ? body.detail || "Could not get the depth model" : "");
+      if (body) depthModel.current = false;
+    }).catch(() => {
+      clearTimeout(slow);
+      setBlurNote("The server did not answer");
+      depthModel.current = false;
+    });
+    return undefined;
+  }, [blurOn]);
+  useEffect(() => { setPickingFocus(false); }, [filepath]);
   const [rangeImage, setRangeImage] = useState(null);
   const mattesFor = useRef({ path: null, asked: new Set() });
   useEffect(() => {
@@ -4411,24 +4483,39 @@ ${known.license}
       setPeople(null);
     }
     if (!maskMode) return;
-    const chosen = (settings.masks || []).filter((m) => CHOSEN_NAMES[m.kind]);
+    const chosen = (settings.masks || []).filter((m) => CHOSEN_NAMES[m.kind] || m.kind === "depth");
     const keys = [...new Map(chosen.map((m) => [matteKey(m), m])).entries()];
     const state = mattesFor.current;
-    keys.filter(([key]) => !state.asked.has(key)).forEach(async ([key, m]) => {
+    const ask = async (key, m) => {
+      if (mattesFor.current !== state) return;
       state.asked.add(key);
       try {
+        const depth = m.kind === "depth";
         const res = await fetch(`${API}/export/develop/mask-image`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ filepath, kind: m.kind, person: m.person || 0, areas: m.areas || [],
+            ...(depth ? { near: m.near, far: m.far, soft: m.soft } : {}),
             size: PREVIEW_SIZE, ...lensBody }),
         });
         if (!res.ok || mattesFor.current !== state) return;
         const url = URL.createObjectURL(await res.blob());
         state.urls[key] = url;
-        setMattes((had) => ({ ...had, [key]: url }));
+        // A depth band's last picture stays up while its sliders move on.
+        setMattes((had) => ({ ...had, [key]: url, ...(depth ? { _depth: url } : {}) }));
       } catch {
         state.asked.delete(key);
       }
+    };
+    // A band is a new picture at every step of a slider, so only the one it rests on is asked for.
+    const waiting = depthAsks.current;
+    Object.keys(waiting).filter((key) => !keys.some(([k]) => k === key)).forEach((key) => {
+      clearTimeout(waiting[key]);
+      delete waiting[key];
+    });
+    keys.filter(([key]) => !state.asked.has(key)).forEach(([key, m]) => {
+      if (m.kind !== "depth") { ask(key, m); return; }
+      if (waiting[key]) return;
+      waiting[key] = setTimeout(() => { delete waiting[key]; ask(key, m); }, 150);
     });
     // The faces a people or faces mask can be narrowed to, asked for once.
     if (chosen.some((m) => OF_PEOPLE.includes(m.kind)) && !state.asked.has("_people")) {
@@ -5238,6 +5325,17 @@ ${known.license}
             ))}
           </div>
         )}
+        {id === "blur" && blurNote && (
+          <div className="text-[10px] text-neutral-500 -mt-1" data-testid="blur-note">{blurNote}</div>
+        )}
+        {id === "blur" && blurOn && (
+          <button onClick={() => setPickingFocus(!pickingFocus)} data-testid="blur-pick"
+            title="Click what should be sharp, and the focus goes to its distance."
+            className={`text-[11px] px-2 py-0.5 rounded border ${pickingFocus ? "border-amber-400 text-amber-300"
+              : "border-neutral-700 text-neutral-300 hover:text-white"}`}>
+            {pickingFocus ? "Click what should be sharp…" : "Pick the focus on the picture"}
+          </button>
+        )}
         {id === "noise" && NOISE_NOTES[noiseState] && (
           <div className="text-[10px] text-neutral-600 -mt-1" data-testid="noise-note">
             {NOISE_NOTES[noiseState]}
@@ -5247,6 +5345,7 @@ ${known.license}
           {group.sliders.filter((def) => (!def.needsLook || hasLook)
             && (!def.needsStyle || settings.style)
             && (!def.needsSharpen || Number(settings.sharpen) > 0)
+            && (!def.needsBlur || Number(settings.lens_blur) > 0)
             && !(Number(settings.mono) && COLOUR_ONLY_KEYS.includes(def.key))).map((def) => (
             <Slider key={def.key} def={def} value={settings[def.key]}
               onChange={change} onReset={() => resetOne(def.key)} />
@@ -5262,6 +5361,18 @@ ${known.license}
     );
   };
 
+  focusPick.current = pickingFocus ? async (u, v) => {
+    setPickingFocus(false);
+    const body = { filepath, u, v, size: PREVIEW_SIZE, settings: activeOnly(settingsRef.current),
+      ...frameGeometry(settingsRef.current) };
+    try {
+      const res = await fetch(`${API}/export/develop/depth-at`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      if (res.ok) change("blur_focus", (await res.json()).depth);
+    } catch { /* the focus stays where it was */ }
+  } : null;
+
   // The panel's sections by id, put in the order kept on this device (and left
   // out where that was asked, unless one holds a change).
   const groupEdited = (id) => {
@@ -5273,7 +5384,7 @@ ${known.license}
     frame: frameEdited, looks: false, curve: CURVE_KEYS.some((k) => curveEdited(settings[k])),
     mixer: (Number(settings.mono) ? BW_MIX_KEYS : HSL_KEYS).some((k) => Number(settings[k]) !== 0),
     masks: !!(settings.masks || []).length,
-    ...Object.fromEntries(["profile", "wb", "light", "presence", "toning", "sharpen", "noise", "effects"]
+    ...Object.fromEntries(["profile", "wb", "light", "presence", "toning", "blur", "sharpen", "noise", "effects"]
       .map((id) => [id, groupEdited(id)])),
   };
   const blocks = {
@@ -5449,6 +5560,7 @@ Number(settings.mono) ? (
             onObjectNewPart={objectNewPart} onObjectFind={objectFind} onObjectKeepFound={objectKeepFound} />
           </Fold>
     ),
+    blur: section("blur"),
     sharpen: section("sharpen"),
     noise: section("noise"),
     effects: section("effects"),
@@ -5502,7 +5614,7 @@ Number(settings.mono) ? (
                 transformOrigin: "0 0" }}
               onClick={onPictureClick}
               onPointerMove={onPictureMove} onPointerLeave={() => setProbe(null)}
-              title={fullView ? undefined : "Click to look at this spot at 1:1"}>
+              title={fullView ? undefined : pickingFocus ? "Click what should be sharp" : "Click to look at this spot at 1:1"}>
               <img ref={imgRef} src={shown} alt="" draggable={false}
                 className="max-h-[calc(100vh-9rem)] max-w-full object-contain"
                 style={cropMode && angle ? { transform: `rotate(${angle}deg)` } : undefined} />

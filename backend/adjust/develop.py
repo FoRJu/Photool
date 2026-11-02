@@ -154,6 +154,10 @@ NOISE_SLIDERS = ("nr_luma", "nr_color")
 # masking that shape it, stored so that 0 is Lightroom's default for each.
 SHARPEN_SLIDERS = ("sharpen", "sharpen_radius", "sharpen_detail", "sharpen_masking")
 
+# Lens blur (adjust.depth), 0..100 each: how strong, the distance in focus (1 far to 100
+# near; 0 lets it choose) and how deep a range stays sharp (0 is its default).
+BLUR_SLIDERS = ("lens_blur", "blur_focus", "blur_sharp")
+
 # Lens corrections (adjust.lens): ``lens_profile`` (0 or 1) corrects the
 # distortion as the camera does for this frame, ``distortion`` (-100..100) by hand
 # on top, positive straightening a barrel.
@@ -163,7 +167,7 @@ LENS_SLIDERS = ("lens_profile", "distortion")
 TRANSFORM_SLIDERS = ("tf_vertical", "tf_horizontal", "tf_aspect")
 
 SETTINGS_SLIDERS = (POINT_SLIDERS + TONE_SLIDERS + LOOK_SLIDERS + HSL_SLIDERS
-                    + BW_SLIDERS + EFFECT_SLIDERS + NOISE_SLIDERS + SHARPEN_SLIDERS
+                    + BW_SLIDERS + EFFECT_SLIDERS + NOISE_SLIDERS + SHARPEN_SLIDERS + BLUR_SLIDERS
                     + LENS_SLIDERS + TRANSFORM_SLIDERS)
 
 # The tone curve: points (x, y) on 0..255, input to output, for all three
@@ -197,6 +201,9 @@ SLIDER_RANGES = {
     "grain": (0.0, 100.0),
     "nr_luma": (0.0, 100.0),
     "nr_color": (0.0, 100.0),
+    "lens_blur": (0.0, 100.0),
+    "blur_focus": (0.0, 100.0),
+    "blur_sharp": (0.0, 100.0),
     "sharpen": (0.0, 150.0),
     "sharpen_radius": (-5.0, 20.0),
     "sharpen_detail": (-25.0, 75.0),
@@ -209,7 +216,8 @@ _STYLE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 # A setting that means nothing without another: a hue without its strength, a
 # grain size without any grain. It is dropped when the other is at 0.
 HUE_OF = {"shadow_hue": "shadow_sat", "highlight_hue": "highlight_sat", "grain_size": "grain",
-          "sharpen_radius": "sharpen", "sharpen_detail": "sharpen", "sharpen_masking": "sharpen"}
+          "sharpen_radius": "sharpen", "sharpen_detail": "sharpen", "sharpen_masking": "sharpen",
+          "blur_focus": "lens_blur", "blur_sharp": "lens_blur"}
 
 MAX_TONE_VALUE = 100.0
 
@@ -738,6 +746,8 @@ def describe_settings(settings: Optional[dict]) -> str:
              (("tf_vertical", "vertical"), ("tf_horizontal", "horizontal"), ("tf_aspect", "aspect")) if key in clean]
     if turns:
         looks.append("transform " + ", ".join(turns))
+    if "lens_blur" in clean:
+        looks.append(f"lens blur {clean['lens_blur']}")
     if "sharpen" in clean:
         from adjust.sharpen import detail_of, radius_px
 
@@ -816,6 +826,9 @@ _LOOK_CRS.update({
     "sharpen_detail": "crs:PhotoolSharpenDetail",
     "sharpen_masking": "crs:PhotoolSharpenMasking",
 })
+# Lens blur, which Lightroom has its own idea of and keeps in its own structures.
+_LOOK_CRS.update({"lens_blur": "crs:PhotoolLensBlur", "blur_focus": "crs:PhotoolBlurFocus",
+                  "blur_sharp": "crs:PhotoolBlurSharp"})
 # Lens corrections, likewise: Lightroom's crs:LensProfileEnable names a profile from
 # its own database, and crs:LensManualDistortionAmount is on its own scale.
 _LOOK_CRS.update({"lens_profile": "crs:PhotoolLensProfile", "distortion": "crs:PhotoolDistortion"})
@@ -844,7 +857,8 @@ _MASKS_CRS = "crs:PhotoolMasks"
 _SPOTS_CRS = "crs:PhotoolSpots"
 # Written without a sign: they are 0..100 / 0..360, never negative.
 _UNSIGNED = {"flat", "style_fade", "compress", "fade", "shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat",
-             "grain", "nr_luma", "nr_color", "sharpen", "sharpen_masking", "lens_profile"}
+             "grain", "nr_luma", "nr_color", "sharpen", "sharpen_masking", "lens_profile",
+             "lens_blur", "blur_focus", "blur_sharp"}
 
 
 def to_crs(settings: Optional[dict]) -> dict:

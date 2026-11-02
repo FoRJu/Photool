@@ -99,6 +99,10 @@ async def lifespan(app: FastAPI):
 
     segment.configure(config.models_dir)
     parts.configure(config.models_dir)
+    # How far away things are, for depth masks and lens blur.
+    from adjust import depth
+
+    depth.configure(config.models_dir)
     # Object masks are chosen by pointing (adjust.objects); what was chosen is
     # kept beside the catalog, since an edit names it and needs it to export.
     from adjust import objects

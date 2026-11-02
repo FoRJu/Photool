@@ -3207,9 +3207,15 @@ class MaskModelRequest(BaseModel):
 async def develop_mask_model(req: MaskModelRequest):
     """Make the model a subject or sky mask needs ready, fetching it the first
     time (a few MB), so the mask is added only once it can select anything."""
-    from adjust import parts, segment
+    from adjust import depth, parts, segment
     from faces.models import ModelsUnavailable
 
+    if req.kind == "depth":
+        try:
+            await _run_blocking(depth.ensure)
+        except ModelsUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        return {"ok": True}
     if req.kind == "parts":
         # The parts of people: the people model and the face finder, then the
         # two parsers (hundreds of MB, the first time).
@@ -3254,6 +3260,9 @@ class MaskImageRequest(FrameGeometry):
     kind: str
     size: int = 1600             # the develop preview's size, whose frame is kept
     person: int = 0              # people and faces: one person (1 = leftmost), 0 everyone
+    near: int = 100              # depth: the band of distance (adjust.depth.band)
+    far: int = 50
+    soft: int = 20
     areas: list = []             # people: the parts of them (adjust.parts.AREAS), none for all
 
 
@@ -3274,6 +3283,40 @@ def _mask_frame(config, filepath: str, size: int, geometry: FrameGeometry):
     return frame
 
 
+class DepthAtRequest(FrameGeometry):
+    filepath: str
+    u: float                     # the point, fractions of the picture as shown: cropped and levelled
+    v: float
+    settings: dict = {}          # the edit, whose crop and level say where that is
+    size: int = 1600
+
+
+@router.post("/export/develop/depth-at")
+async def develop_depth_at(req: DepthAtRequest, request: Request):
+    """The distance at a point of the frame on the lens blur's scale: 1 far to 100 near."""
+    from adjust import depth
+    from adjust.develop import normalize
+    from adjust.geometry import source_point
+    from faces.models import ModelsUnavailable
+
+    config = request.app.state.config
+
+    def read():
+        frame = _mask_frame(config, req.filepath, req.size, req)
+        if frame is None:
+            return None
+        u, v = source_point(normalize(req.settings), req.u, req.v, *frame.size)
+        return depth.depth_at(frame, u, v)
+
+    try:
+        found = await _run_blocking(read)
+    except ModelsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Could not read this frame")
+    return {"depth": found}
+
+
 @router.post("/export/develop/mask-image")
 async def develop_mask_image(req: MaskImageRequest, request: Request):
     """Where a subject, sky, people or faces mask reaches on this frame, as a grey
@@ -3283,10 +3326,10 @@ async def develop_mask_image(req: MaskImageRequest, request: Request):
     import numpy as np
     from PIL import Image
 
-    from adjust import segment
+    from adjust import depth, segment
     from faces.models import ModelsUnavailable
 
-    if req.kind not in segment.KINDS:
+    if req.kind != "depth" and req.kind not in segment.KINDS:
         raise HTTPException(status_code=400, detail=f"No model selects {req.kind!r}")
     config = request.app.state.config
 
@@ -3297,7 +3340,10 @@ async def develop_mask_image(req: MaskImageRequest, request: Request):
         from adjust.masks import PEOPLE_AREAS
 
         areas = [a for a in PEOPLE_AREAS if a in req.areas] if req.kind == "people" else []
-        matte = segment.matte(frame, req.kind, req.person or None, areas)
+        if req.kind == "depth":
+            matte = depth.band(depth.whole_map(frame), req.near, req.far, req.soft)
+        else:
+            matte = segment.matte(frame, req.kind, req.person or None, areas)
         buf = _io.BytesIO()
         Image.fromarray((matte * 255.0 + 0.5).astype(np.uint8), "L").save(buf, format="PNG")
         buf.seek(0)

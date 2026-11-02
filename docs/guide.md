@@ -613,6 +613,32 @@ sidecar under this app's own `crs:PhotoolSharpen*` names: Lightroom writes
 `crs:Sharpness 40` into most sidecars it touches, so reading that as this app's
 sharpening would quietly sharpen every one of those frames.
 
+**Lens blur does what a wider aperture would have done.** Depth Anything V2 Small
+reads how far away each part of the picture is, from the picture alone, so it works
+on any photograph from any camera. The model is about 100 MB, fetched the first time
+the blur or a depth mask is used. The Lens blur group has:
+
+- **Amount**, 0–100. 0 is off; well short of 100 is usually enough.
+- **Focus**, the distance that stays sharp. Auto takes what is near in the middle of
+  the frame. **Pick the focus on the picture** sets it from the next click.
+- **Sharp range**, how deep a range stays sharp round the focus. Raise it if part of
+  the subject goes soft.
+
+It works in linear light, before the tone, so a bright point spreads into a bright
+disc rather than a grey smudge, and in layers from far to near, so a sharp subject
+does not bleed into the blurred background behind it. The blur's size is a share of
+the whole frame, so the preview, the loupe and a full-size export agree. It is
+copied and pasted with an edit, but a look of your own does not carry it, since focus
+belongs to one frame. The map is soft by a few pixels at an edge, so look closely
+round hair and other fine edges.
+
+**A depth mask reaches a band of distance.** **+ Depth** in Masks takes any local
+adjustment. **Nearest** and **Farthest** set the band and **Soft** how gently it fades.
+Distance is relative to this frame only: 100 is its nearest thing and 0 its farthest,
+so something close to the lens takes up the near end and pushes the subject down the
+scale. A strong adjustment can leave a rim where a blurred foreground meets what is
+behind it, since a band has one edge where the picture has a soft one.
+
 **Library thumbnails show the edit.** The grid and the cull view normally draw the
 JPEG the camera embedded in the file. A frame that carries an edit is rendered
 through this same pipeline at thumbnail size and cached under its own key, beside
