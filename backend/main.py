@@ -237,6 +237,12 @@ async def lifespan(app: FastAPI):
 
     keep_awake.start(config.keep_awake_minutes, requested_work_running)
 
+    # The looks most likely to be wanted, learned while nobody is using the app.
+    from export import look_ahead
+
+    if config.camera_look_ahead:
+        look_ahead.start(config.library_root, db)
+
     # The MCP endpoint's HTTP app is made per lifespan: its session manager can
     # be run only once (see mcp_server.Endpoint).
     app.state.mcp_http = mcp.streamable_http_app(streamable_http_path="/mcp")
@@ -246,6 +252,7 @@ async def lifespan(app: FastAPI):
         yield  # app runs
 
     keep_awake.stop()
+    look_ahead.stop()
     queue_manager.stop()
     exif_fill.stop()
     clip.stop()

@@ -258,6 +258,7 @@ def clear_preview_cache() -> None:
         _PREVIEW_CACHE.clear()
         _LINEAR_CACHE.clear()
         _LOOK_CACHE.clear()
+        _HELD_DECODES.clear()
 
 
 # ── Linear-light decoding ──────────────────────────────────────────
@@ -652,6 +653,7 @@ def set_profile_dir(path) -> tuple:
         _SCENE_FRAMES.clear()
         _LENS_KEYS.clear()
         _OLDER_LOOKS.clear()
+        _STARTERS.clear()
         _PROFILE_DIR = Path(path) if path else None
         _PROFILE_WRITABLE = False
         if _PROFILE_DIR is None:
@@ -1664,6 +1666,7 @@ def _with_checked_tone(source: Path, rgb, samples, look):
 # one would change it unasked. It stays until the person updates it (relearn_look).
 _LOOK_FILE_VERSION = 3
 _OLDER_LOOK_VERSION = 2
+_LOOK_BUSY: dict = {}
 _OLDER_LOOKS: set = set()
 _IS_EDITED: Optional[Callable[[Path], bool]] = None
 
@@ -1848,21 +1851,29 @@ def camera_look_for(source: Path, rgb, relearn: bool = False):
         if key in _LOOK_CACHE:
             _LOOK_CACHE.move_to_end(key)
             return _LOOK_CACHE[key]
+        busy = _LOOK_BUSY.setdefault(key, threading.Lock())
 
-    look = None if relearn else _stored_look(source, stat)
-    if look is None:
-        try:
-            samples, own = _reference_samples(source, _learning_copy(source, rgb))
-            look = _pooled_look(source, samples, own)
-            look = _with_checked_tone(source, rgb, samples, look)
-        except Exception as e:
-            logger.warning(f"Camera look failed for {source.name}: {e}")
-        _store_look(source, stat, look)
+    # One learning per frame at a time: the frame's preview, its full size for the
+    # loupe and the work ahead can all ask at once, and the answer is the same.
+    with busy:
+        with _PREVIEW_LOCK:
+            if key in _LOOK_CACHE:
+                return _LOOK_CACHE[key]
+        look = None if relearn else _stored_look(source, stat)
+        if look is None:
+            try:
+                samples, own = _reference_samples(source, _learning_copy(source, rgb))
+                look = _pooled_look(source, samples, own)
+                look = _with_checked_tone(source, rgb, samples, look)
+            except Exception as e:
+                logger.warning(f"Camera look failed for {source.name}: {e}")
+            _store_look(source, stat, look)
 
-    with _PREVIEW_LOCK:
-        _LOOK_CACHE[key] = look
-        while len(_LOOK_CACHE) > _LOOK_CACHE_LIMIT:
-            _LOOK_CACHE.popitem(last=False)
+        with _PREVIEW_LOCK:
+            _LOOK_CACHE[key] = look
+            while len(_LOOK_CACHE) > _LOOK_CACHE_LIMIT:
+                _LOOK_CACHE.popitem(last=False)
+            _LOOK_BUSY.pop(key, None)
     return look
 
 
@@ -2047,7 +2058,10 @@ def linear_base(source: Path, size: int, relearn: bool = False):
         if cached is not None:
             return cached
         try:
-            rgb = _load_linear(source, size)
+            with _PREVIEW_LOCK:
+                rgb = _HELD_DECODES.pop(key, None)
+            if rgb is None:
+                rgb = _load_linear(source, size)
             if rgb is None:
                 return None
             frame = frame_of(source, resize_linear(rgb, size))
@@ -2056,6 +2070,7 @@ def linear_base(source: Path, size: int, relearn: bool = False):
 
             with _PREVIEW_LOCK:
                 _LINEAR_CACHE[key] = frame
+                _LINEAR_CACHE.pop(key + ("starter",), None)
                 while len(_LINEAR_CACHE) > _LINEAR_CACHE_LIMIT:
                     _LINEAR_CACHE.popitem(last=False)
             return frame
@@ -2065,6 +2080,142 @@ def linear_base(source: Path, size: int, relearn: bool = False):
 
 
 _FULL_CACHE: "OrderedDict[tuple, object]" = OrderedDict()
+# ── Opening a frame in stages ───────────────────────────────────────
+#
+# A frame's look takes seconds to learn the first time, and most of what it gains over
+# the look its camera's pool already knows is the frame's own tone. Measured on 18
+# frames, the pool's look is about 95% of the way from a plain decode to the finished
+# look, at about 40% of the wait, so a frame with no look yet is drawn at once with the
+# pool's. It is the same picture to edit: an edit is kept apart from the look, and
+# carries over when the finished look arrives, which is learned meanwhile on a thread.
+# Exports never use a starter: they go through linear_base, which waits for the look.
+
+_STARTERS: dict = {}
+_HELD_DECODES: dict = {}
+_HELD_LIMIT = 4
+_LEARNING: set = set()
+
+
+def look_is_kept(source: Path) -> bool:
+    """Whether this frame's look needs no learning: known here, or kept and still good."""
+    try:
+        stat = source.stat()
+    except OSError:
+        return False
+    with _PREVIEW_LOCK:
+        if (str(source), stat.st_mtime_ns, stat.st_size) in _LOOK_CACHE:
+            return True
+    return _stored_look(source, stat) is not None
+
+
+def starter_look(source: Path):
+    """The look this frame's camera and settings already know, or ``None`` while its
+    pool holds too few frames to know one. Fitted once for a pool as it stands."""
+    from dataclasses import replace
+
+    from adjust.look import fit_look, pool_vignettes
+
+    key = _camera_key(source)
+    if key is None:
+        return None
+    with _POOL_LOCK:
+        samples = list(_pool(key).values())
+    if len(samples) < 2:
+        return None
+    wanted = (key, len(samples))
+    look = _STARTERS.get(wanted)
+    if look is None:
+        look = fit_look(samples)
+        if look is None:
+            return None
+        for old in [k for k in _STARTERS if k[0] == key]:
+            del _STARTERS[old]
+        _STARTERS[wanted] = look
+    lens = _lens_key(source)
+    vignette = None
+    if lens is not None:
+        with _POOL_LOCK:
+            vignette = pool_vignettes(list(_lens_pool(lens).values()))
+    return replace(look, vignette=tuple(vignette) if vignette is not None else (0.0, 0.0))
+
+
+def _learn_soon(source: Path, size: int) -> None:
+    """Have the finished look learned, on a thread, once per frame and size at a time."""
+    job = (str(source), int(size))
+    with _PREVIEW_LOCK:
+        if job in _LEARNING:
+            return
+        _LEARNING.add(job)
+
+    def work():
+        try:
+            linear_base(source, size)
+        except Exception as e:
+            logger.warning(f"Learning the look of {source.name} failed: {e}")
+        finally:
+            with _PREVIEW_LOCK:
+                _LEARNING.discard(job)
+
+    threading.Thread(target=work, name="look-learn", daemon=True).start()
+
+
+def starter_base(source: Path, size: int) -> tuple:
+    """``linear_base`` that does not wait for a look to be learned: ``(frame, pending)``.
+    ``pending`` says the frame is drawn with its pool's look while its own is learned."""
+    from adjust.look import correct_lens
+    from adjust.render import resize_linear
+
+    try:
+        stat = source.stat()
+    except OSError:
+        return None, False
+    key = (str(source), int(size), stat.st_mtime_ns, stat.st_size)
+    with _PREVIEW_LOCK:
+        cached = _LINEAR_CACHE.get(key)
+    if cached is not None or source.suffix.lower() not in _RAW_EXTENSIONS or look_is_kept(source):
+        return cached if cached is not None else linear_base(source, size), False
+    held = key + ("starter",)
+    with _PREVIEW_LOCK:
+        frame = _LINEAR_CACHE.get(held)
+    if frame is None:
+        look = starter_look(source)
+        if look is None:
+            return linear_base(source, size), False
+        rgb = _load_linear(source, size)
+        if rgb is None:
+            return None, False
+        frame = frame_of(source, resize_linear(rgb, size))
+        frame.look = look
+        frame.rgb = correct_lens(frame.rgb, look)
+        frame._layers = None
+        _with_denoiser(source, frame, size)
+        with _PREVIEW_LOCK:
+            # The learning that follows needs the same decode: it is not read twice.
+            _HELD_DECODES[key] = rgb
+            while len(_HELD_DECODES) > _HELD_LIMIT:
+                _HELD_DECODES.pop(next(iter(_HELD_DECODES)))
+            done = _LINEAR_CACHE.get(key)
+            if done is None:
+                _LINEAR_CACHE[held] = frame
+                while len(_LINEAR_CACHE) > _LINEAR_CACHE_LIMIT:
+                    _LINEAR_CACHE.popitem(last=False)
+        if done is not None:
+            return done, False
+    _learn_soon(source, size)
+    return frame, True
+
+
+def learn_look_ahead(source: Path, size: int) -> bool:
+    """Learn this frame's look if it needs it, without holding on to the decode. True
+    when it was learned."""
+    if look_is_kept(source):
+        return False
+    rgb = _load_linear(source, size)
+    if rgb is None:
+        return False
+    return camera_look_for(source, rgb) is not None
+
+
 _FULL_LOCK = threading.Lock()
 
 

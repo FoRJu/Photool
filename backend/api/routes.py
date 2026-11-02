@@ -593,10 +593,14 @@ async def get_thumb(
     request: Request,
     size: str = Query("grid", pattern="^(grid|preview|full)$"),
     v: str = Query("", max_length=64),
+    camera: bool = Query(False),
 ):
     """
     Get a thumbnail. folder_path includes the filename.
     e.g. /api/thumb/2025/2025-03-06/IMG_0001.CR3?size=grid
+
+    ``camera`` asks for the camera's own picture even of an edited frame: what Develop
+    shows at once while it opens, since drawing the edit may have to learn its look.
     """
     config = request.app.state.config
     full_path = Path(config.library_root) / folder_path
@@ -615,7 +619,7 @@ async def get_thumb(
     try:
         thumb_data = None
         edited = False
-        if size != "full":
+        if size != "full" and not camera:
             # A frame with an edit shows it. The client's ``v`` only busts the
             # browser's copy; whether to draw the edit is the catalog's call.
             from export.engine import resolve_export_source
@@ -782,12 +786,14 @@ def _new_photos(app, folders: list[str]) -> None:
     look for faces in them. Returns at once."""
     from analysis import clip
     from catalog import clock, exif_fill
+    from export import look_ahead
     from places.routes import read_new_photos
 
     config, db = app.state.config, app.state.catalog.db
     for folder in folders:
         read_new_photos(app, folder)
     exif_fill.wake(config.library_root, db)
+    look_ahead.wake()
     clock.wake(config.library_root, db)
     clip.wake(config.library_root, db, app.state.thumb_cache)
     face_jobs.wake(app)
@@ -1823,8 +1829,12 @@ def _background_work(request: Request) -> list[dict]:
                          "total": job.get("total", 0), "automatic": kind != "Places"})
     if not places_routes.auto_idle():
         work.append({"kind": "Places", "where": "", "done": 0, "total": 0, "automatic": True})
-    from export import engine
+    from export import engine, look_ahead
 
+    ahead = look_ahead.job()
+    if ahead.get("status") == "running":
+        work.append({"kind": "Camera looks", "where": ahead.get("folder", ""), "done": ahead.get("done", 0),
+                     "total": ahead.get("total", 0), "automatic": True})
     style = engine.style_job()
     if style.get("status") == "running":
         work.append({"kind": "Improving a style" if style.get("kind") == "improve" else "Learning a style",
@@ -2533,6 +2543,9 @@ class PreviewRequest(BaseModel):
     # (adjust.render.draft_of), quick enough to follow the slider. The view asks
     # for the full preview when the slider is let go.
     draft: bool = False
+    # Do not wait for this frame's look to be learned: draw it with its pool's look
+    # meanwhile (X-Camera-Look-Pending says so). See export.engine.starter_base.
+    starter: bool = False
 
 
 @router.post("/export/preview")
@@ -2543,7 +2556,8 @@ async def style_preview(req: PreviewRequest, request: Request):
     Uses resize-first for speed — sub-second even on CPU.
     """
     import io as _io
-    from export.engine import camera_image, linear_base, look_status, preview_base, resolve_export_source
+    from export.engine import (camera_image, linear_base, look_status, preview_base,
+                               resolve_export_source, starter_base)
 
     config = request.app.state.config
     catalog = _get_catalog(request)
@@ -2557,6 +2571,7 @@ async def style_preview(req: PreviewRequest, request: Request):
     )
 
     loop = asyncio.get_event_loop()
+    pending = [False]
 
     def _render():
         from PIL import Image
@@ -2602,11 +2617,15 @@ async def style_preview(req: PreviewRequest, request: Request):
             # A hand edit is made in linear light from a decode with headroom,
             # exactly as the export does it; the decoded frame and its
             # base/detail split are kept, so only the curve is redone per drag.
-            frame = linear_base(source, req.size)
+            if req.starter:
+                frame, pending[0] = starter_base(source, req.size)
+            else:
+                frame = linear_base(source, req.size)
             if frame is not None:
                 full_size[0] = _full_size_of(frame)
                 has_look[0] = frame.look is not None
-                look_note[0] = look_status(source, frame.look)
+                look_note[0] = (("starter", frame.look.frames, "") if pending[0]
+                                else look_status(source, frame.look))
                 whole = frame
                 if req.draft:
                     from adjust.render import draft_of
@@ -2654,6 +2673,7 @@ async def style_preview(req: PreviewRequest, request: Request):
                                       "X-Camera-Look-State": look_state,
                                       "X-Camera-Look-Frames": str(look_frames),
                                       "X-Camera-Look-Hint": look_hint,
+                                      "X-Camera-Look-Pending": "1" if pending[0] else "0",
                                       "X-Noise-Reduction": _noise_state(source, req.adjustment),
                                       # The whole photograph's size, uncropped: what the
                                       # develop view's pixel readout counts in.

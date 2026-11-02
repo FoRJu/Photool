@@ -266,6 +266,10 @@ const LOOK_NOTES = {
     text: n > 1 ? `still learning (${n} frames)` : "still learning (1 frame)",
     title: "Learned from only the first frames of this camera, lens or style. The colour gets closer to the camera's JPEG as more of its frames are opened.",
   }),
+  starter: () => ({
+    text: "starting look, refining tone…",
+    title: "This is the look this camera's other frames already taught, shown at once. This frame's own tone is being learned; it will replace this, and your edits carry over. Exports always wait for it.",
+  }),
   shared: (n) => ({
     text: `colour and tone from ${n} frames`,
     title: "The tone fitted to this frame alone drew it visibly flattened against the camera's JPEG, and the tone shared across this camera's frames drew it better, so that is used here. Hold “Camera's JPEG” to compare.",
@@ -3281,6 +3285,7 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   // How established that look is (none | learning | own | ready), and from how
   // many frames: said once, quietly, under the Look heading.
   const [lookNote, setLookNote] = useState({ state: "", frames: 0, hint: "" });
+  const [fadeFrom, setFadeFrom] = useState(null);
   const [cameraJpeg, setCameraJpeg] = useState(false);
   const [cameraJpegUrl, setCameraJpegUrl] = useState(null);
   // Where the frame's noise reduction stands (off | working | ready | failed |
@@ -3340,6 +3345,8 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   const loupeObjectUrl = useRef(null);
   const previewUrl = useRef(null);
   const originalUrl = useRef(null);
+  const refining = useRef(null);             // the frame opened on a starting look
+  const shownRef = useRef(null);
   const saveTimer = useRef(null);
   const previewTimer = useRef(null);
   const pendingSave = useRef(null);          // the edit waiting on the debounce
@@ -3370,6 +3377,8 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
           // first slider moves.
           linear: true,
           size: PREVIEW_SIZE,
+          // While this frame's look is being learned, nothing waits for it.
+          starter: refining.current === target,
           ...body,
         }),
       });
@@ -3384,10 +3393,33 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
       const [pw, ph] = (res.headers.get("X-Photo-Size") || "").split("x").map(Number);
       const blob = await res.blob();
       const bitmap = await createImageBitmap(blob);
-      return { url: URL.createObjectURL(blob), bitmap, noise, photoSize: pw && ph ? { w: pw, h: ph } : null };
+      return { url: URL.createObjectURL(blob), bitmap, noise, photoSize: pw && ph ? { w: pw, h: ph } : null,
+               pending: res.headers.get("X-Camera-Look-Pending") === "1" };
     },
     [],
   );
+
+  // A frame opened on its starting look: wait for its own, without holding up anything,
+  // then bring it in gently, once no slider is held: the picture must not change under
+  // a drag. The edit is kept apart from the look, so it carries over.
+  const refineLook = useCallback(async (file, stale) => {
+    try {
+      const res = await fetch(`${API}/export/preview`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filepath: file, linear: true, size: PREVIEW_SIZE, adjustment: {} }),
+      });
+      await res.arrayBuffer();
+    } catch { /* drawn as it is; the next open asks again */ }
+    while (held.current && !stale()) await new Promise((r) => setTimeout(r, 150));
+    if (stale() || refining.current !== file) return;
+    refining.current = null;
+    try {
+      // A copy of the picture on screen, to fade out: the view lets go of its own.
+      const blob = await (await fetch(shownRef.current)).blob();
+      if (!stale()) setFadeFrom(URL.createObjectURL(blob));
+    } catch { /* no fade, then */ }
+    setLookRefresh((n) => n + 1);
+  }, []);
 
   const learnFolder = useCallback(async (folder) => {
     try {
@@ -3398,6 +3430,14 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
       if (res.ok) setLearnJob({ folder, ...(await res.json()) });
     } catch { /* the hint simply stays */ }
   }, []);
+
+  // The picture fading out when a frame's own look arrives goes on a timer: it lies over
+  // the frame, and must not be left there whatever happens to the animation.
+  useEffect(() => {
+    if (!fadeFrom) return undefined;
+    const timer = setTimeout(() => setFadeFrom(null), 1300);
+    return () => { clearTimeout(timer); URL.revokeObjectURL(fadeFrom); };
+  }, [fadeFrom]);
 
   const relearnLook = useCallback(async () => {
     try {
@@ -3462,8 +3502,12 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
     setCropMode(false);
     setAspect("free");
     setDraft(null);
+    setOriginal(null);
+    setFadeFrom(null);
+    refining.current = filepath;
 
     (async () => {
+      let learned = null;
       try {
         fetch(`${API}/photos/versions?filepath=${encodeURIComponent(filepath)}`)
           .then((r) => (r.ok ? r.json() : { copies: [] }))
@@ -3487,10 +3531,16 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
           setOriginal(baseline.url);
           setFrameDims({ w: baseline.bitmap.width, h: baseline.bitmap.height });
           setOriginalHist(histogramOf(baseline.bitmap).bins);
+          if (!baseline.pending) refining.current = null;
+          else learned = refineLook(filepath, () => cancelled);
+        } else {
+          refining.current = null;
         }
       } finally {
         if (!cancelled) setLoading(false);
       }
+      // This frame's look before its neighbours': they would compete with it.
+      if (learned) await learned;
       // With this one on screen, the server gets the photographs either side of
       // it ready, and this one at full size for the loupe, so stepping or
       // zooming does not wait for a decode.
@@ -5053,6 +5103,7 @@ ${known.license}
   const previewReady = preview && (previewFull === fullView || !framed);
   const shown = cameraJpeg && cameraJpegUrl?.file === filepath ? cameraJpegUrl.url
     : showOriginal || !previewReady ? originalShown : preview;
+  shownRef.current = shown;
   const current = photos?.[position];
   const edited = isEdited(settings);
   const toneEdited = isToneEdited(settings);
@@ -5431,7 +5482,16 @@ Number(settings.mono) ? (
             subtle change visible: the compare keys, the split, the histogram. */}
         <div ref={stageRef} onPointerDownCapture={onStagePointerDown}
           className="flex-1 relative bg-black flex items-center justify-center min-w-0 overflow-hidden">
-          {loading && <span className="text-neutral-500 text-sm">Loading…</span>}
+          {!original && loading && (
+            <div className="relative max-h-full max-w-full" style={{ lineHeight: 0 }} data-testid="first-picture">
+              <img src={`${API}/thumb/${filepath.split("/").map(encodeURIComponent).join("/")}?size=preview&camera=1`}
+                alt="" draggable={false} className="max-h-[calc(100vh-9rem)] max-w-full object-contain"
+                onError={(e) => { e.currentTarget.style.display = "none"; }} />
+              <span className="absolute left-2 bottom-2 px-1.5 py-0.5 rounded bg-black/60 text-[11px] leading-4 text-neutral-300">
+                Camera's picture · getting the RAW ready…
+              </span>
+            </div>
+          )}
           {!loading && !original && (
             <span className="text-neutral-500 text-sm">Could not render this frame</span>
           )}
@@ -5446,6 +5506,16 @@ Number(settings.mono) ? (
               <img ref={imgRef} src={shown} alt="" draggable={false}
                 className="max-h-[calc(100vh-9rem)] max-w-full object-contain"
                 style={cropMode && angle ? { transform: `rotate(${angle}deg)` } : undefined} />
+              {fadeFrom && (
+                <img src={fadeFrom} alt="" draggable={false} data-testid="look-fade"
+                  className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+                  ref={(el) => {
+                    if (el && !el.dataset.fading) {
+                      el.dataset.fading = "1";
+                      el.animate([{ opacity: 1 }, { opacity: 1, offset: 0.4 }, { opacity: 0 }], { duration: 1200, fill: "forwards" });
+                    }
+                  }} />
+              )}
               {split > 0 && preview && !fullView && (
                 <div className="absolute inset-0 overflow-hidden pointer-events-none"
                   style={{ width: `${split}%` }}>
@@ -5545,7 +5615,10 @@ Number(settings.mono) ? (
         </div>
 
         <ControlStyle.Provider value={controlStyle}>
-        <aside className="w-80 2xl:w-96 shrink-0 border-l border-neutral-800 flex flex-col min-h-0">
+        {/* Nothing to edit until the frame's stored edit and its RAW are here: what was
+            moved before then would be overwritten by what is read. */}
+        <aside className="w-80 2xl:w-96 shrink-0 border-l border-neutral-800 flex flex-col min-h-0"
+          style={loading ? { pointerEvents: "none", opacity: 0.55 } : undefined} data-testid="develop-panel">
           {/* What is wanted on every photo stays in view: the versions, the
               histogram, Auto and Reset, Copy and Paste, and the tools that work
               on the picture itself. The sections scroll beneath. */}
