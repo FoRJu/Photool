@@ -689,10 +689,13 @@ paste left (9.4 → 5.0); a full colour matrix between the bodies overfitted.
 **Matching many photos from the folder view.** Select one photo and choose **Use as
 reference**; it shows REF and stays the reference, across folders, until you change it.
 Then select the photos to match and choose **Match to…**. Pick **Look**, **Light** or
-**Both**, and a strength for the look, and see a few of them before and after. Nothing is
-saved until you apply it. Unlike Paste, none of the reference's other edits come across:
-each photo keeps its own. It runs in the background, can be stopped part way, and one
-Undo takes back the whole batch while the selection lasts.
+**Both**, and a strength for the look. You'll see before and after on the photos most likely
+to go wrong (the darkest, the brightest, the one coloured least like the reference) and a
+typical one, and any of them can be left out. Nothing is saved until you apply it. Unlike
+Paste, none of the reference's other edits come across: each photo keeps its own. It runs in
+the background and can be stopped part way. **Last match** on the folder's toolbar takes the
+whole batch back, until the next match, even after a reload or restart. A photo you've
+edited since keeps that work, and is named.
 
 **Match a look works within a shoot, not across shoots.** It makes each channel's
 brightness spread look like the reference's, so it cannot tell a picture's look

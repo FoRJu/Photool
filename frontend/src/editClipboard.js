@@ -62,6 +62,18 @@ export function clearMatchReference() {
   setReference(null);
 }
 
+// The latest match can change from anywhere: whoever shows it asks again.
+const lastMatchListeners = new Set();
+
+export function lastMatchChanged() {
+  for (const listener of lastMatchListeners) listener();
+}
+
+export function onLastMatchChange(listener) {
+  lastMatchListeners.add(listener);
+  return () => { lastMatchListeners.delete(listener); };
+}
+
 export function useMatchReference() {
   const [value, setValue] = useState(matchReference);
   useEffect(() => {

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { clearMatchReference } from "./editClipboard.js";
+import { clearMatchReference, lastMatchChanged, onLastMatchChange } from "./editClipboard.js";
 
 const API = "/api";
 const SAMPLES = 4;
+const pad = (n) => `${n} photo${n === 1 ? "" : "s"}`;
 const KINDS = [
   { id: "look", label: "Look", title: "Tone and colour, by each channel's levels. Each frame's exposure and white balance stay as they are." },
   { id: "light", label: "Light", title: "Exposure and white balance, from capture settings, shared faces and scene points. Curves and colour stay as they are." },
@@ -35,8 +36,13 @@ export default function BatchMatch({ reference, filepaths, onClose, onDone }) {
   const [looking, setLooking] = useState(true);
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
-  const targets = useMemo(() => filepaths.filter((f) => f !== reference.filepath), [filepaths, reference]);
-  const samples = useMemo(() => samplesOf(targets), [targets]);
+  const [left, setLeft] = useState(() => new Set());
+  const everyone = useMemo(() => filepaths.filter((f) => f !== reference.filepath), [filepaths, reference]);
+  const targets = useMemo(() => everyone.filter((f) => !left.has(f)), [everyone, left]);
+  // Which to show: the frames most likely to go wrong, or an even spread if that can't be
+  // told. Nothing is drawn until it's known, since drawing a frame can take seconds.
+  const [examples, setExamples] = useState(null);
+  const samples = useMemo(() => (examples || []).map((e) => e.filepath), [examples]);
   const elsewhere = targets.filter((f) => shootOf(f) !== shootOf(reference.filepath)).length;
   const urls = useRef(new Set());
   const open = useRef(true);
@@ -52,6 +58,19 @@ export default function BatchMatch({ reference, filepaths, onClose, onDone }) {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [job, onClose]);
+
+  useEffect(() => {
+    let stale = false;
+    fetch(`${API}/photos/edit/match/examples`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filepaths: everyone, reference: reference.filepath }),
+    }).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((out) => {
+      if (stale) return;
+      setExamples(out?.examples?.length ? out.examples
+        : samplesOf(everyone).map((filepath) => ({ filepath, why: "" })));
+    });
+    return () => { stale = true; };
+  }, [everyone, reference]);
 
   // The picture of each sample, before: drawn once.
   useEffect(() => {
@@ -71,6 +90,7 @@ export default function BatchMatch({ reference, filepaths, onClose, onDone }) {
 
   // And after, as the choices stand: nothing saved.
   useEffect(() => {
+    if (!samples.length) return undefined;
     let stale = false;
     const timer = setTimeout(async () => {
       setLooking(true);
@@ -110,7 +130,10 @@ export default function BatchMatch({ reference, filepaths, onClose, onDone }) {
         if (!res.ok) return;
         const state = await res.json();
         setJob({ id: job.id, ...state });
-        if (state.status !== "running") onDone(state, kind);
+        if (state.status !== "running") {
+          onDone(state, kind);
+          lastMatchChanged();
+        }
       } catch { /* try again on the next tick */ }
     }, 700);
     return () => clearInterval(timer);
@@ -129,7 +152,6 @@ export default function BatchMatch({ reference, filepaths, onClose, onDone }) {
     } catch { setError("The server did not answer"); }
   };
   const running = job?.status === "running";
-  const pad = (n) => `${n} photo${n === 1 ? "" : "s"}`;
 
   return (
     <div data-modal data-testid="batch-match" className="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-3"
@@ -174,11 +196,23 @@ export default function BatchMatch({ reference, filepaths, onClose, onDone }) {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" data-testid="match-samples">
-          {samples.map((file) => {
+          {(examples || []).map(({ filepath: file, why }) => {
             const p = previews[file] || {};
+            const out = left.has(file);
             return (
-              <div key={file}>
-                <div className="grid grid-cols-2 gap-px bg-neutral-800">
+              <div key={file} className="relative" data-testid="match-example">
+                {!job && (
+                  <button data-testid="leave-out" onClick={() => setLeft((s) => {
+                    const next = new Set(s);
+                    if (next.has(file)) next.delete(file); else next.add(file);
+                    return next;
+                  })}
+                    title={out ? "Put this photo back in the batch" : "Leave this photo out of the batch"}
+                    className="absolute right-1 top-1 z-10 px-1.5 rounded bg-black/70 text-xs leading-5 text-neutral-200 hover:text-white">
+                    {out ? "↩ Put back" : "✕ Leave out"}
+                  </button>
+                )}
+                <div className={`grid grid-cols-2 gap-px bg-neutral-800 ${out ? "opacity-25" : ""}`}>
                   {["before", "after"].map((side) => (
                     <div key={side} className="relative aspect-[3/2] bg-black">
                       {p[side] && <img src={p[side]} alt="" className="w-full h-full object-contain" data-testid={`match-${side}`} />}
@@ -187,14 +221,15 @@ export default function BatchMatch({ reference, filepaths, onClose, onDone }) {
                   ))}
                 </div>
                 <div className="text-[11px] text-neutral-500 truncate mt-0.5" title={p.note || ""}>
-                  {file.split("/").pop()}{p.note ? ` · ${p.note}` : ""}
+                  {why && <span className="text-amber-300/80">{why} · </span>}
+                  {file.split("/").pop()}{out ? " · left out" : p.note ? ` · ${p.note}` : ""}
                 </div>
               </div>
             );
           })}
         </div>
-        {targets.length > samples.length && (
-          <div className="text-xs text-neutral-600">Examples from across the {targets.length} selected.</div>
+        {everyone.length > samples.length && (
+          <div className="text-xs text-neutral-600">The photos most likely to go wrong, of the {everyone.length} selected.</div>
         )}
 
         {error && <div className="text-sm text-red-400" data-testid="match-error">{error}</div>}
@@ -208,7 +243,7 @@ export default function BatchMatch({ reference, filepaths, onClose, onDone }) {
             </div>
           ) : (
             <div className="flex-1 text-xs text-neutral-500">
-              {looking ? "Working out the examples…" : "Each photo keeps the rest of its own edit. You can undo the whole batch afterwards."}
+              {looking ? "Working out the examples…" : "Each photo keeps the rest of its own edit. You can take back the whole batch later from the folder view."}
             </div>
           )}
           {running ? (
@@ -228,5 +263,44 @@ export default function BatchMatch({ reference, filepaths, onClose, onDone }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** The latest match, on the folder's toolbar for as long as it can be taken back: past the
+ *  selection, the folder, a reload and a restart. A photo edited since keeps that work. */
+export function LastMatch({ onRestored }) {
+  const [last, setLast] = useState(null);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const ask = () => fetch(`${API}/photos/edit/match/last`).then((r) => (r.ok ? r.json() : null))
+      .then((d) => setLast(d?.last || null)).catch(() => {});
+    ask();
+    return onLastMatchChange(ask);
+  }, []);
+  const undo = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch(`${API}/photos/edit/match/undo`, { method: "POST" });
+      const out = await res.json();
+      if (!res.ok) { setNote(out.detail || "Could not take it back"); return; }
+      for (const [fp, stored] of Object.entries(out.restored)) onRestored?.(fp, stored);
+      const n = Object.keys(out.restored).length;
+      const names = out.kept.map((f) => f.split("/").pop());
+      setNote(`Took back ${pad(n)}`
+        + (names.length ? ` · kept ${names.length} edited since: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ", …" : ""}` : ""));
+      setLast(null);
+    } catch { setNote("The backend is not reachable"); } finally { setBusy(false); }
+  };
+  if (!last) return note ? <span className="text-xs text-green-300/80" data-testid="last-match-note">{note}</span> : null;
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-neutral-400" data-testid="last-match">
+      Last match: {pad(last.photos)} to {last.reference.split("/").pop()}
+      <button disabled={busy} onClick={undo} data-testid="last-match-undo"
+        title="Take this match back. A photo you've edited since keeps that work."
+        className="px-1.5 py-0.5 rounded border border-neutral-700 text-amber-200 hover:text-white disabled:opacity-40">Undo</button>
+      <button disabled={busy} onClick={() => { fetch(`${API}/photos/edit/match/last`, { method: "DELETE" }).catch(() => {}); setLast(null); }}
+        title="Keep this match, and stop offering to take it back" className="text-neutral-600 hover:text-neutral-300">✕</button>
+    </span>
   );
 }

@@ -91,8 +91,54 @@ class TestTheBatch:
         client.put("/api/photos/edit", json={"filepath": DRIFTED, "exposure": 0.5})
         out = _finish(client, _match(client, filepaths=[DRIFTED, RELIT], reference=HERO, kind="look").json()["job_id"])
         assert set(out["previous"]) == {DRIFTED, RELIT}
-        assert client.post("/api/photos/edit/restore", json={"edits": out["previous"]}).status_code == 200
+        last = client.get("/api/photos/edit/match/last").json()["last"]
+        assert last["photos"] == 2 and last["reference"] == HERO
+        done = client.post("/api/photos/edit/match/undo").json()
+        assert set(done["restored"]) == {DRIFTED, RELIT} and done["kept"] == []
         assert _edit(client, DRIFTED) == {"exposure": 0.5} and _edit(client, RELIT) == {}
+        assert client.get("/api/photos/edit/match/last").json()["last"] is None
+        assert client.post("/api/photos/edit/match/undo").status_code == 404
+
+    def test_undo_never_wipes_work_done_since(self, client):
+        _finish(client, _match(client, filepaths=[DRIFTED, RELIT], reference=HERO, kind="look").json()["job_id"])
+        later = {**_edit(client, RELIT), "vignette": -30}
+        client.put("/api/photos/edit", json={"filepath": RELIT, **later})
+        kept = _edit(client, RELIT)
+        done = client.post("/api/photos/edit/match/undo").json()
+        assert list(done["restored"]) == [DRIFTED] and done["kept"] == [RELIT]
+        assert _edit(client, DRIFTED) == {} and _edit(client, RELIT) == kept
+
+    def test_undo_outlives_the_server(self, client):
+        _finish(client, _match(client, filepaths=[DRIFTED], reference=HERO, kind="look").json()["job_id"])
+        from api import routes
+
+        routes._match_jobs.clear()                         # what a restart forgets
+        assert client.get("/api/photos/edit/match/last").json()["last"]["photos"] == 1
+        assert list(client.post("/api/photos/edit/match/undo").json()["restored"]) == [DRIFTED]
+
+    def test_a_new_match_replaces_the_last_and_forgetting_keeps_the_edits(self, client):
+        _finish(client, _match(client, filepaths=[DRIFTED], reference=HERO, kind="look").json()["job_id"])
+        _finish(client, _match(client, filepaths=[RELIT], reference=HERO, kind="look").json()["job_id"])
+        assert client.get("/api/photos/edit/match/last").json()["last"]["photos"] == 1
+        matched = _edit(client, RELIT)
+        assert client.delete("/api/photos/edit/match/last").status_code == 200
+        assert client.get("/api/photos/edit/match/last").json()["last"] is None
+        assert _edit(client, RELIT) == matched
+
+    def test_a_match_that_changed_nothing_leaves_the_last_alone(self, client, monkeypatch):
+        _finish(client, _match(client, filepaths=[DRIFTED], reference=HERO, kind="look").json()["job_id"])
+        real = paste_match.matcher
+
+        def broken(*a, **k):
+            real(*a, **k)
+
+            def stepped(path, own):
+                raise RuntimeError("cannot read")
+            return stepped
+
+        monkeypatch.setattr(paste_match, "matcher", broken)
+        _finish(client, _match(client, filepaths=[RELIT], reference=HERO, kind="look").json()["job_id"])
+        assert list(client.post("/api/photos/edit/match/undo").json()["restored"]) == [DRIFTED]
 
     def test_stopping_keeps_what_was_done_and_can_be_undone(self, client, monkeypatch):
         real = paste_match.matcher
@@ -137,6 +183,39 @@ class TestTheBatch:
             assert routes.requested_work_running()
         finally:
             del routes._match_jobs["t"]
+
+
+class TestExamples:
+    STATS = {f"p/{n}": {"lum_p50": lum, "wb_r": r, "wb_b": b} for n, lum, r, b in (
+        ("a", 0.5, 1.0, 1.0), ("b", 0.1, 1.0, 1.0), ("c", 0.9, 1.0, 1.0), ("d", 0.55, 1.0, 1.0),
+        ("e", 0.45, 3.0, 0.5), ("f", 0.52, 1.0, 1.0))}
+
+    def _why(self, targets, stats, reference=None, count=4):
+        return {e["why"]: e["filepath"] for e in paste_match.choose_examples(targets, stats, reference, count)}
+
+    def test_the_likeliest_to_go_wrong_and_a_typical_one(self):
+        why = self._why(list(self.STATS), self.STATS, {"wb_r": 1.0, "wb_b": 1.0})
+        assert why["darkest"] == "p/b" and why["brightest"] == "p/c"
+        assert why["colour furthest away"] == "p/e" and why["typical"] in self.STATS
+
+    def test_never_more_than_asked_or_twice_the_same(self):
+        picked = paste_match.choose_examples(list(self.STATS), self.STATS, None, 4)
+        files = [e["filepath"] for e in picked]
+        assert len(files) == 4 == len(set(files))
+
+    def test_nothing_measured_is_spread_through_the_selection(self):
+        targets = [f"p/{i}" for i in range(9)]
+        picked = [e["filepath"] for e in paste_match.choose_examples(targets, {}, None, 4)]
+        assert picked[0] == "p/0" and picked[-1] == "p/8" and len(set(picked)) == 4
+
+    def test_fewer_photos_than_examples_shows_them_all(self):
+        targets = ["p/a", "p/b"]
+        assert {e["filepath"] for e in paste_match.choose_examples(targets, self.STATS, None, 4)} == set(targets)
+
+    def test_through_the_route(self, client):
+        res = client.post("/api/photos/edit/match/examples", json={"filepaths": [DRIFTED, RELIT], "reference": HERO})
+        assert res.status_code == 200
+        assert {e["filepath"] for e in res.json()["examples"]} == {DRIFTED, RELIT}
 
 
 class TestRefused:
