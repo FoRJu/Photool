@@ -1778,6 +1778,13 @@ def _stored_look(source: Path, stat):
     except Exception as e:
         logger.warning(f"Kept camera look {path.name} unreadable, learning it again: {e}")
         return None
+    # A look kept from before plateaus were bridged is drawn bridged too. The file stays as it
+    # was, which is what the look's health report reads.
+    from adjust.look import even_out
+
+    look.curve = even_out(look.curve)
+    if look.pool_curve is not None:
+        look.pool_curve = even_out(look.pool_curve)
     if (meta.get("source") != str(source)
             or meta.get("mtime_ns") != stat.st_mtime_ns or meta.get("size") != stat.st_size):
         return None

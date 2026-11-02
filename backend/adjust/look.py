@@ -930,7 +930,7 @@ def _binned_curve(stops: np.ndarray, camera: np.ndarray) -> Optional[np.ndarray]
     curve[below] = low_y * np.clip((STOPS[below] - STOPS[0]) / (low_x - STOPS[0]), 0.0, 1.0)
     above = STOPS > high_x
     curve[above] = high_y + (1.0 - high_y) * (1.0 - np.exp(-(STOPS[above] - high_x) * 0.8))
-    return np.clip(np.maximum.accumulate(curve), 0.0, 1.0).astype(np.float32)
+    return even_out(np.clip(np.maximum.accumulate(curve), 0.0, 1.0).astype(np.float32))
 
 
 def _invert(curve: np.ndarray, value: np.ndarray) -> np.ndarray:
@@ -1134,6 +1134,10 @@ _EVEN_WINDOW = 0.25             # stops
 # under it, most at 0.000. This is what marks a look as off: a plateau that does no
 # harm in a frame without those tones does it after an exposure edit moves them in.
 EVEN_MIN = 0.25
+# How steeply a plateau is bridged, as a share of the curve's median slope. On a frame with
+# one, this put the bridge within 0.02 of the camera's JPEG tone by tone, and over 30 such
+# frames left the error against the camera where it was.
+_BRIDGE_SLOPE = 0.5
 
 # The local-contrast measure: tone bands of the camera's picture, and how many
 # pixels a band needs to be judged.
@@ -1173,6 +1177,46 @@ def curve_evenness(curve: np.ndarray) -> Optional[float]:
         return None
     typical = float(np.median(slope[mid]))
     return float(slope[mid].min() / typical) if typical > 0 else None
+
+
+def even_out(curve: np.ndarray) -> np.ndarray:
+    """``curve`` with any plateau in the mid-tones bridged; a curve that rises evenly comes
+    back as it is.
+
+    A frame with few pixels at some tone tells the curve little about it, and the curve can
+    come out flat there. No camera draws that (see :data:`EVEN_MIN`), and it stays out of
+    sight until something smooth passes through those tones: an exposure edit, a lens blur.
+    Then it shows as a flat band with a hard edge. From where the plateau starts the curve
+    rises at half its typical slope until it meets itself again, so every tone outside the
+    plateau keeps what the camera showed."""
+    even = curve_evenness(curve)
+    if even is None or even >= EVEN_MIN:
+        return curve
+    stops = np.asarray(STOPS, dtype=np.float64)
+    out = np.array(curve, dtype=np.float64)
+    x = np.arange(stops[0], stops[-1], _EVEN_STEP)
+    k = int(round(_EVEN_WINDOW / _EVEN_STEP))
+
+    def windows():
+        y = np.interp(x, stops, out)
+        slope = (y[k:] - y[:-k]) / _EVEN_WINDOW
+        middle = (y[k:] + y[:-k]) / 2.0
+        return slope, (middle > _EVEN_RANGE[0]) & (middle < _EVEN_RANGE[1])
+
+    slope, mid = windows()
+    floor = _BRIDGE_SLOPE * float(np.median(slope[mid]))
+    for _ in range(12):
+        slope, mid = windows()
+        shallow = np.flatnonzero(mid & (slope < floor * 0.98))
+        if not len(shallow):
+            break
+        start = x[shallow[0]]
+        line = float(np.interp(start, stops, out)) + floor * (stops - start)
+        met = np.flatnonzero((stops >= start + _EVEN_WINDOW) & (out >= line))
+        end = stops[met[0]] if len(met) else stops[-1] + 1.0
+        span = (stops > start) & (stops < end)
+        out[span] = np.maximum(out[span], np.minimum(line[span], 1.0))
+    return np.clip(np.maximum.accumulate(out), 0.0, 1.0).astype(np.float32)
 
 
 def tone_detail(shown: np.ndarray, camera: np.ndarray) -> Optional[dict]:

@@ -249,6 +249,36 @@ class TestSeeingABrokenLook:
 
         assert curve_evenness(_plateau_curve()) < EVEN_MIN
 
+    def test_a_curve_that_rises_evenly_is_left_as_it_is(self):
+        from adjust.look import even_out
+
+        curve = _smooth_curve()
+        assert even_out(curve) is curve
+
+    def test_a_plateau_is_bridged_and_the_rest_of_the_curve_kept(self):
+        from adjust.look import EVEN_MIN, STOPS, curve_evenness, even_out
+
+        curve = _plateau_curve()
+        out = even_out(curve)
+        assert curve_evenness(out) >= EVEN_MIN
+        assert np.all(np.diff(out) >= 0.0)
+        assert np.all(out >= curve - 1e-6)                # lifted, never pressed down
+        below = np.searchsorted(STOPS, -1.0)
+        assert np.abs(out[:below] - curve[:below]).max() < 0.002
+        assert out[-1] == pytest.approx(curve[-1])
+
+    def test_a_learned_curve_has_no_plateau(self):
+        """Few samples at some tones: the curve is told little there, and must not go flat."""
+        from adjust.look import EVEN_MIN, _binned_curve, _to_stops, curve_evenness
+
+        dark = np.geomspace(0.01, 0.05, 40000)
+        bright = np.geomspace(0.05, 0.9, 40000)
+        linear = np.concatenate([dark, bright])
+        # The camera's tone holds still across a stop above the dark tones, as a sparse fit does.
+        camera = np.interp(np.log2(linear), np.log2([0.01, 0.05, 0.1, 0.9]), [0.2, 0.65, 0.65, 1.0])
+        curve = _binned_curve(_to_stops(linear), camera)
+        assert curve_evenness(curve) >= EVEN_MIN
+
     def test_the_camera_s_own_picture_has_no_banding(self):
         from adjust.look import tone_detail
 
