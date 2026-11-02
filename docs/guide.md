@@ -555,6 +555,16 @@ of the preview embedded in the RAW; one that does not match (a different crop) i
 passed over for the next. A black-and-white image control is learned too — the
 colour step may remove colour entirely.
 
+**A new photograph opens in stages.** Develop shows the camera's own picture at once,
+then the RAW drawn with the look its camera's other frames already taught, with the
+controls live, then fades to the frame's own finished look, which is learned meanwhile.
+Your edits carry over; a slider being held delays the fade until it's let go, and an
+export always waits for the finished look. While you aren't using the app, it learns
+ahead the looks of frames you've marked and of the newest three folders, so those open
+finished (`camera_look_ahead` in `config.yaml`, on by default). Not the whole library:
+at several seconds a frame it would take days. This stops while you use the app, and
+doesn't keep the computer awake.
+
 **A photograph's look is kept, and the next one is got ready.** Learning a frame's
 look was most of the time it took to open (6.7 s of 8.6 s on an R6 II frame, against
 0.1 s for LibRaw's decode), and it was learned again after every restart. A settled

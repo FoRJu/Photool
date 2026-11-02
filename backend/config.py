@@ -90,6 +90,10 @@ class Config:
     thumbnail_queue_auto_generate: bool = True
     thumbnail_queue_idle_rescan_seconds: float = 60.0
 
+    # While nobody is using the app, learn the camera looks of marked frames and the
+    # newest folders, so they open finished in Develop (export.look_ahead).
+    camera_look_ahead: bool = True
+
     # Photo measurements. When a folder's thumbnails finish, its photos are
     # measured from those thumbnails — exposure, colour, sharpness, and a frame
     # hash. Nothing is visible until the culling and matching features use the
