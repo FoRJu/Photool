@@ -643,6 +643,26 @@ so something close to the lens takes up the near end and pushes the subject down
 scale. A strong adjustment can leave a rim where a blurred foreground meets what is
 behind it, since a band has one edge where the picture has a soft one.
 
+**A second exposure lays another photo over this one**, as a camera's multiple exposure
+does, and works with any mix of RAW and JPEG. Select two photos in the folder view and
+choose **Double exposure**: it makes a copy of the one you selected first, so both photos
+stay as they are, and opens it. Or open **Second exposure** in Develop and choose from the
+folder, which works on the edit you have open. **Swap** makes a new copy the other way round.
+
+- **Add**, **Average**, **Bright** and **Dark** are the modes Canon bodies have. Add sums the
+  two lights as film does; Average keeps the brightness of one; Bright and Dark take
+  whichever is brighter or darker at each pixel.
+- **Amount** and **Exposure** set how much of the second photo; **Across**, **Up/down**, **Size**
+  and **Mirror it** place it. It always starts by just covering the frame.
+- **Show it in** keeps it to the people, the subject or the sky of this photo, or everywhere
+  else, which is how a landscape comes to fill a silhouette.
+
+They are put together in linear light, before the tone, so the rest of the edit shapes
+them as one picture. The second photo is read as shot, without its own edit, and lens blur
+blurs only the first. A second exposure doesn't paste, since it belongs to one frame. The file
+is needed whenever the edit is drawn or exported: if it has gone, the panel says so and the
+photo is drawn without it. Kept in the sidecar as `crs:PhotoolSecond`.
+
 **Library thumbnails show the edit.** The grid and the cull view normally draw the
 JPEG the camera embedded in the file. A frame that carries an edit is rendered
 through this same pipeline at thumbnail size and cached under its own key, beside

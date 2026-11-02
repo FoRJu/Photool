@@ -32,6 +32,7 @@ make the keepers look right, and share them.
   - local masks: gradients, brushes, subject, sky, people and faces, and any object you point at or name
     (a box or clicks, chosen by Segment Anything), with zoom and pan to work on small things
   - depth read from the picture: a lens blur, and masks that reach a band of distance
+  - double exposure: one photo laid over another in linear light, RAW or JPEG
   - spot healing, noise reduction (AI), sharpening, lens correction, upright
   - virtual copies, presets, copy/paste and "match this look"
 

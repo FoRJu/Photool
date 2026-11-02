@@ -1,6 +1,7 @@
 import { Component, Fragment, useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 import DevelopView from "./DevelopView.jsx";
+import { makeDoubleExposure } from "./doubleExposure.js";
 import { enterFullscreen } from "./fullscreen.js";
 import FolderOverview, { FolderAbout } from "./FolderOverview.jsx";
 import PersonReview from "./PersonReview.jsx";
@@ -1201,7 +1202,7 @@ function ReferenceBadge({ filepath }) {
 }
 
 function SelectionBar({ photos, selected, tags, busy, message, selecting, onEdit, onBasket, onCollage, onSelectAll, onClear,
-  copied, onPaste, onUndoPaste, onMatch }) {
+  copied, onPaste, onUndoPaste, onMatch, onDouble }) {
   const pasteMode = usePasteAs();
   const reference = useMatchReference();
   const [tagDraft, setTagDraft] = useState("");
@@ -1286,6 +1287,12 @@ function SelectionBar({ photos, selected, tags, busy, message, selecting, onEdit
           title={reference ? `Match the selected photos to ${reference.name}: its look, its light or both. You'll see examples first.`
             : "Set a reference first: select one photo and choose Use as reference"}
           className={`${btn} text-amber-200`}>≈ Match{reference ? ` to ${reference.name}` : "…"}</button>
+        {onDouble && (
+          <button disabled={off || n !== 2 || picked.some((p) => isVideo(p))} onClick={onDouble} data-testid="double-exposure"
+            title={n === 2 ? "A new copy of the photo you selected first, with the other laid over it. Both photos stay as they are."
+              : "Select 2 photos to lay one over the other"}
+            className={`${btn} text-amber-200`}>◐ Double exposure</button>
+        )}
         {onCollage && (
           <button disabled={busy || n < 2} onClick={onCollage} data-testid="make-collage"
             title={n < 2 ? "Select 2 or more photos for a collage" : n > 9 ? "A collage holds up to 9: the first 9 go in, and any of the rest can be swapped in" : "These photos as one picture: a story, a square or a print"}
@@ -4080,9 +4087,18 @@ function PhotoolApp({ access }) {
   // an index so moving between frames inside the view cannot be invalidated by
   // the grid re-sorting underneath it.
   const [developFile, setDevelopFile] = useState(null);
+  // Which edit of it to open: 0 the photo's own, or one of its copies.
+  const [developVersion, setDevelopVersion] = useState(0);
   // A video is never developed: every way into the develop view comes through here.
   const openDevelop = useCallback((filepath) => {
-    if (!isVideo(filepath)) setDevelopFile(filepath);
+    if (!isVideo(filepath)) {
+      setDevelopVersion(0);
+      setDevelopFile(filepath);
+    }
+  }, []);
+  const openCopy = useCallback((filepath, version) => {
+    setDevelopVersion(version);
+    setDevelopFile(filepath);
   }, []);
   // A slideshow over the screen: { photos, start, title }, or null.
   const [slideshow, setSlideshow] = useState(null);
@@ -5351,14 +5367,16 @@ function PhotoolApp({ access }) {
       {developFile && (
         // Keyed on the frame, so moving with ←/→ starts clean and recovers from
         // a frame that failed rather than staying stuck on its error.
-        <PanelBoundary key={developFile} onClose={closeDevelop}>
+        <PanelBoundary key={`${developFile}#${developVersion}`} onClose={closeDevelop}>
           <DevelopView
             filepath={developFile}
+            startVersion={developVersion}
+            onOpenCopy={openCopy}
             photos={photos.filter((p) => !isVideo(p)).map((p) => ({
               filepath: p.filepath, filename: p.filename, folder: p.folder,
             }))}
             onClose={closeDevelop}
-            onNavigate={(filepath) => setDevelopFile(filepath)}
+            onNavigate={(filepath) => { setDevelopVersion(0); setDevelopFile(filepath); }}
             onSaved={handleEditSaved}
           />
         </PanelBoundary>
@@ -5748,7 +5766,18 @@ function PhotoolApp({ access }) {
             onCollage={() => setCollageOf(photos.filter((p) => picked.has(p.filepath)).map((p) => p.filepath))}
             onSelectAll={() => setPicked(new Set(photos.map((p) => p.filepath)))} onClear={clearPicked}
             copied={clipboard} onPaste={pastePicked} onUndoPaste={pasteUndo ? undoPaste : null}
-            onMatch={() => setMatching(true)} />
+            onMatch={() => setMatching(true)}
+            onDouble={async () => {
+              // In the order they were selected: the first is the one that keeps the copy.
+              const [base, other] = [...picked];
+              setPickMessage("");
+              try {
+                openCopy(base, await makeDoubleExposure(base, other));
+                clearPicked();
+              } catch (e) {
+                setPickMessage(e.message || "Could not make the double exposure");
+              }
+            }} />
         )}
         {matching && matchRef && (
           <BatchMatch reference={matchRef} onDone={matchDone} onClose={() => setMatching(false)}
