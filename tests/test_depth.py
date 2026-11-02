@@ -135,6 +135,25 @@ class TestBlur:
         assert out[100, 100] == pytest.approx(out[100, 112], rel=0.25)
         assert out[100, 130] < 0.02
 
+    def test_a_far_layer_fades_out_instead_of_stopping_dead(self):
+        """Bright sky through a gap in nearer leaves, all out of focus: its light has to thin
+        out into the leaves, not stay as bright as the sky and then stop in a hard line."""
+        d = np.full((201, 201), 0.3, np.float32)
+        rgb = np.full((201, 201, 3), 0.02, np.float32)
+        d[95:106, 95:106] = 0.0
+        rgb[95:106, 95:106] = 1.0
+        out = depth.lens_blur(rgb, d, 1.0, 0.04, 20.0)[100, :, 0]
+        assert out.max() < 0.5
+        assert np.abs(np.diff(out)).max() < 0.5 * (out.max() - out.min())
+
+    def test_a_draft_uses_fewer_layers_and_keeps_the_picture(self):
+        rgb = np.random.default_rng(1).random((120, 160, 3)).astype(np.float32)
+        d = np.tile(np.linspace(0.0, 1.0, 160, dtype=np.float32), (120, 1))
+        full = depth.lens_blur(rgb, d, 1.0, 0.04, 8.0)
+        draft = depth.lens_blur(rgb, d, 1.0, 0.04, 8.0, depth.DRAFT_LAYERS)
+        assert depth.DRAFT_LAYERS < depth.LAYERS
+        assert np.abs(full - draft).mean() < 0.03
+
     def test_reduced_working_matches_a_direct_disc(self):
         """Large discs are worked small: the result should be the same picture."""
         rng = np.random.default_rng(3)
