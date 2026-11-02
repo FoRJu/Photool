@@ -41,6 +41,7 @@ from typing import Optional
 
 import numpy as np
 
+from adjust import gpu
 from analysis import clip
 from faces.models import ModelSpec, ModelsUnavailable, _download, verify
 
@@ -145,11 +146,12 @@ _mattes_dir: Optional[str] = None
 _sessions: dict = {}
 _failed: dict = {}
 _idle: Optional[threading.Timer] = None
-_lock = threading.Lock()
-# DirectML runs one model call at a time per session: two at once (a click made
-# while the last one is being answered) crash the process. Every model call
-# takes this lock.
-_run_lock = threading.Lock()
+# Opening, closing and calling a model all take the one lock of the graphics card
+# (adjust.gpu): two calls at once (a click made while the last one is being answered)
+# crash the process, and so does letting a session go alone.
+_lock = gpu.LOCK
+_run_lock = gpu.LOCK
+gpu.register(_sessions.clear)
 _embeds: "OrderedDict[tuple, dict]" = OrderedDict()
 _texts: "OrderedDict[tuple, tuple]" = OrderedDict()
 _mattes: "OrderedDict[str, np.ndarray]" = OrderedDict()
@@ -160,7 +162,7 @@ def configure(models_dir: str, mattes_dir: Optional[str] = None) -> None:
     global _models_dir, _mattes_dir
     if models_dir != _models_dir:
         _models_dir = models_dir
-        _sessions.clear()
+        gpu.release_all()
         _failed.clear()
     if mattes_dir != _mattes_dir:
         _mattes_dir = mattes_dir
@@ -217,11 +219,12 @@ def download_size(model: str) -> int:
 
 
 def release() -> None:
-    """Let go of every model loaded, and the graphics memory it holds."""
-    with _run_lock, _lock:
+    """Let go of the models, and the graphics memory they hold. Every other model on the
+    card goes too, and opens again when wanted (see adjust.gpu)."""
+    with gpu.LOCK:
         if _sessions:
             logger.info("[objects] models released")
-        _sessions.clear()
+            gpu.release_all()
 
 
 def _keep_awake() -> None:
@@ -238,11 +241,11 @@ def _sessions_of(model: str, parts: tuple) -> tuple:
     model = model_name(model)
     with _lock:
         _keep_awake()
+        # One model at a time: the other's memory is wanted for this one.
+        if any(k[0] != model for k in _sessions):
+            gpu.release_all()
         missing = [part for part in parts if (model, part) not in _sessions]
         if missing:
-            # One model at a time: the other's memory is wanted for this one.
-            for other in [k for k in _sessions if k[0] != model]:
-                del _sessions[other]
             import onnxruntime as ort
 
             folder = ensure(model)
@@ -385,11 +388,10 @@ def predict(rgb8: np.ndarray, part: dict, model: str, key=None) -> tuple:
     boxes = (np.array([[[(box[0] - left) * sx, (box[1] - top) * sy,
                          (box[2] - left) * sx, (box[3] - top) * sy]]], np.float32)
              if box else np.zeros((1, 0, 4), np.float32))
-    _, decoder = _session_pair(model)
     feeds = {f"image_embeddings.{i}": feats[f"image_embeddings.{i}"] for i in range(3)}
     with _run_lock:
-        scores, masks, _ = decoder.run(None, {**feeds, "input_points": points, "input_labels": labels,
-                                              "input_boxes": boxes})
+        scores, masks, _ = _session_pair(model)[1].run(None, {**feeds, "input_points": points, "input_labels": labels,
+                                                              "input_boxes": boxes})
     return masks[0, 0].astype(np.float32), scores[0, 0].astype(np.float32)
 
 
@@ -413,9 +415,8 @@ def _text_features(phrase: str, model: str) -> tuple:
             _texts.move_to_end(key)
             return kept
     ids, mask = _tokens(phrase)
-    text, _ = _find_pair(model)
     with _run_lock:
-        features = text.run(None, {"input_ids": ids, "attention_mask": mask})[0]
+        features = _find_pair(model)[0].run(None, {"input_ids": ids, "attention_mask": mask})[0]
     with _cache_lock:
         _texts[key] = (features, mask)
         while len(_texts) > _TEXT_LIMIT:
@@ -428,13 +429,14 @@ def find(rgb8: np.ndarray, part: dict, model: str, key=None) -> tuple:
     logits (n, h, w) at the detector's mask size, best first, scores 0..1.
     Nothing found is ``n == 0``."""
     model = model_name(model)
-    _, detector = _find_pair(model)
     features, mask = _text_features(part["text"], model)
     feats = _embedding(rgb8, part["view"], model, key, need="features_72")
     feeds = {k: feats[k].astype(np.float32) for k in ("features_288", "features_144", "features_72")}
     with _run_lock:
+        detector = _find_pair(model)[1]
         outs = detector.run(None, {**feeds, "text_features": features, "text_mask": mask})
-    got = {o.name: v for o, v in zip(detector.get_outputs(), outs)}
+        got = {o.name: v for o, v in zip(detector.get_outputs(), outs)}
+        del detector
     sig = lambda v: 1.0 / (1.0 + np.exp(-np.clip(v, -30.0, 30.0)))  # noqa: E731
     scores = sig(got["pred_logits"][0].reshape(-1)) * sig(got["presence_logits"].reshape(-1)[0])
     masks = got["pred_masks"][0]

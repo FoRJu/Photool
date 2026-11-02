@@ -32,6 +32,7 @@ from typing import Optional
 
 import numpy as np
 
+from adjust import gpu
 from faces.models import ModelSpec, ModelsUnavailable, _download, verify
 
 logger = logging.getLogger(__name__)
@@ -84,17 +85,14 @@ _STD = np.array([0.229, 0.224, 0.225], np.float32)
 _models_dir: Optional[str] = None
 _sessions: dict = {}
 _failed: dict = {}
-_lock = threading.Lock()
-# One model call at a time: DirectML crashes the process when one session
-# runs on two threads (see adjust.objects).
-_run_lock = threading.Lock()
+gpu.register(_sessions.clear)
 
 
 def configure(models_dir: str) -> None:
     global _models_dir
     if models_dir != _models_dir:
         _models_dir = models_dir
-        _sessions.clear()
+        gpu.release_all()
         _failed.clear()
 
 
@@ -132,7 +130,8 @@ def available() -> bool:
 
 
 def _session(key: str):
-    with _lock:
+    """A parser, opened when wanted. Not to be kept beyond ``gpu.LOCK`` (see adjust.gpu)."""
+    with gpu.LOCK:
         session = _sessions.get(key)
         if session is None:
             import onnxruntime as ort
@@ -161,9 +160,8 @@ def _parse(key: str, crop: np.ndarray) -> np.ndarray:
     x = cv2.resize(crop, (INPUT, INPUT), interpolation=cv2.INTER_AREA if min(crop.shape[:2]) > INPUT
                    else cv2.INTER_CUBIC)
     x = ((x.astype(np.float32) / 255.0 - _MEAN) / _STD).transpose(2, 0, 1)[None].astype(np.float32)
-    session = _session(key)
-    with _run_lock:
-        logits = session.run(None, {session.get_inputs()[0].name: x})[0][0]
+    with gpu.LOCK:
+        logits = _session(key).run(None, {_session(key).get_inputs()[0].name: x})[0][0]
     e = np.exp(logits - logits.max(axis=0))
     probs = e / e.sum(axis=0)
     h, w = crop.shape[:2]
