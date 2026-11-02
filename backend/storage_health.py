@@ -18,6 +18,7 @@ import errno
 import logging
 import os
 import sqlite3
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,9 @@ def probe_writable(path: str | Path) -> tuple[bool, str]:
         except OSError as exc:
             return False, f"cannot create {parent} — {describe_os_error(exc)}"
 
-    probe = parent / f"{_PROBE_PREFIX}-{os.getpid()}.tmp"
+    # A name of its own each time: requests run at once, on threads of one process. Sharing a
+    # name, one deleted the file another was writing, and a healthy disk was reported read-only.
+    probe = parent / f"{_PROBE_PREFIX}-{os.getpid()}-{uuid.uuid4().hex}.tmp"
     try:
         probe.write_bytes(b"")
         probe.unlink()
