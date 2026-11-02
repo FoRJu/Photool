@@ -686,6 +686,14 @@ brought back within 0.05 stop on every channel. Between an R6 II and a 5D Mark I
 at one event, capture settings and anchors both halved the difference a plain
 paste left (9.4 → 5.0); a full colour matrix between the bodies overfitted.
 
+**Matching many photos from the folder view.** Select one photo and choose **Use as
+reference**; it shows REF and stays the reference, across folders, until you change it.
+Then select the photos to match and choose **Match to…**. Pick **Look**, **Light** or
+**Both**, and a strength for the look, and see a few of them before and after. Nothing is
+saved until you apply it. Unlike Paste, none of the reference's other edits come across:
+each photo keeps its own. It runs in the background, can be stopped part way, and one
+Undo takes back the whole batch while the selection lasts.
+
 **Match a look works within a shoot, not across shoots.** It makes each channel's
 brightness spread look like the reference's, so it cannot tell a picture's look
 from its subject. Carried to frames of other shoots it ended further from the

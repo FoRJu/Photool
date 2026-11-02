@@ -1803,6 +1803,7 @@ def requested_work_running() -> bool:
         importing = any(j["status"] == "running" for j in _import_jobs.values())
     style = engine.style_job()
     return (importing
+            or any(j.get("status") == "running" for j in list(_match_jobs.values()))
             or export_jobs.running()
             or (_face_job.get("status") == "running" and not _face_job.get("automatic"))
             or places_routes._job.get("status") == "running"
@@ -2218,6 +2219,124 @@ async def set_photo_edits(req: PhotoEditBatchRequest, request: Request):
 
     result = await _run_blocking(paste)
     return {"ok": True, **result}
+
+
+# ── Matching many photos to one, from the folder view ───────────────
+#
+# Each frame can take seconds (its look may have to be learned), so a batch runs as a job
+# the view follows, and one at a time. dry_run answers at once, for a few frames to look
+# at, and saves nothing.
+
+class BatchMatchRequest(BaseModel):
+    filepaths: list[str] = []
+    reference: str
+    kind: str = "look"            # export.paste_match.MATCH_KINDS
+    amount: float = 75            # 0..100: how far the look goes
+    dry_run: bool = False
+
+
+_match_jobs: dict = {}
+_MATCH_JOBS_KEEP = 8
+_match_lock = threading.Lock()
+
+
+def _prepare_match(req: BatchMatchRequest, request: Request):
+    from config import is_video
+    from export.paste_match import MATCH_KINDS
+
+    config = request.app.state.config
+    catalog = _get_catalog(request)
+    if req.kind not in MATCH_KINDS:
+        raise HTTPException(status_code=400, detail=f"Nothing to match by {req.kind}")
+    _library_file(config, req.reference)
+    if catalog.db.get_photo(req.reference) is None:
+        raise HTTPException(status_code=404, detail="The reference is not in the library")
+    targets = list(dict.fromkeys(f for f in req.filepaths if f != req.reference))
+    targets = [f for f in targets if catalog.db.get_photo(f) is not None
+               and not is_video(Path(f).suffix.lower())]
+    if not targets:
+        raise HTTPException(status_code=400, detail="No other photos to match")
+    # Looked up here, so a test or a later version can stand in for it.
+    from export import paste_match
+
+    step = paste_match.matcher(Path(config.library_root), req.reference, catalog.photo_edit(req.reference),
+                               req.kind, max(0.0, min(100.0, req.amount)) / 100.0, config.export_prefer_raw,
+                               faces_of=paste_match.faces_from(catalog.db))
+    return targets, step
+
+
+@router.post("/photos/edit/match")
+async def match_photos(req: BatchMatchRequest, request: Request):
+    """Bring many photos to one reference: its look, its light or both, and nothing else of
+    its edit. With ``dry_run`` the edits come back unsaved; otherwise a job starts."""
+    from adjust.develop import normalize
+
+    catalog = _get_catalog(request)
+    targets, step = await _run_blocking(_prepare_match, req, request)
+
+    if req.dry_run:
+        def look():
+            results = {}
+            for filepath in targets:
+                edit, note = step(filepath, catalog.photo_edit(filepath))
+                results[filepath] = {"settings": normalize(edit), "note": note}
+            return results
+
+        return {"results": await _run_blocking(look)}
+
+    with _match_lock:
+        if any(j["status"] == "running" for j in _match_jobs.values()):
+            raise HTTPException(status_code=409, detail="A match is already running")
+        job_id = str(uuid.uuid4())[:8]
+        job = {"status": "running", "done": 0, "total": len(targets), "edits": {}, "previous": {},
+               "notes": {}, "failed": [], "stop": False}
+        _match_jobs[job_id] = job
+        for old in [k for k, j in _match_jobs.items() if j["status"] != "running"][:-_MATCH_JOBS_KEEP]:
+            del _match_jobs[old]
+
+    def run():
+        logger = logging.getLogger(__name__)
+        try:
+            for filepath in targets:
+                if job["stop"]:
+                    break
+                try:
+                    own = catalog.photo_edit(filepath)
+                    edit, note = step(filepath, own)
+                    edit = normalize(edit)
+                    catalog.set_photo_edit(filepath, edit)
+                    job["previous"][filepath] = own
+                    job["edits"][filepath] = catalog.photo_edit(filepath)
+                    job["notes"][filepath] = note
+                except Exception:
+                    logger.exception("Matching %s failed", filepath)
+                    job["failed"].append(filepath)
+                job["done"] += 1
+            job["status"] = "stopped" if job["stop"] else "completed"
+        except Exception:  # pragma: no cover - defensive: a job must always end
+            logger.exception("The match stopped")
+            job["status"] = "failed"
+
+    threading.Thread(target=run, name="batch-match", daemon=True).start()
+    return {"job_id": job_id, "total": len(targets)}
+
+
+@router.get("/photos/edit/match/progress/{job_id}")
+async def match_progress(job_id: str):
+    job = _match_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="No such match")
+    return {k: v for k, v in job.items() if k != "stop"}
+
+
+@router.post("/photos/edit/match/cancel/{job_id}")
+async def match_cancel(job_id: str):
+    """Stop after the frame under way. What was done stays, and can be undone."""
+    job = _match_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="No such match")
+    job["stop"] = True
+    return {"ok": True}
 
 
 @router.post("/photos/edit/paste-adjust")

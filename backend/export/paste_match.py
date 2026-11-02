@@ -204,7 +204,8 @@ def to_sliders(copied: dict, exposure: float, wb: np.ndarray) -> dict:
 
 
 def adjuster(library_root: Path, source: Optional[str], copied: dict, paste_as: str,
-             prefer_raw: bool = True, faces_of: Optional[Callable] = None) -> Optional[Callable]:
+             prefer_raw: bool = True, faces_of: Optional[Callable] = None,
+             look_amount: float = MATCH_AMOUNT) -> Optional[Callable]:
     """The per-frame step of a paste made ``paste_as``: a function taking a
     target's path, its edit with the copied parts put on and its edit from
     before, and giving back ``(edit, note)``. ``None`` when the paste puts the
@@ -279,6 +280,7 @@ def adjuster(library_root: Path, source: Optional[str], copied: dict, paste_as: 
     # match_look
     from adjust.develop import CURVE_KEYS
     from adjust.match import match, scaled
+    from adjust.noise import NOISE_KEYS
     from adjust.render import develop_frame
     from export.engine import camera_image, linear_base
 
@@ -287,7 +289,9 @@ def adjuster(library_root: Path, source: Optional[str], copied: dict, paste_as: 
     def developed(path: Path, settings: dict):
         frame = linear_base(path, look_size)
         if frame is not None:
-            return develop_frame(frame, settings)
+            # Tone and colour are what is read, and at this size noise reduction does
+            # not change them: no frame waits for the graphics card to be measured.
+            return develop_frame(frame, {k: v for k, v in settings.items() if k not in NOISE_KEYS})
         return camera_image(path, look_size)
 
     hero_look = developed(reference, copied)
@@ -307,8 +311,37 @@ def adjuster(library_root: Path, source: Optional[str], copied: dict, paste_as: 
         note = "look matched to the copied frame"
         if Path(path).parent != shoot:
             note += " (from another shoot: Match copies a picture's content as well as its look)"
-        return {**base, **scaled(found, MATCH_AMOUNT)}, note
+        return {**base, **scaled(found, look_amount)}, note
     return match_look
+
+
+# What a match from the folder view may bring over from its reference.
+MATCH_KINDS = ("look", "light", "both")
+
+
+def matcher(library_root: Path, reference: str, reference_edit: dict, kind: str, amount: float,
+            prefer_raw: bool = True, faces_of: Optional[Callable] = None) -> Callable:
+    """``step(path, own) -> (edit, note)``: a frame's own edit with ``kind`` brought to the
+    reference's, and nothing else of the reference's. Unlike a paste, no part of its edit is
+    carried: light first, then the look, read on the frame as lit. ``amount`` (0..1) is how
+    far the look goes."""
+    if kind not in MATCH_KINDS:
+        raise ValueError(f"nothing to match by {kind!r}")
+    light = (adjuster(library_root, reference, reference_edit, "match_exposure", prefer_raw, faces_of=faces_of)
+             if kind in ("light", "both") else None)
+    look = (adjuster(library_root, reference, reference_edit, "match_look", prefer_raw, faces_of=faces_of,
+                     look_amount=amount)
+            if kind in ("look", "both") else None)
+
+    def step(path: str, own: dict) -> tuple:
+        edit, notes = dict(own), []
+        for adjust in (light, look):
+            if adjust is not None:
+                edit, note = adjust(path, edit, own)
+                if note:
+                    notes.append(note.replace("the copied frame", "the reference"))
+        return edit, " · ".join(notes)
+    return step
 
 
 def faces_from(db) -> Callable:
