@@ -367,6 +367,8 @@ class LinearFrame:
     _reduced: Optional[tuple] = field(default=None, repr=False)
     # This frame with lens blur, by its settings (adjust.depth.blurred).
     _blurred: Optional[tuple] = field(default=None, repr=False)
+    # This frame with a second exposure on it, by its settings (adjust.double.exposed).
+    _exposed: Optional[tuple] = field(default=None, repr=False)
     # How the camera corrects this frame's lens distortion: a callable
     # ``() -> model or None`` (export.engine.lens_profile, adjust.lens), None for a
     # frame that cannot know.
@@ -1258,6 +1260,12 @@ def develop_frame(
         from adjust.depth import blurred
 
         frame = blurred(frame, clean.pop("lens_blur"), clean.pop("blur_focus", 0), clean.pop("blur_sharp", 0))
+    if "second" in clean:
+        # After the blur, which reads the first photograph's distances and knows nothing of
+        # the second's, and before the light and tone, which shape the two as one picture.
+        from adjust.double import exposed
+
+        frame = exposed(frame, clean.pop("second"))
     if not clean and not matched:
         return frame.encoded()
     if not matched and not any(k not in GEOMETRY_KEYS for k in clean):

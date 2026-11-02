@@ -1,3 +1,4 @@
+import { makeDoubleExposure } from "./doubleExposure.js";
 import { useState, useEffect, useCallback, useRef, useMemo, useId, createContext, useContext } from "react";
 import { copiedEdit, copyEdit, useCopiedEdit, copyChoice, keepCopyChoice, PASTE_AS, pasteAs, keepPasteAs,
   usePasteAs, pasteSummary } from "./editClipboard.js";
@@ -378,6 +379,8 @@ const ZERO = {
   masks: [],
   // Spots removed (backend adjust/spots.py): a frame's own, like its crop.
   spots: [],
+  // A photograph laid over this one (backend adjust/double.py), or null.
+  second: null,
   angle: 0, crop_x: null, crop_y: null, crop_w: null, crop_h: null,
 };
 
@@ -570,6 +573,7 @@ function asSettings(stored) {
   next.style = typeof stored?.style === "string" ? stored.style : "";
   next.masks = Array.isArray(stored?.masks) ? stored.masks.map((m) => ({ ...m })) : [];
   next.spots = Array.isArray(stored?.spots) ? stored.spots.map((sp) => ({ ...sp })) : [];
+  next.second = stored?.second?.path ? { ...stored.second } : null;
   next.angle = Number(stored?.angle) || 0;
   const box = boxOf(stored || {});
   if (box) Object.assign(next, { crop_x: box.x, crop_y: box.y, crop_w: box.w, crop_h: box.h });
@@ -590,7 +594,7 @@ function hasFraming(settings) {
 }
 
 function isEdited(settings) {
-  return isToneEdited(settings) || hasFraming(settings) || !!settings.spots?.length;
+  return isToneEdited(settings) || hasFraming(settings) || !!settings.spots?.length || !!settings.second;
 }
 
 function isToneEdited(settings) {
@@ -608,6 +612,7 @@ function activeOnly(settings, withFraming = true) {
   if (settings.masks?.length) out.masks = settings.masks;
   // Always, framed or not: a spot is part of the picture, not of its framing.
   if (settings.spots?.length) out.spots = settings.spots;
+  if (settings.second) out.second = settings.second;
   if (withFraming) {
     if (Number(settings.angle) !== 0) out.angle = settings.angle;
     const box = boxOf(settings);
@@ -1920,11 +1925,11 @@ function keepFolds(open) {
 // The panel's sections in the order they come, and what each is called where
 // they are arranged. The order and the ones left out are kept on this device.
 const PANEL_ORDER = ["frame", "profile", "wb", "light", "presence", "looks", "curve", "mixer", "toning",
-  "masks", "blur", "sharpen", "noise", "effects"];
+  "masks", "blur", "second", "sharpen", "noise", "effects"];
 const PANEL_NAMES = {
   frame: "Frame", profile: "Profile", wb: "White balance", light: "Light", presence: "Presence",
   looks: "Looks", curve: "Tone curve", mixer: "Colour mixer / B&W mix", toning: "Fade & toning",
-  masks: "Masks", blur: "Lens blur", sharpen: "Sharpening", noise: "Noise reduction", effects: "Effects",
+  masks: "Masks", blur: "Lens blur", second: "Second exposure", sharpen: "Sharpening", noise: "Noise reduction", effects: "Effects",
 };
 const ORDER_KEY = "photool.develop.order";
 const HIDDEN_KEY = "photool.develop.hidden";
@@ -2543,6 +2548,7 @@ function stepOf(key, value, prev) {
   if (key === "style") return { label: value ? "Style" : "No style", group: null };
   if (key === "masks") return maskStep(prev.masks || [], value || []);
   if (key === "spots") return spotStep(prev.spots || [], value || []);
+  if (key === "second") return { label: value ? "Second exposure" : "Second exposure removed", group: value && prev.second ? "second" : null };
   if (key === "angle") return { label: `Level ${signedValue(value)}°`, group: key };
   return { label: key, group: key };
 }
@@ -3301,7 +3307,143 @@ function ColourMixer({ settings, onChange, onReset }) {
   );
 }
 
-export default function DevelopView({ filepath, photos, onClose, onNavigate, onSaved }) {
+// A second exposure's numbers (backend adjust/double.py).
+const SECOND_DEFAULTS = { mode: "add", amount: 100, exposure: 0, x: 0, y: 0, scale: 100, flip: false, reach: "", invert: false };
+const SECOND_MODES = [
+  { id: "add", label: "Add", title: "The two lights added, as film does. Bright where either is bright. Lower the amount or the exposure if it burns out." },
+  { id: "average", label: "Average", title: "Added, then brought back down, so the whole stays as bright as one photo." },
+  { id: "lighten", label: "Bright", title: "Whichever is brighter at each pixel: a dark subject takes the other photo in, a bright sky stays." },
+  { id: "darken", label: "Dark", title: "Whichever is darker at each pixel." },
+];
+const SECOND_REACHES = [
+  { id: "", label: "Everywhere" },
+  { id: "people", label: "The people" },
+  { id: "subject", label: "The subject" },
+  { id: "sky", label: "The sky" },
+];
+const SECOND_DEFS = [
+  { key: "amount", label: "Amount", min: 1, max: 200, step: 1, format: (v) => `${v}%`, title: "How much of the second photo." },
+  { key: "exposure", label: "Exposure", min: -3, max: 3, step: 0.05, format: (v) => `${v > 0 ? "+" : ""}${Number(v).toFixed(2)}`, title: "Brighter or darker, in stops, for the second photo alone." },
+  { key: "x", label: "Across", min: -100, max: 100, step: 1, format: (v) => `${v}`, title: "Move the second photo left or right." },
+  { key: "y", label: "Up/down", min: -100, max: 100, step: 1, format: (v) => `${v}`, title: "Move the second photo up or down." },
+  { key: "scale", label: "Size", min: 100, max: 400, step: 1, format: (v) => `${v}%`, title: "100% just covers the frame." },
+];
+
+function SecondPanel({ second, photos, filepath, onSet, onSwap }) {
+  const [choosing, setChoosing] = useState(false);
+  const [gone, setGone] = useState(false);
+  const [reachNote, setReachNote] = useState("");
+  const path = second?.path;
+  useEffect(() => {
+    setGone(false);
+    if (!path) return undefined;
+    let cancelled = false;
+    fetch(`${API}/export/develop/second?path=${encodeURIComponent(path)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setGone(!d.exists); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [path]);
+  const others = (photos || []).filter((p) => p.filepath !== filepath);
+  const set = (patch) => onSet({ ...SECOND_DEFAULTS, ...second, ...patch });
+  // The model that finds where it reaches is fetched first, as a mask's is.
+  const setReach = async (reach) => {
+    setReachNote("");
+    if (reach) {
+      setReachNote("Getting the model…");
+      try {
+        const res = await fetch(`${API}/export/develop/mask-model`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: reach }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          setReachNote(body.detail || "Could not get the model");
+          return;
+        }
+      } catch {
+        setReachNote("The server did not answer");
+        return;
+      }
+      setReachNote("");
+    }
+    set({ reach, invert: reach ? !!second.invert : false });
+  };
+  const small = "text-[11px] px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500";
+  return (
+    <div className="space-y-2" data-testid="second-panel">
+      {second && (
+        <>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="truncate text-neutral-300" title={path} data-testid="second-name">{path.split("/").pop()}</span>
+            <button className={small} onClick={() => setChoosing(!choosing)}>Change</button>
+            {onSwap && <button className={small} data-testid="second-swap" onClick={onSwap}
+              title="A new copy of the other photo with this one laid over it. This copy stays.">Swap</button>}
+            <button className={small} data-testid="second-remove" onClick={() => onSet(null)}>Remove</button>
+          </div>
+          {gone && (
+            <div className="text-[11px] text-red-400" data-testid="second-gone">
+              This photo can't be found, so it isn't in the picture or in an export. Move it back or choose another.
+            </div>
+          )}
+        </>
+      )}
+      {!second && !choosing && (
+        <button className={small} data-testid="second-choose" onClick={() => setChoosing(true)}>Choose a photo…</button>
+      )}
+      {choosing && (
+        others.length ? (
+          <div className="grid grid-cols-4 gap-1 max-h-48 overflow-y-auto" data-testid="second-photos">
+            {others.map((p) => (
+              <button key={p.filepath} title={p.filename} onClick={() => { setChoosing(false); set({ path: p.filepath }); }}
+                className="aspect-square overflow-hidden rounded border border-neutral-800 hover:border-amber-400">
+                <img loading="lazy" alt={p.filename} className="w-full h-full object-cover"
+                  src={`${API}/thumb/${p.folder}/${encodeURIComponent(p.filename)}?size=grid`} />
+              </button>
+            ))}
+          </div>
+        ) : <div className="text-[11px] text-neutral-500">No other photos in this folder. Select two photos in another folder and use Double exposure there.</div>
+      )}
+      {second && (
+        <>
+          <div className="flex rounded border border-neutral-800 overflow-hidden text-[11px]" data-testid="second-modes">
+            {SECOND_MODES.map((m) => (
+              <button key={m.id} title={m.title} onClick={() => set({ mode: m.id })}
+                className={`flex-1 px-1 py-0.5 ${second.mode === m.id ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-200"}`}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <Controls>
+            {SECOND_DEFS.map((def) => (
+              <Slider key={def.key} def={def} value={Number(second[def.key] ?? SECOND_DEFAULTS[def.key])}
+                onChange={(key, value) => set({ [key]: value })} onReset={() => set({ [def.key]: SECOND_DEFAULTS[def.key] })} />
+            ))}
+          </Controls>
+          <label className="flex items-center gap-2 text-xs text-neutral-400 select-none">
+            <input type="checkbox" className="accent-amber-400" checked={!!second.flip} onChange={(e) => set({ flip: e.target.checked })} />
+            Mirror it
+          </label>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-neutral-400">Show it in</span>
+            <select value={second.reach || ""} onChange={(e) => setReach(e.target.value)} data-testid="second-reach"
+              className="bg-neutral-900 border border-neutral-700 rounded px-1 py-0.5 text-neutral-300">
+              {SECOND_REACHES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+            </select>
+          </div>
+          {reachNote && <div className="text-[11px] text-neutral-500" data-testid="second-reach-note">{reachNote}</div>}
+          {second.reach && (
+            <label className="flex items-center gap-2 text-xs text-neutral-400 select-none">
+              <input type="checkbox" className="accent-amber-400" checked={!!second.invert} onChange={(e) => set({ invert: e.target.checked })} />
+              Everywhere else instead
+            </label>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+export default function DevelopView({ filepath, startVersion = 0, photos, onClose, onNavigate, onOpenCopy, onSaved }) {
   const [settings, setSettings] = useState(() => ZERO);
   const [controlStyle, setControlStyle] = useState(() => {
     try { return localStorage.getItem(CONTROLS_KEY) === "slider" ? "slider" : "bar"; } catch { return "bar"; }
@@ -3373,7 +3515,7 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   const [frameDims, setFrameDims] = useState({ w: 3, h: 2 });
   const [previewFull, setPreviewFull] = useState(false); // the preview on screen is uncropped
   const [geoOriginal, setGeoOriginal] = useState({ key: "", url: null });
-  const [version, setVersion] = useState(0);         // 0 is the photo's own edit, 1.. its copies
+  const [version, setVersion] = useState(startVersion);         // 0 is the photo's own edit, 1.. its copies
   const [copies, setCopies] = useState([]);          // virtual copies of this frame
   const [loupe, setLoupe] = useState(() => lastLoupe);          // {u, v} on the picture, or null
   const [loupeUrl, setLoupeUrl] = useState(null);
@@ -3564,7 +3706,7 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
           .then((d) => { if (!cancelled) setCopies(d.copies || []); })
           .catch(() => {});
         const [stored, baseline] = await Promise.all([
-          fetch(`${API}/photos/edit?filepath=${encodeURIComponent(filepath)}`)
+          fetch(`${API}/photos/edit?filepath=${encodeURIComponent(filepath)}&version=${startVersion}`)
             .then((r) => (r.ok ? r.json() : { settings: {} }))
             .then((d) => d.settings || {})
             .catch(() => ({})),
@@ -4483,6 +4625,8 @@ ${known.license}
     return undefined;
   }, [blurOn]);
   useEffect(() => { setPickingFocus(false); }, [filepath]);
+  // Made to be worked on: a double exposure opens with its panel showing.
+  useEffect(() => { if (startVersion) setOpen("second", true); }, [startVersion, setOpen]);
   const [rangeImage, setRangeImage] = useState(null);
   const mattesFor = useRef({ path: null, asked: new Set() });
   useEffect(() => {
@@ -5396,6 +5540,7 @@ ${known.license}
     frame: frameEdited, looks: false, curve: CURVE_KEYS.some((k) => curveEdited(settings[k])),
     mixer: (Number(settings.mono) ? BW_MIX_KEYS : HSL_KEYS).some((k) => Number(settings[k]) !== 0),
     masks: !!(settings.masks || []).length,
+    second: !!settings.second,
     ...Object.fromEntries(["profile", "wb", "light", "presence", "toning", "blur", "sharpen", "noise", "effects"]
       .map((id) => [id, groupEdited(id)])),
   };
@@ -5573,6 +5718,23 @@ Number(settings.mono) ? (
           </Fold>
     ),
     blur: section("blur"),
+    second: (
+      <Fold id="second" title="Second exposure" edited={!!settings.second} open={folds.includes("second")} onToggle={toggleFold}
+        summary={settings.second ? settings.second.path.split("/").pop() : ""}
+        hint="Lay another photo over this one, as a camera's multiple exposure does. Pick it here, or select two photos in the folder view and use Double exposure. To keep this photo's edit as it is, make a copy first.">
+        <SecondPanel second={settings.second} photos={photos} filepath={filepath}
+          onSet={(next) => change("second", next)}
+          onSwap={onOpenCopy && (async () => {
+            flushSave();
+            const { path, ...how } = settings.second;
+            try {
+              onOpenCopy(path, await makeDoubleExposure(path, filepath, how));
+            } catch (e) {
+              setNote(e.message || "Could not swap them");
+            }
+          })} />
+      </Fold>
+    ),
     sharpen: section("sharpen"),
     noise: section("noise"),
     effects: section("effects"),

@@ -103,6 +103,10 @@ async def lifespan(app: FastAPI):
     from adjust import depth
 
     depth.configure(config.models_dir)
+    # A second exposure names a photograph under the library (adjust.double).
+    from adjust import double
+
+    double.configure(config.library_root)
     # Object masks are chosen by pointing (adjust.objects); what was chosen is
     # kept beside the catalog, since an edit names it and needs it to export.
     from adjust import objects

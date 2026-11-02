@@ -3291,6 +3291,17 @@ class DepthAtRequest(FrameGeometry):
     size: int = 1600
 
 
+@router.get("/export/develop/second")
+async def develop_second_status(path: str):
+    """Whether a second exposure's photograph is still there, for the panel to say so."""
+    from adjust.double import missing, normalize_second
+
+    second = normalize_second({"path": path})
+    if second is None:
+        raise HTTPException(status_code=400, detail="Not a path under the library")
+    return {"exists": not missing(second), "name": second["path"].rsplit("/", 1)[-1]}
+
+
 @router.post("/export/develop/depth-at")
 async def develop_depth_at(req: DepthAtRequest, request: Request):
     """The distance at a point of the frame on the lens blur's scale: 1 far to 100 near."""

@@ -2367,6 +2367,7 @@ def loupe_image(
         # The patch is toned with the preview's base, so that is healed too.
         small = healed(small, spots)
     blur = {k: clean.pop(k) for k in ("lens_blur", "blur_focus", "blur_sharp") if k in clean}
+    second = clean.pop("second", None)
     sw, sh = small.size
     su, sv = source_point(clean, u, v, sw, sh)
 
@@ -2434,6 +2435,13 @@ def loupe_image(
         patch = blurred_pixels(small, patch, wider, amount, focus, sharp)
         patch = patch[top - y0:top - y0 + side, left - x0:left - x0 + side]
         small = blurred(small, amount, focus, sharp)
+    if not blur:
+        patch = patch[top - y0:top - y0 + side, left - x0:left - x0 + side]
+    if second:
+        from adjust.double import exposed, pixels
+
+        patch = pixels(small, patch, (left / fw, top / fh, (left + side) / fw, (top + side) / fh), second)
+        small = exposed(small, second)
     frame = region_frame(
         small, patch, (left / fw, top / fh, (left + side) / fw, (top + side) / fh)
     )

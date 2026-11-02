@@ -56,6 +56,7 @@ import numpy as np
 from PIL import Image
 
 from adjust.geometry import GEOMETRY_KEYS, normalize_geometry
+from adjust.double import normalize_second, second_to_text
 from adjust.masks import normalize_masks, to_text as masks_to_text
 from adjust.spots import SPOTS_KEY, normalize_spots, to_text as spots_to_text
 from analysis.harmonize import apply_correction
@@ -182,10 +183,12 @@ MAX_CURVE_POINTS = 16
 MASKS_KEY = "masks"
 
 # Every key an edit may carry, sliders, curves, gradients, spots and framing alike.
-EDIT_KEYS = SETTINGS_SLIDERS + CURVE_KEYS + (MASKS_KEY, SPOTS_KEY) + GEOMETRY_KEYS
+# A second exposure laid over the frame (adjust.double): which photograph, and how.
+SECOND_KEY = "second"
+EDIT_KEYS = SETTINGS_SLIDERS + CURVE_KEYS + (MASKS_KEY, SPOTS_KEY, SECOND_KEY) + GEOMETRY_KEYS
 # What belongs to one frame and is not put on another with its edit (a paste,
-# a preset, a burst): the crop and level, and the spots removed from it.
-OWN_KEYS = GEOMETRY_KEYS + (SPOTS_KEY,) + TRANSFORM_SLIDERS
+# a preset, a burst): the crop and level, the spots removed from it, and what was laid over it.
+OWN_KEYS = GEOMETRY_KEYS + (SPOTS_KEY, SECOND_KEY) + TRANSFORM_SLIDERS
 
 # (low, high) for the controls that are not the usual -100..100.
 SLIDER_RANGES = {
@@ -465,6 +468,9 @@ def normalize(settings: Optional[dict]) -> dict:
     spots = normalize_spots(settings.get(SPOTS_KEY))
     if spots:
         clean[SPOTS_KEY] = spots
+    second = normalize_second(settings.get(SECOND_KEY))
+    if second:
+        clean[SECOND_KEY] = second
     # The style is the one control that is a name rather than a number.
     style = settings.get("style")
     if isinstance(style, str) and _STYLE_ID.match(style):
@@ -748,6 +754,8 @@ def describe_settings(settings: Optional[dict]) -> str:
         looks.append("transform " + ", ".join(turns))
     if "lens_blur" in clean:
         looks.append(f"lens blur {clean['lens_blur']}")
+    if SECOND_KEY in clean:
+        looks.append(f"second exposure ({clean[SECOND_KEY]['mode']})")
     if "sharpen" in clean:
         from adjust.sharpen import detail_of, radius_px
 
@@ -855,6 +863,8 @@ _STYLE_CRS = "crs:PhotoolStyle"
 _MASKS_CRS = "crs:PhotoolMasks"
 # The spots removed (adjust.spots), the same way.
 _SPOTS_CRS = "crs:PhotoolSpots"
+# The second exposure (adjust.double), the same way.
+_SECOND_CRS = "crs:PhotoolSecond"
 # Written without a sign: they are 0..100 / 0..360, never negative.
 _UNSIGNED = {"flat", "style_fade", "compress", "fade", "shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat",
              "grain", "nr_luma", "nr_color", "sharpen", "sharpen_masking", "lens_profile",
@@ -907,6 +917,8 @@ def to_crs(settings: Optional[dict]) -> dict:
         out[_STYLE_CRS] = clean["style"]
     if MASKS_KEY in clean:
         out[_MASKS_CRS] = masks_to_text(clean[MASKS_KEY])
+    if SECOND_KEY in clean:
+        out[_SECOND_CRS] = second_to_text(clean[SECOND_KEY])
     if SPOTS_KEY in clean:
         out[_SPOTS_CRS] = spots_to_text(clean[SPOTS_KEY])
     out.update(_geometry_to_crs(clean))
@@ -1024,6 +1036,9 @@ def from_crs(develop: Optional[dict]) -> dict:
     spots = develop.get(_SPOTS_CRS)
     if isinstance(spots, str) and spots.strip():
         raw[SPOTS_KEY] = spots
+    second = develop.get(_SECOND_CRS)
+    if isinstance(second, str) and second.strip():
+        raw[SECOND_KEY] = second
 
     return normalize(raw)
 
@@ -1048,5 +1063,6 @@ CRS_KEYS = (
     _STYLE_CRS,
     _MASKS_CRS,
     _SPOTS_CRS,
+    _SECOND_CRS,
     *_GEOMETRY_CRS.values(),
 )
