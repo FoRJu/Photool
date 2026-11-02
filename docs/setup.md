@@ -127,6 +127,10 @@ scan they started is running, the computer is kept from going to sleep on its id
 timer; `keep_awake_minutes` in `config.yaml` (15 by default, 0 for off) sets how
 long that lasts after the last use.
 
+After an update to how camera looks are learned, each photograph learns its look again
+the first time it's opened, which takes a little longer once. An edited photograph
+keeps the look it was finished on until you choose **Update its look** in Develop.
+
 The server's log is `serve.log` beside the catalog (`<library_root>/.photomanager/`);
 after a crash, `serve-crash.log` beside it shows what each thread was doing. On a Mac, anything that goes wrong before that log opens is in
 `~/Library/Logs/Photool/launchd.log`.

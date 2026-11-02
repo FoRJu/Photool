@@ -337,7 +337,7 @@ class TestHealth:
         self._keep(profiles, tmp_path / "stage.CR3", _plateau_curve())
         monkeypatch.setattr(tool, "_drawn_with", lambda path, kept, size: (_ramp(), _ramp()))
         monkeypatch.setattr(look, "tone_detail", lambda shown, camera: {
-            "flattest": (-0.8, 0.62), "steepest": (0.5, 0.86), "banding": 1.3})
+            "flattest": (-0.8, 0.62), "steepest": (0.5, 0.86), "banding": 1.3, "flattened": 0.2})
         out = io.StringIO()
         row = tool.health([], profiles, render=True, out=out)[0]
         assert row["off"] and row["shows"]

@@ -12,7 +12,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from PIL import Image, ImageOps
 
@@ -651,6 +651,7 @@ def set_profile_dir(path) -> tuple:
         _LENS_NOTES.clear()
         _SCENE_FRAMES.clear()
         _LENS_KEYS.clear()
+        _OLDER_LOOKS.clear()
         _PROFILE_DIR = Path(path) if path else None
         _PROFILE_WRITABLE = False
         if _PROFILE_DIR is None:
@@ -679,10 +680,17 @@ def pooling_decision(source: Path) -> Optional[dict]:
 _LOOK_SETTLED_FRAMES = 4
 _OWN_LOOK_REASONS = ("pooled colour draws the picture worse", "coloured unlike the pool",
                      "pooled colour does not describe this frame")
-# Mean |difference| of the whole picture from the camera's JPEG above which a look is
-# called rough (about 4 on the OkLab scale of the offline tool; the frames of a
-# settled pool are at 0.012 to 0.03).
-_ROUGH_PICTURE_ERROR = 0.034
+# How far the whole picture may be from the camera's JPEG, every tone counted alike
+# (adjust.look.tone_error), before a look is called rough. Over 110 frames the median
+# was 0.027, 90% were under 0.04 and about 3% over this.
+_ROUGH_PICTURE_ERROR = 0.045
+# A newly learned look is drawn against the camera's JPEG at this size (the verdict
+# must not depend on the size that happened to open the file). If it is visibly
+# flattened, the pool's tone replaces this frame's when it is less flattened and no
+# further than this from the JPEG overall (ratio and slack on its mean difference).
+_CHECK_SIZE = 1000
+_POOL_TONE_RATIO = 1.5
+_POOL_TONE_SLACK = 0.002
 
 
 def look_status(source: Path, look) -> tuple:
@@ -692,6 +700,8 @@ def look_status(source: Path, look) -> tuple:
     state:
       ``none``      no look at all (nothing to learn from)
       ``learning``  from fewer than a handful of the camera's frames: rough
+      ``shared``    tone as well as colour from the camera's pool, because the tone
+                    fitted to this frame alone drew it visibly flattened
       ``own``       from this frame alone because the camera's other frames did not
                     describe it (another style, perhaps)
       ``alone``     from this frame alone because the camera cannot be told apart
@@ -701,10 +711,16 @@ def look_status(source: Path, look) -> tuple:
       ``rough``     the look draws this picture noticeably unlike the camera's JPEG
       ``scene``     no other frame in the pool is of this kind of scene, so the tone
                     an exposure edit moves towards has nothing to learn from
+      ``older``     an edited photograph still on a look learned the old way
       ``""``        nothing to suggest
     """
     if look is None:
         return "none", 0, ""
+    if str(source) in _OLDER_LOOKS:
+        with _POOL_LOCK:
+            key = (_DECISIONS.get(str(source)) or {}).get("pool")
+            pooled = len(_pool(key)) if key else 0
+        return "ready", max(pooled, int(getattr(look, "frames", 1) or 1)), "older"
     decision = _DECISIONS.get(str(source)) or {}
     key = decision.get("pool")
     with _POOL_LOCK:
@@ -719,6 +735,8 @@ def look_status(source: Path, look) -> tuple:
     if decision.get("reason") in _OWN_LOOK_REASONS:
         return "own", max(pooled, 1), hint
     frames = max(pooled, int(getattr(look, "frames", 1) or 1))
+    if decision.get("tone") == "pool":
+        return "shared", frames, hint
     return ("learning" if frames < _LOOK_SETTLED_FRAMES else "ready"), frames, hint
 
 
@@ -734,7 +752,7 @@ def look_health(source: Path, size: int = 1800) -> dict:
     (adjust.look.tone_detail). Opens the photograph as the develop view does."""
     import numpy as np
 
-    from adjust.look import BANDING_MAX, EVEN_MIN, align_camera, curve_evenness, tone_detail
+    from adjust.look import BANDING_MAX, EVEN_MIN, FLATTENED_MAX, align_camera, curve_evenness, tone_detail
     from adjust.render import develop_frame
 
     frame = linear_base(source, size)
@@ -755,8 +773,8 @@ def look_health(source: Path, size: int = 1800) -> dict:
         detail = tone_detail(shown, align_camera(frame.rgb, camera))
         if detail is not None:
             out.update(detail)
-    out["off"] = bool(even is not None and even < EVEN_MIN)
-    out["shows"] = bool(out["off"] and out.get("banding", 0.0) > BANDING_MAX)
+    out["shows"] = bool(out.get("flattened", 0.0) > FLATTENED_MAX)
+    out["off"] = bool(out["shows"] or (even is not None and even < EVEN_MIN))
     return out
 
 
@@ -1492,7 +1510,7 @@ def _pooled_look(source: Path, samples, own):
     """The look to use for this frame, given what it teaches on its own, and the
     pool updated with it when it belongs there."""
     from adjust.look import (fit_look, look_error, nearest_scenes, probe_error, scene_curve,
-                             trustworthy, with_colour_of)
+                             tone_error, trustworthy, with_colour_of)
 
     key = _camera_key(source)
     frame_id = str(source)
@@ -1501,7 +1519,7 @@ def _pooled_look(source: Path, samples, own):
         _DECISIONS[frame_id] = {"pool": key, "joined": joined, "reason": reason,
                                 **{k: round(v, 4) for k, v in errors.items()}}
         if look is not None and samples is not None:
-            picture = probe_error(look, samples)
+            picture = tone_error(look, samples)
             if math.isfinite(picture):
                 _DECISIONS[frame_id]["picture_error"] = round(picture, 4)
         if look is not None and own is not None and look is not own:
@@ -1561,6 +1579,67 @@ def _pooled_look(source: Path, samples, own):
         return decided(pooled, True, "joined", own_error=mine, pooled_error=theirs)
 
 
+def _with_checked_tone(source: Path, rgb, samples, look):
+    """``look``, or the pool's whole look when this frame's own tone draws it visibly
+    flattened and the pool's draws it better. The camera does vary tone by frame, so a
+    frame keeps its own unless the picture shows that fit went wrong: on a building
+    seen through a window, its curve lost the brick's contrast where the pool's kept it."""
+    from dataclasses import replace
+
+    import numpy as np
+
+    from adjust.look import (FLATTENED_MAX, align_camera, apply_look, correct_lens, fit_look,
+                             tone_detail, tone_error)
+    from adjust.render import resize_linear
+
+    frame_id = str(source)
+    decision = _DECISIONS.get(frame_id) or {}
+    key = decision.get("pool")
+    if look is None or samples is None or not key or decision.get("reason") not in (
+            "joined", "pooled colour draws the picture worse"):
+        return look
+    camera = _sibling_jpeg_rgb(source)
+    if camera is None:
+        camera = _embedded_camera_rgb(source)
+    if camera is None:
+        return look
+    if max(rgb.shape[:2]) < _CHECK_SIZE:
+        larger = _load_linear(source, _CHECK_SIZE)
+        rgb = larger if larger is not None else rgb
+    rgb = resize_linear(rgb, _CHECK_SIZE) if max(rgb.shape[:2]) > _CHECK_SIZE else rgb
+    linear = correct_lens(rgb, look)
+    aligned = align_camera(linear, camera)
+    valid = np.isfinite(aligned).all(axis=-1)
+
+    def drawn(candidate):
+        shown = apply_look(linear, candidate)
+        detail = tone_detail(shown, aligned) or {}
+        return float(detail.get("flattened", 0.0)), float(np.abs(shown - aligned)[valid].mean())
+
+    flattened, error = drawn(look)
+    _DECISIONS[frame_id]["flattened"] = round(flattened, 3)
+    if flattened <= FLATTENED_MAX:
+        return look
+    with _POOL_LOCK:
+        others = [s for k, s in _pool(key).items() if k != frame_id]
+    if len(others) < 2:
+        return look
+    everyone = fit_look(others + [samples])
+    if everyone is None:
+        return look
+    pooled = replace(everyone, vignette=look.vignette, frames=len(others) + 1)
+    theirs, their_error = drawn(pooled)
+    if theirs >= flattened or their_error > error * _POOL_TONE_RATIO + _POOL_TONE_SLACK:
+        return look
+    logger.info(f"{source.name}: its own tone draws it flattened ({flattened:.2f} of its edges); "
+                f"using the pool's ({theirs:.2f})")
+    _DECISIONS[frame_id].update(tone="pool", flattened=round(theirs, 3))
+    picture = tone_error(pooled, samples)
+    if math.isfinite(picture):
+        _DECISIONS[frame_id]["picture_error"] = round(picture, 4)
+    return pooled
+
+
 # ── The camera's look, kept per photograph ─────────────────────────
 #
 # Learning a frame's look is most of the time it takes to open: on an R6 II frame
@@ -1578,7 +1657,41 @@ def _pooled_look(source: Path, samples, own):
 # Version 2: looks are learned from a decode of at least FIT_SIZE (see
 # _learning_copy). Version 1 learned from whatever size first opened the file, and
 # a grid thumbnail's or a 512 px decode's look was kept for every size after.
-_LOOK_FILE_VERSION = 2
+#
+# Version 3: looks are learned from every tone of the frame (adjust.look._samples_from).
+# A version 2 look is learned again the next time its photograph is opened, except on
+# a photograph that has been edited: its picture was finished on that look, and a new
+# one would change it unasked. It stays until the person updates it (relearn_look).
+_LOOK_FILE_VERSION = 3
+_OLDER_LOOK_VERSION = 2
+_OLDER_LOOKS: set = set()
+_IS_EDITED: Optional[Callable[[Path], bool]] = None
+
+
+def set_edit_check(check: Optional[Callable[[Path], bool]]) -> None:
+    """How to tell whether a photograph has been edited (the catalog knows)."""
+    global _IS_EDITED
+    _IS_EDITED = check
+
+
+def _is_edited(source: Path) -> bool:
+    if _IS_EDITED is None:
+        return False
+    try:
+        return bool(_IS_EDITED(source))
+    except Exception as e:
+        # Not known: leave the photograph as it is drawn.
+        logger.warning(f"Could not tell whether {source.name} is edited: {e}")
+        return True
+
+
+def relearn_look(source: Path, size: int = 1000):
+    """Learn this photograph's look afresh, whatever is kept, and draw it from that."""
+    clear_preview_cache()
+    _OLDER_LOOKS.discard(str(source))
+    frame = linear_base(source, size, relearn=True)
+    clear_preview_cache()
+    return frame.look if frame is not None else None
 
 
 def _look_path(source: Path) -> Optional[Path]:
@@ -1662,17 +1775,24 @@ def _stored_look(source: Path, stat):
     except Exception as e:
         logger.warning(f"Kept camera look {path.name} unreadable, learning it again: {e}")
         return None
-    if (meta.get("version") != _LOOK_FILE_VERSION or meta.get("source") != str(source)
+    if (meta.get("source") != str(source)
             or meta.get("mtime_ns") != stat.st_mtime_ns or meta.get("size") != stat.st_size):
+        return None
+    older = meta.get("version") == _OLDER_LOOK_VERSION and _is_edited(source)
+    if meta.get("version") != _LOOK_FILE_VERSION and not older:
         return None
     decision = meta.get("decision") or {}
     key = decision.get("pool")
-    if key:
+    if key and not older:
         with _POOL_LOCK:
             pooled = len(_pool(key))
         if pooled >= 2 * max(1, int(meta.get("pool_frames") or 1)):
             return None
     frame_id = str(source)
+    if older:
+        _OLDER_LOOKS.add(frame_id)
+    else:
+        _OLDER_LOOKS.discard(frame_id)
     if meta.get("decision") is not None:
         _DECISIONS[frame_id] = meta["decision"]
     if "scene_frames" in meta:
@@ -1734,6 +1854,7 @@ def camera_look_for(source: Path, rgb, relearn: bool = False):
         try:
             samples, own = _reference_samples(source, _learning_copy(source, rgb))
             look = _pooled_look(source, samples, own)
+            look = _with_checked_tone(source, rgb, samples, look)
         except Exception as e:
             logger.warning(f"Camera look failed for {source.name}: {e}")
         _store_look(source, stat, look)

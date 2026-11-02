@@ -526,11 +526,28 @@ picture's: tone band by tone band, how much of the camera JPEG's local contrast
 ours keeps, as the spread in stops between the flattest band and the steepest
 (0.2 to 0.3 for a look that draws like the camera; 1 or more posterized).
 A plateau marks a look OFF, since it does harm wherever an edit moves tones into
-it; `banding` says whether it shows in the photograph as it is (SHOWS). Banding
+it; `flattened` says whether it shows in the photograph as it is (SHOWS). Banding
 alone is not a fault: a camera JPEG with heavy noise reduction is softer than any
-develop. `report` shows `banding` for each frame; `health` checks every kept look,
-worst first, read-only (`--render` adds `banding`, by drawing each photograph with
-its kept look). Agents ask the same of one photo with `develop.look_health`.
+develop, and one tiny tone near white can make it large on a picture that looks right.
+What says posterization you can see is `flattened`: the share of the picture's edges in
+tones holding too little of the camera's local contrast, above 0.05. `report` shows
+`banding` for each frame; `health` checks every kept look, worst first, read-only
+(`--render` adds both, by drawing each photograph with its kept look). Agents ask the
+same of one photo with `develop.look_health`.
+
+**A frame teaches every tone it has.** What a frame teaches is taken from the flattest
+places of each tone, not of the whole picture. A gradient in display values is small in
+the dark, so the flattest share of a night scene used to be its sky, its water and the
+clipped cores of its lamps; the lit wall the picture was of gave 50 samples of 2300, and
+the curve guessed across it and posterized it. Both pictures are smoothed as light before
+they are compared, flatness is measured in stops, and steep edges are left out wherever
+a tone has calmer places. The note under Profile says what this gives: the colour comes
+from many frames and the tone from this one, so the number of frames says nothing about
+the tone. **Hold: Camera's JPEG** shows what the look is learned from. The score behind
+the note counts every tone of the picture alike, so a wrong wall is not hidden by the sky.
+If a frame's own tone still draws it visibly flattened, and the tone shared across its
+camera's frames draws it better without straying further from the JPEG overall, that
+is used instead and the note says so; it was about 3% of frames when measured.
 
 **RAW+JPEG pairs learn from the JPEG beside the file.** When a RAW has a JPEG with
 the same name, that full-size rendering is the reference for the camera look, ahead

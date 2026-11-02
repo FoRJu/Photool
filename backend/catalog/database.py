@@ -1636,6 +1636,20 @@ class CatalogDB:
             ).fetchone()
         return _decode_settings(row["settings"]) if row else {}
 
+    def frame_has_edit(self, folder: str, base_name: str) -> bool:
+        """Whether any file of this frame (a RAW+JPEG pair is one frame) has an edit
+        or a virtual copy."""
+        prefix = f"{folder}/{base_name}." if folder else f"{base_name}."
+        with self._connect() as conn:
+            for table in ("photo_edits", "photo_versions"):
+                row = conn.execute(
+                    f"SELECT filepath FROM {table} WHERE substr(filepath, 1, ?) = ? LIMIT 1",
+                    (len(prefix), prefix),
+                ).fetchone()
+                if row:
+                    return True
+        return False
+
     def list_photo_edits(self, folder: Optional[str] = None) -> dict[str, dict]:
         """Every stored edit, or the ones under one folder, by filepath.
 

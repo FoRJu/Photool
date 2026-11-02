@@ -89,8 +89,11 @@ _NOISE_FLOOR_STOPS = -9.0
 # cannot be taken back through the curve, so the matrix is fitted without it.
 _CHANNEL_LOW, _CHANNEL_HIGH = 0.015, 0.985
 
-# The flattest share of the frame that is compared.
+# The flattest share of each tone of the frame that is compared; and how steep a
+# place may be (stops per pixel at FIT_SIZE) if the tone has this many pixels without.
 _FLAT_SHARE = 0.6
+_FLAT_MAX_STOPS = 0.5
+_FLAT_MIN_PIXELS = 24
 
 # A fit this far from the camera's picture, on average, did not find the same
 # frame: the two were cropped differently, or the preview is not of this exposure.
@@ -245,8 +248,9 @@ def scene_curve(matrix: np.ndarray, samples: Sequence["FrameSamples"]) -> Option
 
 
 def _probe(small: np.ndarray, cam: np.ndarray):
-    """``small`` and its aligned JPEG reduced to about PROBE_WIDTH pixels across. A
-    block that is partly outside the JPEG is NaN in the camera copy."""
+    """``small`` and its aligned JPEG reduced to about PROBE_WIDTH pixels across, each
+    averaged in linear light. A block that is partly outside the JPEG is NaN in the
+    camera copy."""
     h, w = small.shape[:2]
     k = max(1, w // PROBE_WIDTH)
     hh, ww = (h // k) * k, (w // k) * k
@@ -254,7 +258,18 @@ def _probe(small: np.ndarray, cam: np.ndarray):
     def blocks(a):
         return a[:hh, :ww].reshape(hh // k, k, ww // k, k, 3).mean(axis=(1, 3)).astype(np.float32)
 
-    return blocks(small), blocks(cam)
+    # decode() would lose the NaN that marks where the JPEG does not reach.
+    outside = blocks(np.where(np.isfinite(cam), 0.0, 1.0).astype(np.float32)) > 0
+    camera = encode(blocks(decode(np.clip(np.nan_to_num(cam), 0.0, 1.0))))
+    return blocks(small), np.where(outside, np.nan, camera).astype(np.float32)
+
+
+# The tones of the camera's picture a whole-frame comparison gives equal say, and how
+# many blocks of the probe a tone needs to have one. Averaged over its pixels, a night
+# scene's error is its sky's: a lit wall drawn 12 levels of 100 away, plain to see,
+# moved the score of a frame that is nine-tenths sky by next to nothing.
+_PROBE_BANDS = np.arange(0.0, 1.0, 0.1)
+_PROBE_BAND_MIN = 12
 
 
 def probe_error(look: "CameraLook", samples: FrameSamples) -> float:
@@ -267,6 +282,25 @@ def probe_error(look: "CameraLook", samples: FrameSamples) -> float:
         return float("inf")
     shown = apply_look(samples.probe_linear, look)
     return float(np.mean(np.abs(shown - samples.probe_camera)[valid]))
+
+
+def tone_error(look: "CameraLook", samples: FrameSamples) -> float:
+    """How far ``look``'s picture of the whole frame is from the camera's, with every
+    tone of the picture counted alike: the mean |difference| over every channel in
+    each tone, averaged over the tones. This is what says how well a look draws the
+    frame; :func:`probe_error` decides colour, where a pixel's share is fair. ``inf``
+    when the samples carry no probe."""
+    if samples.probe_linear is None or samples.probe_camera is None:
+        return float("inf")
+    valid = np.isfinite(samples.probe_camera).all(axis=2)
+    if not valid.any():
+        return float("inf")
+    shown = apply_look(samples.probe_linear, look)
+    diff = np.abs(shown - samples.probe_camera).mean(axis=2)[valid]
+    tone = samples.probe_camera[valid] @ LUMA
+    bands = [diff[(tone >= low) & (tone < low + 0.1)] for low in _PROBE_BANDS]
+    bands = [float(b.mean()) for b in bands if len(b) >= _PROBE_BAND_MIN]
+    return float(np.mean(bands)) if bands else float(diff.mean())
 
 
 # ── Applying a look ──────────────────────────────────────────────────
@@ -784,6 +818,12 @@ def _same_shape(linear: np.ndarray, camera_rgb: np.ndarray) -> bool:
     return min(h, w, ch, cw) >= 8 and abs((w / h) - (cw / ch)) / (w / h) <= MAX_ASPECT_MISMATCH
 
 
+def _blur_as_light(display: np.ndarray) -> np.ndarray:
+    """A display-encoded picture smoothed in linear light, as a decode is."""
+    light = decode(np.clip(display, 0.0, 1.0))
+    return np.clip(encode(np.stack([_blur(light[..., c]) for c in range(3)], axis=-1)), 0.0, 1.0)
+
+
 def _samples_from(small: np.ndarray, cam: np.ndarray,
                   rng: Optional[np.random.Generator] = None) -> Optional[FrameSamples]:
     """frame_samples, from the frame at FIT_SIZE and its JPEG already aligned to it."""
@@ -791,17 +831,32 @@ def _samples_from(small: np.ndarray, cam: np.ndarray,
     valid = np.isfinite(cam).all(axis=2)
     cam = np.nan_to_num(cam)
 
-    # A little smoothing in each picture's own domain, then only the flattest
-    # part of the frame: tone is compared, not edges.
+    # A little smoothing, in linear light in both pictures: a lamp averaged with the
+    # dark round it is bright in linear values and much less so in display values, so
+    # smoothing each in its own domain paired a bright decode with a dim camera value
+    # and pulled the curve's shoulder down.
     lin = np.stack([_blur(small[..., c]) for c in range(3)], axis=-1)
-    cam = np.stack([_blur(cam[..., c]) for c in range(3)], axis=-1)
+    cam = _blur_as_light(cam)
     valid &= _blur(valid.astype(np.float32)) > 0.999
-    luma = cam @ LUMA
-    gy, gx = np.gradient(luma)
-    grad = np.hypot(gx, gy)
     if valid.sum() < 64:
         return None
-    flat = valid & (grad <= np.quantile(grad[valid], _FLAT_SHARE))
+    tone = _to_stops(lin @ LUMA)
+    gy, gx = np.gradient(tone)
+    grad = np.hypot(gx, gy)
+    # The flattest of each tone, not of the frame, measured in stops. A gradient in
+    # display values is small in the dark, so on a night scene the flattest share of
+    # the whole frame was its sky and water and the clipped cores of its lamps, and
+    # the mid-tones between them (the lit wall the picture is of) gave 50 samples of
+    # 2300, too few for the curve to follow, which then guessed across them and
+    # posterized them. Where a tone has enough of them, only areas with no steep edge
+    # are compared at all: no smoothing makes the rim of a lamp the same in both.
+    all_bins = np.clip(((tone - STOPS[0]) / 0.5).astype(int), 0, 200)
+    flat = np.zeros(valid.shape, dtype=bool)
+    for b in np.unique(all_bins[valid]):
+        here = valid & (all_bins == b)
+        keep = here & (grad <= np.quantile(grad[here], _FLAT_SHARE))
+        calm = keep & (grad <= _FLAT_MAX_STOPS)
+        flat |= calm if calm.sum() >= _FLAT_MIN_PIXELS else keep
 
     lin, cam = lin[flat], cam[flat]
     if len(lin) < 64:
@@ -809,8 +864,7 @@ def _samples_from(small: np.ndarray, cam: np.ndarray,
     # Spread over the tonal range: a stage is mostly dark, and the curve and the
     # matrix should not be decided by the darkness alone.
     rng = rng or np.random.default_rng(0)
-    stops = _to_stops(lin @ LUMA)
-    bins = np.clip(((stops - STOPS[0]) / 0.5).astype(int), 0, 200)
+    bins = all_bins[flat]
     per_bin = max(16, SAMPLES_PER_FRAME // max(1, len(np.unique(bins))))
     chosen = []
     for b in np.unique(bins):
@@ -1094,6 +1148,14 @@ _DETAIL_MIN_GRADIENT = 0.004    # below this an edge is noise
 # camera JPEG with heavy noise reduction (a harbour at night) is softer than any
 # develop and reaches 1.4 with nothing posterized. It says whether a plateau shows.
 BANDING_MAX = 0.5
+# A tone band with this little of the camera's local contrast (stops) is flattened, and
+# ``flattened`` is how much of the picture's edges lie in such bands. The spread above
+# gives every band one vote whatever it holds: a frame with one flattened band of 0.4%
+# of its pixels near white scored 1.5 and looked right, while one with six flattened
+# bands across a quarter of its edges scored 2 and was plainly posterized.
+_FLATTENED_STOPS = -0.7
+# More of the picture's edges than this in flattened bands is posterization you can see.
+FLATTENED_MAX = 0.05
 
 
 def curve_evenness(curve: np.ndarray) -> Optional[float]:
@@ -1138,15 +1200,23 @@ def tone_detail(shown: np.ndarray, camera: np.ndarray) -> Optional[dict]:
     ratio = np.log2((g_ours[edges] + 1e-3) / (g_theirs[edges] + 1e-3))
     tone = theirs[edges]
     bands = []
+    flattened = 0
     for low in _DETAIL_BANDS:
         inside = (tone >= low) & (tone < low + _DETAIL_BAND_WIDTH)
-        if inside.sum() >= _DETAIL_MIN_PIXELS:
-            bands.append((round(float(np.median(ratio[inside])), 3), round(float(low), 2)))
+        count = int(inside.sum())
+        if count >= _DETAIL_MIN_PIXELS:
+            median = float(np.median(ratio[inside]))
+            bands.append((round(median, 3), round(float(low), 2)))
+            if median <= _FLATTENED_STOPS:
+                flattened += count
     if not bands:
         return None
     flattest, steepest = min(bands), max(bands)
+    # Over every edge, not only those in bands judged: a very dark frame may have one
+    # band with enough edges to judge, and that band is not the whole picture.
     return {"flattest": flattest, "steepest": steepest,
-            "banding": round(steepest[0] - flattest[0], 3)}
+            "banding": round(steepest[0] - flattest[0], 3),
+            "flattened": round(flattened / max(1, len(tone)), 3)}
 
 
 def fit_camera_look(linear: np.ndarray, camera_rgb: np.ndarray) -> Optional[CameraLook]:
