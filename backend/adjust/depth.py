@@ -14,10 +14,14 @@ Two things use it:
 
 Lens blur is done in linear light, so a bright point spreads into a bright disc rather than
 a grey smudge, and in layers from far to near. A disc blurs each layer of distance by as
-much as it is out of focus, and each layer is averaged only with what lies at or behind it,
-so a sharp subject does not bleed into the blurred background behind it, and something
-blurred in front can spread over what is behind. What a frame cannot show, it cannot blur:
-fine hair against a busy background follows the map's edge, which is soft by a few pixels.
+much as it is out of focus, and each is laid over those behind it, its blurred edge letting
+them show through. So a sharp subject does not bleed into the blurred background behind it,
+and something blurred in front spreads over what is behind. Only at the end is the picture
+evened out by how much of each pixel was covered, which fills what a blurred layer left
+thin beside a nearer one. Doing that layer by layer would stretch each one to the full width
+of its disc and stop it dead there, drawing a hard line. What a frame cannot show, it cannot
+blur: fine hair against a busy background follows the map's edge, which is soft by a few
+pixels.
 
 Dual-pixel data, which some Canon bodies can record, could give a second reading of depth
 later. Nothing here assumes where the map came from.
@@ -56,6 +60,8 @@ _STD = np.array([0.229, 0.224, 0.225], np.float32)
 MAX_BLUR = 0.035
 # Layers of distance. Each costs about the same; fewer shows as steps along a floor.
 LAYERS = 12
+# While a slider is held: half the time, and the full picture follows when it is let go.
+DRAFT_LAYERS = 6
 # How much on each side of focus stays sharp when not said, on the 0..1 scale.
 DEFAULT_SHARP = 0.04
 # Below this radius (pixels) a layer is left sharp.
@@ -227,32 +233,30 @@ def _disc(radius: float) -> np.ndarray:
     return kernel / kernel.sum()
 
 
-def _layer(rgb: np.ndarray, behind: np.ndarray, mine: np.ndarray, radius: float) -> tuple:
-    """One layer through a disc of ``radius`` pixels: its colour, averaged only with what is
-    at or behind it so nothing nearer leaks in, and how much of each pixel it now covers.
-    Worked at a reduced size when the disc is large, and brought back at the end."""
+def _layer(rgb: np.ndarray, mine: np.ndarray, radius: float) -> tuple:
+    """One layer through a disc of ``radius`` pixels: its light, and how much of each pixel
+    it now covers. Worked at a reduced size when the disc is large, and brought back at the
+    end."""
     import cv2
 
     h, w = rgb.shape[:2]
     shrink = max(1.0, radius / _WORKING_RADIUS)
     disc = _disc(radius / shrink)
-    colour = cv2.multiply(rgb, cv2.merge((behind, behind, behind)))
+    light = cv2.multiply(rgb, cv2.merge((mine, mine, mine)))
     if shrink > 1.0:
         small = (max(1, round(w / shrink)), max(1, round(h / shrink)))
-        colour = cv2.resize(colour, small, interpolation=cv2.INTER_AREA)
-        behind = cv2.resize(behind, small, interpolation=cv2.INTER_AREA)
+        light = cv2.resize(light, small, interpolation=cv2.INTER_AREA)
         mine = cv2.resize(mine, small, interpolation=cv2.INTER_AREA)
-    under = np.maximum(cv2.filter2D(behind, -1, disc, borderType=cv2.BORDER_REFLECT), 1e-4)
-    colour = cv2.divide(cv2.filter2D(colour, -1, disc, borderType=cv2.BORDER_REFLECT),
-                        cv2.merge((under, under, under)))
-    share = np.clip(cv2.filter2D(mine, -1, disc, borderType=cv2.BORDER_REFLECT) / under, 0.0, 1.0)
+    light = cv2.filter2D(light, -1, disc, borderType=cv2.BORDER_REFLECT)
+    cover = cv2.filter2D(mine, -1, disc, borderType=cv2.BORDER_REFLECT)
     if shrink > 1.0:
-        colour = cv2.resize(colour, (w, h), interpolation=cv2.INTER_LINEAR)
-        share = cv2.resize(share, (w, h), interpolation=cv2.INTER_LINEAR)
-    return colour, share
+        light = cv2.resize(light, (w, h), interpolation=cv2.INTER_LINEAR)
+        cover = cv2.resize(cover, (w, h), interpolation=cv2.INTER_LINEAR)
+    return light, np.clip(cover, 0.0, 1.0)
 
 
-def lens_blur(rgb: np.ndarray, depth: np.ndarray, focus: float, sharp: float, radius: float) -> np.ndarray:
+def lens_blur(rgb: np.ndarray, depth: np.ndarray, focus: float, sharp: float, radius: float,
+              layers: int = LAYERS) -> np.ndarray:
     """``rgb`` (linear, H, W, 3) as if shot wider open. ``depth`` is 0 far to 1 near, the same
     size; ``focus`` the distance in focus and ``sharp`` how much stays sharp each side of it
     (both 0..1); ``radius`` the disc's pixels for what is furthest from focus.
@@ -261,26 +265,25 @@ def lens_blur(rgb: np.ndarray, depth: np.ndarray, focus: float, sharp: float, ra
     and a lens's blur is proportional to the difference of inverse distances."""
     import cv2
 
-    centres = np.linspace(0.0, 1.0, LAYERS)
-    position = np.clip(depth, 0.0, 1.0) * (LAYERS - 1.0)
-    behind = None
-    out = None
+    centres = np.linspace(0.0, 1.0, layers)
+    position = np.clip(depth, 0.0, 1.0) * (layers - 1.0)
+    out = np.zeros_like(rgb, dtype=np.float32)
+    covered = np.zeros(rgb.shape[:2], np.float32)
     for i, centre in enumerate(centres):
         # This layer's share of each pixel, far to near; shares add up to one.
         mine = np.maximum(1.0 - np.abs(position - i), 0.0).astype(np.float32)
         if not mine.any():
             continue
-        behind = mine if behind is None else behind + mine
         r = radius * float(np.clip((abs(centre - focus) - sharp) / max(1.0 - sharp, 1e-3), 0.0, 1.0))
         if r < _MIN_RADIUS:
-            colour, share = rgb, np.clip(mine / np.maximum(behind, 1e-4), 0.0, 1.0)
+            light, cover = cv2.multiply(rgb, cv2.merge((mine, mine, mine))), mine
         else:
-            colour, share = _layer(rgb, behind, mine, r)
-        if out is None:
-            out = colour
-        else:
-            out = cv2.blendLinear(out, colour, 1.0 - share, share)
-    return (rgb if out is None else out).astype(np.float32)
+            light, cover = _layer(rgb, mine, r)
+        through = 1.0 - cover
+        out = light + out * through[..., None]
+        covered = cover + covered * through
+    # What is left thin is evened out, here and not layer by layer (see the top of this file).
+    return (out / np.maximum(covered, 1e-3)[..., None]).astype(np.float32)
 
 
 def reach(amount: float, longest: int) -> int:
@@ -290,7 +293,7 @@ def reach(amount: float, longest: int) -> int:
 
 
 def blurred_pixels(frame, rgb: np.ndarray, window: tuple, amount: float, focus: float = 0,
-                   sharp: float = 0) -> np.ndarray:
+                   sharp: float = 0, layers: int = LAYERS) -> np.ndarray:
     """``rgb``, which is the part ``window`` of ``frame``'s picture at any resolution, with
     lens blur (see :func:`blurred`). ``rgb`` itself when the model can't be had."""
     from adjust.segment import sample
@@ -307,7 +310,7 @@ def blurred_pixels(frame, rgb: np.ndarray, window: tuple, amount: float, focus: 
     longest = max(w / max(right - left, 1e-9), h / max(bottom - top, 1e-9))
     at = float(focus) / 100.0 if focus else auto_focus(whole)
     around = float(sharp) / 200.0 if sharp else DEFAULT_SHARP
-    return lens_blur(rgb, depth, at, around, float(amount) / 100.0 * MAX_BLUR * longest)
+    return lens_blur(rgb, depth, at, around, float(amount) / 100.0 * MAX_BLUR * longest, layers)
 
 
 def blurred(frame, amount: float, focus: float = 0, sharp: float = 0):
@@ -319,7 +322,8 @@ def blurred(frame, amount: float, focus: float = 0, sharp: float = 0):
     key = (float(amount), float(focus), float(sharp))
     if frame._blurred is not None and frame._blurred[0] == key:
         return frame._blurred[1]
-    rgb = blurred_pixels(frame, frame.rgb, frame.window, amount, focus, sharp)
+    layers = DRAFT_LAYERS if frame._is_draft else LAYERS
+    rgb = blurred_pixels(frame, frame.rgb, frame.window, amount, focus, sharp, layers)
     if rgb is frame.rgb:
         return frame
     out = LinearFrame(rgb, look=frame.look, window=frame.window, scale=frame.scale,

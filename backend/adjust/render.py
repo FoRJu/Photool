@@ -378,6 +378,8 @@ class LinearFrame:
     _shown: Optional[np.ndarray] = field(default=None, repr=False)
     # A smaller copy of this frame to draw while a slider is held (see draft_of).
     _draft: Optional[object] = field(default=None, repr=False)
+    # This frame is such a copy, drawn for speed.
+    _is_draft: bool = field(default=False, repr=False)
 
     def shown(self) -> np.ndarray:
         """The frame as it stands, display-encoded float (H, W, 3), kept."""
@@ -470,6 +472,7 @@ def draft_of(frame: "LinearFrame") -> "LinearFrame":
                                scale=frame.scale * rgb.shape[1] / w,
                                anchor_of=frame.anchor_of or frame,
                                denoiser=denoiser, lens=frame.lens)
+    frame._draft._is_draft = True
     return frame._draft
 
 
