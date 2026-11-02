@@ -319,6 +319,44 @@ def adjuster(library_root: Path, source: Optional[str], copied: dict, paste_as: 
 MATCH_KINDS = ("look", "light", "both")
 
 
+def choose_examples(targets: list, stats: dict, reference: Optional[dict] = None, count: int = 4) -> list:
+    """Which of ``targets`` to show a match on first, as ``[{filepath, why}]``: the ones most
+    likely to go wrong, from their stored measurements (``stats``: filepath to its row), and
+    a typical one to judge the rest by: the darkest, the brightest, the one coloured least
+    like the reference. Frames not measured yet fill up what is left, spread through the
+    selection, so a folder with no measurements still gets an even spread."""
+    measured = [f for f in targets if (stats.get(f) or {}).get("lum_p50")]
+    out, taken = [], set()
+
+    def add(filepath, why):
+        if filepath not in taken and len(out) < count:
+            taken.add(filepath)
+            out.append({"filepath": filepath, "why": why})
+
+    if len(measured) >= 2:
+        def lum(f):
+            return float(stats[f]["lum_p50"])
+
+        def cast(row):
+            return math.log(max(float(row.get("wb_r") or 1.0), 1e-3) / max(float(row.get("wb_b") or 1.0), 1e-3))
+
+        by_lum = sorted(measured, key=lum)
+        add(by_lum[len(by_lum) // 2], "typical")
+        add(by_lum[0], "darkest")
+        add(by_lum[-1], "brightest")
+        if reference and reference.get("wb_r"):
+            target = cast(reference)
+        else:
+            target = float(np.median([cast(stats[f]) for f in measured]))
+        add(max(measured, key=lambda f: abs(cast(stats[f]) - target)), "colour furthest away")
+    rest = [f for f in targets if f not in taken]
+    room = count - len(out)
+    if room > 0 and rest:
+        for i in range(min(room, len(rest))):
+            add(rest[round(i * (len(rest) - 1) / max(1, min(room, len(rest)) - 1))], "")
+    return out
+
+
 def matcher(library_root: Path, reference: str, reference_edit: dict, kind: str, amount: float,
             prefer_raw: bool = True, faces_of: Optional[Callable] = None) -> Callable:
     """``step(path, own) -> (edit, note)``: a frame's own edit with ``kind`` brought to the

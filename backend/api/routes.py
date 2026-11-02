@@ -2227,6 +2227,11 @@ async def set_photo_edits(req: PhotoEditBatchRequest, request: Request):
 # the view follows, and one at a time. dry_run answers at once, for a few frames to look
 # at, and saves nothing.
 
+class MatchExamplesRequest(BaseModel):
+    filepaths: list[str] = []
+    reference: str = ""
+
+
 class BatchMatchRequest(BaseModel):
     filepaths: list[str] = []
     reference: str
@@ -2238,6 +2243,38 @@ class BatchMatchRequest(BaseModel):
 _match_jobs: dict = {}
 _MATCH_JOBS_KEEP = 8
 _match_lock = threading.Lock()
+
+
+# The latest match, kept beside the catalog: what each frame had before and what the match
+# gave it. So its undo outlives the selection, the page and the server, and only takes
+# back a frame still as the match left it: later work on a frame is never wiped.
+_LAST_MATCH_FILE = "last_match.json"
+
+
+def _last_match_path(request: Request) -> Path:
+    return Path(request.app.state.config.db_path).parent / _LAST_MATCH_FILE
+
+
+def _read_last_match(request: Request) -> Optional[dict]:
+    try:
+        return json.loads(_last_match_path(request).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _write_last_match(request: Request, record: dict) -> None:
+    path = _last_match_path(request)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(record), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        logging.getLogger(__name__).warning("Could not keep the last match for undo: %s", exc)
+
+
+def _same_edit(a: dict, b: dict) -> bool:
+    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
 
 
 def _prepare_match(req: BatchMatchRequest, request: Request):
@@ -2294,6 +2331,9 @@ async def match_photos(req: BatchMatchRequest, request: Request):
         for old in [k for k, j in _match_jobs.items() if j["status"] != "running"][:-_MATCH_JOBS_KEEP]:
             del _match_jobs[old]
 
+    record = {"reference": req.reference, "kind": req.kind, "at": time.time(), "previous": job["previous"],
+              "after": job["edits"]}
+
     def run():
         logger = logging.getLogger(__name__)
         try:
@@ -2308,17 +2348,82 @@ async def match_photos(req: BatchMatchRequest, request: Request):
                     job["previous"][filepath] = own
                     job["edits"][filepath] = catalog.photo_edit(filepath)
                     job["notes"][filepath] = note
+                    # Kept as it goes: a crash part way must still be undoable.
+                    if job["done"] % 10 == 0:
+                        _write_last_match(request, record)
                 except Exception:
                     logger.exception("Matching %s failed", filepath)
                     job["failed"].append(filepath)
                 job["done"] += 1
             job["status"] = "stopped" if job["stop"] else "completed"
+            if job["edits"]:
+                _write_last_match(request, record)
         except Exception:  # pragma: no cover - defensive: a job must always end
             logger.exception("The match stopped")
             job["status"] = "failed"
 
     threading.Thread(target=run, name="batch-match", daemon=True).start()
     return {"job_id": job_id, "total": len(targets)}
+
+
+@router.post("/photos/edit/match/examples")
+async def match_examples(req: MatchExamplesRequest, request: Request):
+    """Which of a selection to show a match on first: the frames most likely to go wrong."""
+    from export.paste_match import choose_examples
+
+    catalog = _get_catalog(request)
+
+    def choose():
+        stats: dict = {}
+        wanted = set(req.filepaths) | ({req.reference} if req.reference else set())
+        for folder in {f.rsplit("/", 1)[0] for f in wanted if "/" in f}:
+            stats.update(catalog.db.list_photo_stats_for_folder(folder))
+        return choose_examples(req.filepaths, stats, stats.get(req.reference))
+
+    return {"examples": await _run_blocking(choose)}
+
+
+@router.get("/photos/edit/match/last")
+async def last_match(request: Request):
+    """The latest match, while it can still be taken back; ``null`` when there is none."""
+    record = await _run_blocking(_read_last_match, request)
+    if not record or not record.get("after"):
+        return {"last": None}
+    return {"last": {"reference": record.get("reference", ""), "kind": record.get("kind", ""),
+                     "at": record.get("at", 0), "photos": len(record["after"])}}
+
+
+@router.post("/photos/edit/match/undo")
+async def undo_last_match(request: Request):
+    """Take the latest match back from every frame still as it left them. A frame edited
+    since keeps that work, and is named."""
+    catalog = _get_catalog(request)
+
+    def undo():
+        record = _read_last_match(request)
+        if not record or not record.get("after"):
+            return None
+        restored, kept = {}, []
+        for filepath, after in record["after"].items():
+            if _same_edit(catalog.photo_edit(filepath), after):
+                restored[filepath] = record["previous"].get(filepath, {})
+            else:
+                kept.append(filepath)
+        catalog.restore_edits(restored)
+        _last_match_path(request).unlink(missing_ok=True)
+        return {"restored": restored, "kept": kept}
+
+    result = await _run_blocking(undo)
+    if result is None:
+        raise HTTPException(status_code=404, detail="No match to take back")
+    return result
+
+
+@router.delete("/photos/edit/match/last")
+async def forget_last_match(request: Request):
+    """Keep the latest match: stop offering to take it back."""
+    _last_match_path(request).unlink(missing_ok=True)
+    return {"ok": True}
 
 
 @router.get("/photos/edit/match/progress/{job_id}")

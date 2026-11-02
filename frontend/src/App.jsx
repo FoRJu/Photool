@@ -7,7 +7,7 @@ import PersonReview from "./PersonReview.jsx";
 import Slideshow from "./Slideshow.jsx";
 import CollageMaker from "./CollageMaker.jsx";
 import { recall, remember, forgetAll } from "./remembered.js";
-import BatchMatch from "./BatchMatch.jsx";
+import BatchMatch, { LastMatch } from "./BatchMatch.jsx";
 import { useAsReference, useMatchReference } from "./editClipboard.js";
 import { copiedEdit, useCopiedEdit, PASTE_AS, pasteAs, keepPasteAs, usePasteAs, pasteSummary, lightChanged } from "./editClipboard.js";
 
@@ -1029,7 +1029,7 @@ function ReviewProgress({ stats, resume, onResume, onClearResume, className = ""
 // slideshow and the basket stay on the bar; the culling help (bursts, faces,
 // suggestions, measuring) and tagging open from it.
 
-function FolderActions({ count, tags, busy, message, onAddToBasket, onSlideshow, onCheckFaces, onSuggestBest, facesChecked = false, onApplyTag, bursts = [], burstCoverage = null, onRejectDuplicates, quality = null, measuring = false, onMeasure, selecting = false, onSelect }) {
+function FolderActions({ onEditRestored, count, tags, busy, message, onAddToBasket, onSlideshow, onCheckFaces, onSuggestBest, facesChecked = false, onApplyTag, bursts = [], burstCoverage = null, onRejectDuplicates, quality = null, measuring = false, onMeasure, selecting = false, onSelect }) {
   const [tagDraft, setTagDraft] = useState("");
   const [bestCount, setBestCount] = useState(20);
   const canTag = tagDraft.trim().length > 0;
@@ -1056,6 +1056,8 @@ function FolderActions({ count, tags, busy, message, onAddToBasket, onSlideshow,
         <span className="text-neutral-400 mr-1">
           <span className="text-neutral-200 font-medium">{count}</span> in view
         </span>
+
+        <LastMatch onRestored={onEditRestored} />
 
         {onSelect && count > 0 && (
           <button onClick={onSelect}
@@ -4958,8 +4960,8 @@ function PhotoolApp({ access }) {
     } catch { setPickMessage("The backend is not reachable"); } finally { setPickBusy(false); }
   }, [photos, picked, handleEditSaved]);
 
-  // A batch match has finished, or was stopped: its edits are on the frames, and one undo
-  // takes them all back, the same as a paste.
+  // A batch match has finished, or was stopped: its edits are on the frames. Its undo is on
+  // the folder's toolbar (LastMatch), which outlives this selection.
   const matchDone = useCallback((state, kind) => {
     for (const [fp, stored] of Object.entries(state.edits || {})) handleEditSaved(fp, stored);
     const n = Object.keys(state.edits || {}).length;
@@ -4969,7 +4971,6 @@ function PhotoolApp({ access }) {
       + (state.status === "stopped" ? " before stopping" : "")
       + (state.failed?.length ? ` · ${state.failed.length} could not be read` : "")
       + (relit.length ? ` · the light itself changed on ${relit.slice(0, 4).join(", ")}${relit.length > 4 ? ", …" : ""}: check those` : ""));
-    setPasteUndo(n ? state.previous : null);
   }, [handleEditSaved]);
 
   const undoPaste = useCallback(async () => {
@@ -5671,7 +5672,7 @@ function PhotoolApp({ access }) {
                   {/* Acting on what is in view, how far the review has got, and
                       how big the thumbnails are. */}
                   <div className="border-t border-neutral-800 px-3 py-2 flex items-center gap-x-4 gap-y-2 flex-wrap">
-                    {(!phone || filtersOpen) && <FolderActions
+                    {(!phone || filtersOpen) && <FolderActions onEditRestored={handleEditSaved}
                       count={photos.length}
                       tags={tags}
                       busy={bulkBusy}
