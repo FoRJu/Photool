@@ -2359,6 +2359,7 @@ def loupe_image(
 
         # The patch is toned with the preview's base, so that is healed too.
         small = healed(small, spots)
+    blur = {k: clean.pop(k) for k in ("lens_blur", "blur_focus", "blur_sharp") if k in clean}
     sw, sh = small.size
     su, sv = source_point(clean, u, v, sw, sh)
 
@@ -2401,7 +2402,18 @@ def loupe_image(
 
         return warp_region(raw, lens_model, (fw, fh), (x0 / fw, y0 / fh, (x0 + w) / fw, (y0 + h) / fh), (h, w))
 
-    patch = corrected(left, top, side, side)
+    # With lens blur the patch is cut wider first: what lies just outside it is blurred
+    # into it. The blur belongs before the tone, as in develop_frame, and the patch is
+    # toned from a preview blurred the same way.
+    margin = 0
+    if blur:
+        from adjust.depth import blurred, blurred_pixels, reach
+
+        margin = reach(blur["lens_blur"], max(fw, fh))
+    x0, y0 = max(0, left - margin), max(0, top - margin)
+    x1, y1 = min(fw, left + side + margin), min(fh, top + side + margin)
+    wider = (x0 / fw, y0 / fh, x1 / fw, y1 / fh)
+    patch = corrected(x0, y0, x1 - x0, y1 - y0)
     if spots:
         from adjust.spots import apply_spots
 
@@ -2409,7 +2421,12 @@ def loupe_image(
             # A spot's source is read from the full decode, wherever it lies.
             return corrected(x0, y0, size, size)
 
-        patch = apply_spots(patch, spots, (left / fw, top / fh, (left + side) / fw, (top + side) / fh), fetch)
+        patch = apply_spots(patch, spots, wider, fetch)
+    if blur:
+        amount, focus, sharp = blur["lens_blur"], blur.get("blur_focus", 0), blur.get("blur_sharp", 0)
+        patch = blurred_pixels(small, patch, wider, amount, focus, sharp)
+        patch = patch[top - y0:top - y0 + side, left - x0:left - x0 + side]
+        small = blurred(small, amount, focus, sharp)
     frame = region_frame(
         small, patch, (left / fw, top / fh, (left + side) / fw, (top + side) / fh)
     )

@@ -31,6 +31,7 @@ make the keepers look right, and share them.
     mixer, black & white
   - local masks: gradients, brushes, subject, sky, people and faces, and any object you point at or name
     (a box or clicks, chosen by Segment Anything), with zoom and pan to work on small things
+  - depth read from the picture: a lens blur, and masks that reach a band of distance
   - spot healing, noise reduction (AI), sharpening, lens correction, upright
   - virtual copies, presets, copy/paste and "match this look"
 
@@ -117,6 +118,7 @@ which is not an open-source licence; it is fetched only if you choose it and agr
 | Sky and people masks | SegFormer-B0 (ADE20K) | Hugging Face, `Xenova/segformer-b0-finetuned-ade-512-512` |
 | Parts of people (hair, skin, eyes, lips, clothes) | SegFormer-B5 face parsing (CelebAMask-HQ), SegFormer-B2 human parsing (ATR), if chosen | Hugging Face, `jonathandinu/face-parsing`, `mattmdjaga/segformer_b2_clothes` |
 | Object masks | SAM 2.1 Hiera base+ (Apache-2.0); SAM 3 if chosen (SAM License), our ONNX export of Meta's weights | Hugging Face, `onnx-community/sam2.1-hiera-base-plus-ONNX`, `wW-Ww/sam3-ONNX` |
+| Depth (lens blur, depth masks) | Depth Anything V2 Small (Apache-2.0) | Hugging Face, `onnx-community/depth-anything-v2-small` |
 | Place names | GeoNames `cities5000` | geonames.org (CC BY 4.0) |
 
 ## Built with

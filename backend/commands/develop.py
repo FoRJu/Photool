@@ -53,6 +53,12 @@ _MEANING = {
                 "photograph runs the model (~10 s), later changes are instant"),
     "nr_color": ("Noise reduction, RAW only: how much of the colour noise (coloured speckle and blotches) "
                  "is taken out, 0 none to 100 all. Usually 100 on a high-ISO frame"),
+    "lens_blur": ("Lens blur from depth read off the picture, 0 off to 100: what a wider aperture "
+                  "would have done, on any photograph. Judge it around fine edges such as hair"),
+    "blur_focus": ("Lens blur: the distance in focus, 1 the farthest in this frame to 100 the nearest; "
+                   "0 chooses what is near in the middle of the frame. Needs lens_blur"),
+    "blur_sharp": ("Lens blur: how deep a range of distance stays sharp around the focus, 0 its default "
+                   "(narrow) to 100 (everything). Needs lens_blur"),
     "sharpen": ("Sharpening amount, 0 off to 150, Lightroom's scale (its RAW default is 40). On brightness "
                 "only, after noise reduction. Judge it with render.loupe at 1:1: a downsized preview hides it"),
     "sharpen_radius": ("Sharpening radius as tenths of a pixel added to 1.0 px: -5 is 0.5 px, 0 is 1.0, 20 is "

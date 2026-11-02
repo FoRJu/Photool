@@ -37,6 +37,7 @@ everything the sensor kept that an 8-bit rendering would have thrown away.
 """
 
 import json
+import logging
 import math
 import os
 import threading
@@ -46,6 +47,8 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 from adjust.geometry import GEOMETRY_KEYS, apply_geometry
 from adjust.lens import FRAME_KEYS, TRANSFORM_KEYS
@@ -362,6 +365,8 @@ class LinearFrame:
     denoiser: Optional[object] = field(default=None, repr=False)
     # This frame with the noise sliders applied, by their values (see noise_reduced).
     _reduced: Optional[tuple] = field(default=None, repr=False)
+    # This frame with lens blur, by its settings (adjust.depth.blurred).
+    _blurred: Optional[tuple] = field(default=None, repr=False)
     # How the camera corrects this frame's lens distortion: a callable
     # ``() -> model or None`` (export.engine.lens_profile, adjust.lens), None for a
     # frame that cannot know.
@@ -1052,6 +1057,14 @@ def mask_reach(frame: LinearFrame, m: dict) -> Optional[np.ndarray]:
         from adjust.objects import load
 
         matte = load(m.get("matte"))
+    elif m["kind"] == "depth":
+        from adjust import depth
+        from faces.models import ModelsUnavailable
+
+        try:
+            matte = depth.band(depth.whole_map(frame), m.get("near", 100), m.get("far", 50), m.get("soft", 20))
+        except ModelsUnavailable as exc:
+            logger.warning("[masks] cannot read depth: %s", exc)
     if m["kind"] in MATTED and matte is None:
         return None
     reach = weight(m, (h, w), frame.window, matte=matte)
@@ -1236,6 +1249,12 @@ def develop_frame(
             # Skin after the spots and before the light: a retouched face is
             # lit and toned like any other.
             frame = skin.retouched(frame, clean["masks"], mask_reach)
+    if "lens_blur" in clean:
+        # On linear light, so a bright point spreads as a lens spreads it, and before
+        # the light and tone: an exposure edit lifts the blurred picture like any other.
+        from adjust.depth import blurred
+
+        frame = blurred(frame, clean.pop("lens_blur"), clean.pop("blur_focus", 0), clean.pop("blur_sharp", 0))
     if not clean and not matched:
         return frame.encoded()
     if not matched and not any(k not in GEOMETRY_KEYS for k in clean):

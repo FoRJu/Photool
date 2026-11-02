@@ -33,6 +33,10 @@ An edit's ``masks`` is a list of them, each with its own few controls:
            picture named ``matte``, since the same prompts on the frame decoded
            at another size can choose another candidate; ``invert`` for
            everything else.
+  depth    a band of distance, read from the picture (adjust.depth): ``near`` and
+           ``far`` 0..100, 100 the nearest thing in this frame and 0 the farthest,
+           and ``soft`` (0..100) how far it fades beyond them. ``invert`` for
+           everything else.
 
 Any of them carries ``strokes``, laid over its shape in the order they were
 painted: each a list of ``points`` along the hand's path, a radius ``size`` (a
@@ -96,7 +100,7 @@ MAX_MASK_EXPOSURE = 4.0
 # twice as far: +200 over a picture at -100 is +100 where it is whole.
 MAX_MASK_SATURATION = 200.0
 MAX_MASKS = 16
-KINDS = ("linear", "radial", "brush", "subject", "sky", "people", "faces", "object")
+KINDS = ("linear", "radial", "brush", "subject", "sky", "people", "faces", "object", "depth")
 # The kinds a model selects (adjust.segment.KINDS; not imported, so this module
 # needs no OpenCV).
 CHOSEN = ("subject", "sky", "people", "faces")
@@ -107,7 +111,7 @@ MAX_PERSON = 64
 PEOPLE_AREAS = ("face_skin", "eyes", "brows", "lips", "teeth", "hair", "body_skin", "clothes")
 # The kinds whose selection is a picture of the whole frame: chosen by a model at
 # render time, or (an object) kept from when it was pointed at.
-MATTED = CHOSEN + ("object",)
+MATTED = CHOSEN + ("object", "depth")
 OBJECT_MODELS = ("sam2.1", "sam3")
 MAX_PARTS = 12
 MAX_PART_POINTS = 24
@@ -249,6 +253,11 @@ def normalize_mask(mask) -> Optional[dict]:
         matte = mask.get("matte")
         if isinstance(matte, str) and 8 <= len(matte) <= 64 and all(c in "0123456789abcdef" for c in matte):
             out["matte"] = matte
+    elif kind == "depth":
+        out["invert"] = bool(mask.get("invert"))
+        out["near"] = int(round(_num(mask.get("near"), 0.0, 100.0, 100.0)))
+        out["far"] = int(round(_num(mask.get("far"), 0.0, 100.0, 50.0)))
+        out["soft"] = int(round(_num(mask.get("soft"), 0.0, 100.0, 20.0)))
     elif kind in CHOSEN:
         out["invert"] = bool(mask.get("invert"))
         if kind in OF_PEOPLE:
