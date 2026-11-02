@@ -248,6 +248,7 @@ def _sessions_of(model: str, parts: tuple) -> tuple:
         if missing:
             import onnxruntime as ort
 
+            gpu.make_room()
             folder = ensure(model)
             have = ort.get_available_providers()
             # Not Core ML: on a Mac it read a view 20x slower than the CPU (it

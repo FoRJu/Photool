@@ -308,6 +308,50 @@ class TestWhichModel:
             depth._read(PICTURE)
 
 
+class TestSharingTheCard:
+    @pytest.fixture
+    def held(self, models):
+        """What else is open on the card."""
+        from adjust import gpu
+
+        other = []
+        drop = other.clear
+        gpu.register(drop)
+        gpu.release_all()
+        yield other
+        gpu._holders.remove(drop)
+
+    def test_the_large_model_opens_alone(self, models, held):
+        held.append("another model")
+        depth._read(PICTURE)
+        assert held == [] and depth._session is not None
+
+    def test_another_model_opening_lets_the_large_one_go(self, models, held):
+        from adjust import gpu
+
+        depth._read(PICTURE)
+        held.append("another model")
+        gpu.make_room()
+        assert depth._session is None and held == []
+
+    def test_nothing_goes_when_no_large_model_is_open(self, models, held):
+        from adjust import gpu
+
+        held.append("another model")
+        gpu.make_room()
+        assert held == ["another model"]
+
+    def test_the_backup_shares_the_card(self, models, held, monkeypatch):
+        from adjust import gpu
+
+        monkeypatch.setattr(depth, "_has_graphics_card", lambda: False)
+        held.append("another model")
+        depth._read(PICTURE)
+        assert held == ["another model"]
+        gpu.make_room()
+        assert depth._session is not None
+
+
 @pytest.mark.skipif(not (MODELS / depth.MODEL.name).exists(), reason="the depth model is not here")
 class TestModel:
     def test_near_is_nearer_than_far(self):

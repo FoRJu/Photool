@@ -146,6 +146,7 @@ def _session(key: str):
             options.log_severity_level = 3
             options.enable_mem_pattern = False
             options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            gpu.make_room()
             session = ort.InferenceSession(str(folder / MODELS[key].name), sess_options=options,
                                            providers=providers)
             logger.info("[parts] %s parser loaded on %s", key, session.get_providers()[0])

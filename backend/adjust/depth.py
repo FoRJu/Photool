@@ -209,6 +209,10 @@ def _get_session():
     except ImportError:
         raise ModelsUnavailable("onnxruntime is not installed (pip install onnxruntime-directml)")
     spec, path = _ensure_spec()
+    if spec is MODEL:
+        gpu.open_large()
+    else:
+        gpu.make_room()
     try:
         session = _open(path)
         if spec is MODEL and session.get_providers()[0] == "CPUExecutionProvider":
