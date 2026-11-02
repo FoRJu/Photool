@@ -55,6 +55,10 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # What the worker exits with for the watcher to start it again at once (Restart in
 # the tray); any other exit but 0 means it died.
 RESTART_EXIT = 75
+# How long a stopping server waits for open connections before closing them. A
+# connection that never ends, such as a stream, would otherwise hold it up for good.
+# Shorter than tray.STOP_WAIT, so the tray's Restart isn't left waiting on one.
+GRACEFUL_SECONDS = 8
 # A worker that lived this long is not stuck in a crash loop.
 SETTLED_SECONDS = 120.0
 FIRST_DELAY = 2.0
@@ -265,7 +269,7 @@ def main(argv=None) -> int:
     print(f"  On this computer:   {scheme}://localhost:{port}")
     import uvicorn
 
-    options = dict(host="0.0.0.0", port=port, proxy_headers=False)
+    options = dict(host="0.0.0.0", port=port, proxy_headers=False, timeout_graceful_shutdown=GRACEFUL_SECONDS)
     if scheme == "https":
         options.update(ssl_certfile=config.tls_cert, ssl_keyfile=config.tls_key)
     if log is not None:
@@ -280,11 +284,13 @@ def main(argv=None) -> int:
             # In the background there is no window to close: the tray icon is how
             # the server is opened, restarted and quit.
             server = uvicorn.Server(uvicorn.Config("main:app", **options))
+            codes = {"quit": 0, "restart": RESTART_EXIT}
             ended = tray.run(server, f"{scheme}://localhost:{port}",
                              [f"{scheme}://{a}:{port}" for a in _addresses()], log, argv,
-                             watched=worker)
+                             watched=worker,
+                             force_exit=(lambda how: os._exit(codes[how])) if worker else None)
             if worker:
-                _leave({"quit": 0, "restart": RESTART_EXIT}.get(ended, 1))
+                _leave(codes.get(ended, 1))
             return 0
         print("No tray icon (pystray is not installed); stop it with stop.bat.")
     uvicorn.run("main:app", **options)

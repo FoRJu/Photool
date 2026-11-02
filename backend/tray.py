@@ -27,6 +27,8 @@ logger = logging.getLogger("serve")
 
 # How long a server that was asked to stop may take to let the port go.
 STOP_WAIT = 20.0
+# How long after that the process may take to end, before it is ended outright.
+FORCE_WAIT = 5.0
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _DETACHED = getattr(subprocess, "DETACHED_PROCESS", 0)
 
@@ -115,11 +117,15 @@ class Controls:
 
 
 def run(server, url: str, addresses: list[str], log: Optional[Path], argv: list[str],
-        watched: bool = False) -> str:
+        watched: bool = False, force_exit: Optional[Callable[[str], None]] = None) -> str:
     """Serve with ``server`` (a ``uvicorn.Server``) on a thread and show the tray
     icon until Quit or Restart, or the server stops by itself: "quit", "restart" or
     "stopped". ``argv`` is how this process was started, for the restart to start
-    the same way; when ``watched``, the process watching this one does the restart."""
+    the same way; when ``watched``, the process watching this one does the restart.
+
+    ``force_exit`` ends the process outright, told "quit" or "restart". Once asked to
+    stop, a process that lingers has closed its port and still works in the background
+    with nothing to reach it, so it gets only :data:`FORCE_WAIT` to leave by itself."""
     import pystray
 
     thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
@@ -128,6 +134,14 @@ def run(server, url: str, addresses: list[str], log: Optional[Path], argv: list[
     def stop() -> bool:
         server.should_exit = True
         thread.join(STOP_WAIT)
+        if force_exit:
+            def force():
+                logger.error("The server did not leave when asked; ending it")
+                force_exit("restart" if controls.restarting else "quit")
+
+            timer = threading.Timer(FORCE_WAIT, force)
+            timer.daemon = True
+            timer.start()
         return not thread.is_alive()
 
     serve_py = Path(__file__).resolve().parent / "serve.py"
