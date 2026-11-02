@@ -192,6 +192,7 @@ def _get_session():
                  if p in available]
     options = ort.SessionOptions()
     options.log_severity_level = 3
+    gpu.make_room()
     _session = ort.InferenceSession(str(path), sess_options=options, providers=providers)
     logger.info(f"Noise reduction model loaded on {_session.get_providers()[0]}")
     return _session

@@ -18,6 +18,11 @@ DirectML, and those sessions are not independent of one another:
 A session must not be held in a variable beyond :data:`LOCK`: if a release came in
 between, the last reference to the old session would go, and destroy it, outside the
 lock, breaking whatever had been opened since.
+
+  * **A large model does not share the card.** With the depth model and SAM open on 8 GB,
+    noise reduction went from 13 s to over two minutes, though either one alone cost it
+    nothing. So a large model opens with :func:`open_large`, and every other model calls
+    :func:`make_room` before it opens.
 """
 
 import gc
@@ -30,6 +35,7 @@ logger = logging.getLogger(__name__)
 # Re-entrant: a model's lock is this one, and its call for a session happens inside it.
 LOCK = threading.RLock()
 _holders: list = []
+_large_open = False
 
 
 def register(drop: Callable[[], None]) -> None:
@@ -40,7 +46,24 @@ def register(drop: Callable[[], None]) -> None:
 
 def release_all() -> None:
     """Let go of every session on the card, all at once."""
+    global _large_open
     with LOCK:
         for drop in _holders:
             drop()
+        _large_open = False
         gc.collect()
+
+
+def open_large() -> None:
+    """A large model is about to open: nothing else stays on the card with it."""
+    global _large_open
+    with LOCK:
+        release_all()
+        _large_open = True
+
+
+def make_room() -> None:
+    """Another model is about to open: a large one goes, and opens again when it is wanted."""
+    with LOCK:
+        if _large_open:
+            release_all()

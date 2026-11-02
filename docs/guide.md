@@ -613,10 +613,14 @@ sidecar under this app's own `crs:PhotoolSharpen*` names: Lightroom writes
 `crs:Sharpness 40` into most sidecars it touches, so reading that as this app's
 sharpening would quietly sharpen every one of those frames.
 
-**Lens blur does what a wider aperture would have done.** Depth Anything V2 Small
-reads how far away each part of the picture is, from the picture alone, so it works
-on any photograph from any camera. The model is about 100 MB, fetched the first time
-the blur or a depth mask is used. The Lens blur group has:
+**Lens blur does what a wider aperture would have done.** A model reads how far away
+each part of the picture is, from the picture alone, so it works on any photograph
+from any camera. There is no model to choose. With a graphics card it is Depth
+Anything 3 Mono Large, about 350 MB, fetched the first time the blur or a depth mask
+is used. Without one, or if that can't be fetched or run, it is Depth Anything V2
+Small, about 100 MB. The log says which. The two read distance on slightly different
+scales, so a saved focus or depth band can land somewhere a little different on the
+other one. The Lens blur group has:
 
 - **Amount**, 0–100. 0 is off; well short of 100 is usually enough.
 - **Focus**, the distance that stays sharp. Auto takes what is near in the middle of
