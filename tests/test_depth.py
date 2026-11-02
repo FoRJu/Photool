@@ -13,6 +13,7 @@ from adjust import depth  # noqa: E402
 from adjust.develop import from_crs, normalize, to_crs  # noqa: E402
 from adjust.masks import normalize_mask, weight  # noqa: E402
 from adjust.render import LinearFrame, develop_frame  # noqa: E402
+from faces.models import ModelsUnavailable  # noqa: E402
 
 MODELS = Path(os.environ.get("PHOTOOL_TEST_MODELS", Path(__file__).resolve().parent.parent / "models"))
 
@@ -212,6 +213,99 @@ class TestFocus:
         d[30:70, 30:70] = 0.7
         d[:5, :] = 1.0
         assert depth.auto_focus(d) == pytest.approx(0.7)
+
+
+class _Session:
+    """Stands in for a model: gives a ramp, or fails, and keeps what it was given."""
+
+    def __init__(self, fails=False, out=None):
+        self.fails, self.out, self.given = fails, out, None
+
+    def get_inputs(self):
+        return [type("Input", (), {"name": "x"})]
+
+    def get_providers(self):
+        return ["DmlExecutionProvider"]
+
+    def run(self, _, feed):
+        self.given = feed["x"]
+        if self.fails:
+            raise RuntimeError("device lost")
+        if self.out is not None:
+            return [self.out]
+        h, w = self.given.shape[-2:]
+        return [np.tile(np.linspace(0, 1, w, dtype=np.float32), (1, 1, h, 1))]
+
+
+@pytest.fixture
+def models(monkeypatch, tmp_path):
+    """Two models that can be had, as ``sessions`` by name, with a graphics card."""
+    sessions = {depth.MODEL.name: _Session(), depth.BACKUP.name: _Session()}
+    monkeypatch.setattr(depth, "_models_dir", str(tmp_path))
+    monkeypatch.setattr(depth, "_session", None)
+    monkeypatch.setattr(depth, "_session_spec", None)
+    monkeypatch.setattr(depth, "_gave_up", None)
+    monkeypatch.setattr(depth, "_failed", {})
+    monkeypatch.setattr(depth, "_has_graphics_card", lambda: True)
+    monkeypatch.setattr(depth, "verify", lambda path, spec: True)
+    monkeypatch.setattr(depth, "_open", lambda path: sessions[Path(path).name])
+    yield sessions
+    depth._forget_session()
+
+
+PICTURE = np.zeros((60, 90, 3), np.uint8)
+
+
+class TestWhichModel:
+    def test_a_graphics_card_gets_the_better_model_with_what_it_takes(self, models):
+        out = depth._read(PICTURE)
+        given = models[depth.MODEL.name].given
+        assert given.dtype == np.float16 and given.shape == (1, 3, depth.READ_SIZE, depth.READ_SIZE)
+        assert out.shape == (60, 90)
+        assert models[depth.BACKUP.name].given is None
+
+    def test_without_one_it_is_the_backup_with_what_it_takes(self, models, monkeypatch):
+        monkeypatch.setattr(depth, "_has_graphics_card", lambda: False)
+        depth._read(PICTURE)
+        given = models[depth.BACKUP.name].given
+        assert given.dtype == np.float32 and given.shape[-1] % 14 == 0 and given.shape[-2] % 14 == 0
+        assert given.shape[-1] != given.shape[-2]
+        assert models[depth.MODEL.name].given is None
+
+    def test_a_model_that_cannot_be_fetched_falls_to_the_backup(self, models, monkeypatch):
+        monkeypatch.setattr(depth, "verify", lambda path, spec: spec is depth.BACKUP)
+
+        def no(spec, target):
+            raise ModelsUnavailable("no network")
+
+        monkeypatch.setattr(depth, "_download", no)
+        depth._read(PICTURE)
+        assert models[depth.BACKUP.name].given is not None
+        assert depth._gave_up is None                    # tried again after the next start
+
+    @pytest.mark.parametrize("broken", [_Session(fails=True), _Session(out=np.full((1, 1, 1, 1), np.nan, np.float16))],
+                             ids=["fails", "no map"])
+    def test_a_model_that_fails_falls_to_the_backup_and_stays_there(self, models, broken):
+        models[depth.MODEL.name] = broken
+        out = depth._read(PICTURE)
+        assert np.isfinite(out).all() and models[depth.BACKUP.name].given is not None
+        assert depth._gave_up
+        broken.given = None
+        depth._read(PICTURE)
+        assert broken.given is None
+
+    def test_a_model_that_opens_only_on_the_processor_falls_to_the_backup(self, models):
+        slow = _Session()
+        slow.get_providers = lambda: ["CPUExecutionProvider"]
+        models[depth.MODEL.name] = slow
+        depth._read(PICTURE)
+        assert slow.given is None and models[depth.BACKUP.name].given is not None
+
+    def test_if_the_backup_fails_too_it_says_so(self, models):
+        models[depth.MODEL.name] = _Session(fails=True)
+        models[depth.BACKUP.name] = _Session(fails=True)
+        with pytest.raises(RuntimeError):
+            depth._read(PICTURE)
 
 
 @pytest.mark.skipif(not (MODELS / depth.MODEL.name).exists(), reason="the depth model is not here")

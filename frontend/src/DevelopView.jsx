@@ -35,8 +35,16 @@ let lookReference = null;
 // The brush as it was last set (size a share of the frame's longer side): it
 // stays from one frame to the next, as a brush in the hand does.
 let lastBrush = { tool: null, size: 0.03, feather: 50, flow: 100 };
-// The model the last object mask was chosen with: a new one starts with it.
-let lastObjectModel = "sam2.1";
+// The model an object mask was last chosen with: a new one starts with it, here and after a
+// reload, until another is chosen. Kept on this device.
+const OBJECT_MODEL_KEY = "photool.develop.objectModel";
+const FIRST_OBJECT_MODEL = "sam2.1";
+let lastObjectModel = FIRST_OBJECT_MODEL;
+try { lastObjectModel = localStorage.getItem(OBJECT_MODEL_KEY) || FIRST_OBJECT_MODEL; } catch { /* the first one */ }
+function keepObjectModel(model) {
+  lastObjectModel = model;
+  try { localStorage.setItem(OBJECT_MODEL_KEY, model); } catch { /* this visit only */ }
+}
 // How far the picture can be zoomed in: past this a preview pixel is a blur.
 const MAX_ZOOM = 16;
 
@@ -4225,7 +4233,11 @@ ${known.license}
 
   const addMask = useCallback(async (kind) => {
     if (kind === "object") {
-      if (!(await readyObjectModel(lastObjectModel))) return;
+      if (!(await readyObjectModel(lastObjectModel))) {
+        // A kept choice that can't be had must not stop every new object mask from here on.
+        keepObjectModel(FIRST_OBJECT_MODEL);
+        return;
+      }
     } else if (CHOSEN_NAMES[kind] || kind === "depth") {
       // The model is fetched the first time (a few MB); the mask is added once
       // it can select anything.
@@ -4422,7 +4434,7 @@ ${known.license}
     const m = settingsRef.current.masks?.[index];
     if (m?.kind !== "object") return;
     if (!(await readyObjectModel(model))) return;
-    lastObjectModel = model;
+    keepObjectModel(model);
     setObjectDraft(null);
     // The parts are chosen again by the other model, each with its best guess.
     const finds = !!objectModels?.find((o) => o.model === model)?.finds;
@@ -4446,7 +4458,7 @@ ${known.license}
   const [picking, setPicking] = useState(false);
   const depthAsks = useRef({});
   // The lens blur's model: asked for the first time the blur is used, since it is a
-  // download of about 100 MB, and said so while it comes.
+  // download of about 350 MB, and said so while it comes.
   const [pickingFocus, setPickingFocus] = useState(false);
   const [blurNote, setBlurNote] = useState("");
   const depthModel = useRef(false);
@@ -4454,7 +4466,7 @@ ${known.license}
   useEffect(() => {
     if (!blurOn || depthModel.current) return undefined;
     depthModel.current = true;
-    const slow = setTimeout(() => setBlurNote("Getting the depth model, about 100 MB, the first time only…"), 500);
+    const slow = setTimeout(() => setBlurNote("Getting the depth model, about 350 MB, the first time only…"), 500);
     fetch(`${API}/export/develop/mask-model`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind: "depth" }),

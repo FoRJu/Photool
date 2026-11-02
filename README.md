@@ -118,7 +118,7 @@ which is not an open-source licence; it is fetched only if you choose it and agr
 | Sky and people masks | SegFormer-B0 (ADE20K) | Hugging Face, `Xenova/segformer-b0-finetuned-ade-512-512` |
 | Parts of people (hair, skin, eyes, lips, clothes) | SegFormer-B5 face parsing (CelebAMask-HQ), SegFormer-B2 human parsing (ATR), if chosen | Hugging Face, `jonathandinu/face-parsing`, `mattmdjaga/segformer_b2_clothes` |
 | Object masks | SAM 2.1 Hiera base+ (Apache-2.0); SAM 3 if chosen (SAM License), our ONNX export of Meta's weights | Hugging Face, `onnx-community/sam2.1-hiera-base-plus-ONNX`, `wW-Ww/sam3-ONNX` |
-| Depth (lens blur, depth masks) | Depth Anything V2 Small (Apache-2.0) | Hugging Face, `onnx-community/depth-anything-v2-small` |
+| Depth (lens blur, depth masks) | Depth Anything 3 Mono Large, 4-bit (Apache-2.0); Depth Anything V2 Small (Apache-2.0) without a graphics card or as backup | Hugging Face, `Jens-Duttke/Depth-Anything-3-MONO-ONNX`, `onnx-community/depth-anything-v2-small` |
 | Place names | GeoNames `cities5000` | geonames.org (CC BY 4.0) |
 
 ## Built with

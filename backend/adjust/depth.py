@@ -1,11 +1,17 @@
 """
 How far away each part of a picture is, and what can be done with that.
 
-Depth Anything V2 Small (Apache-2.0; its larger versions are for non-commercial use only)
-reads depth from the picture alone, so it works on any photograph from any camera. What it
-gives is relative, not metres: this frame's nearest and farthest are 100 and 0, and two
-frames' numbers are not comparable. It reads about 1000 px of the frame in about half a
+A model reads depth from the picture alone, so it works on any photograph from any camera.
+What it gives is relative, not metres: this frame's nearest and farthest are 100 and 0, and
+two frames' numbers are not comparable. It reads about 1000 px of the frame in under half a
 second on a graphics card, and the map is kept on the frame.
+
+There is nothing to choose between models. With a graphics card it is Depth Anything 3 Mono
+Large (Apache-2.0), which keeps thin things and tells people at different distances apart
+better. Without one, or if that model cannot be fetched or run, it is Depth Anything V2 Small
+(Apache-2.0), at 2 s a frame on a processor against about 27 s. Their scales differ, so a
+focus or a depth mask's band reaches a slightly different distance if a frame is drawn by the
+other one.
 
 Two things use it:
 
@@ -41,13 +47,21 @@ logger = logging.getLogger(__name__)
 
 # Pinned to one revision: a file changed under the same name would fail its hash.
 MODEL = ModelSpec(
+    name="depth_anything_v3_mono_large_q4.onnx",
+    url="https://huggingface.co/Jens-Duttke/Depth-Anything-3-MONO-ONNX/resolve/"
+        "17ee0593a09b26b69e0922f1e794fa32b025349e/da-v3-mono-large_q4f16_opset21_optimized.onnx",
+    sha256="a910dddbae9572da268efba6cf3d3c0cca83cffcfabfa6b31d13debf4cab268d",
+    size=352473291,
+)
+BACKUP = ModelSpec(
     name="depth_anything_v2_small.onnx",
     url="https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/"
         "4472b7362082ad9968fee890ca0f1e5aca36b93d/onnx/model.onnx",
     sha256="afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c",
     size=99060839,
 )
-# The model's input size must be a multiple of this.
+# V2's input size must be a multiple of this. MODEL takes only squares of a few sizes, READ_SIZE
+# being one, and half-precision numbers.
 _PATCH = 14
 # How much of the frame the model reads (its longer side). Its own default of 518 is smoother;
 # this keeps a railing and the edge of a statue.
@@ -70,50 +84,86 @@ _MIN_RADIUS = 0.7
 # smooth, so nothing is lost, and the cost of a disc grows with its area.
 _WORKING_RADIUS = 6
 
+_CARD_PROVIDERS = ("CUDAExecutionProvider", "DmlExecutionProvider")
 _models_dir: Optional[str] = None
 _session = None
-_failed: Optional[str] = None
+_session_spec: Optional[ModelSpec] = None
+# Why a model could not be fetched, by its name, so it is not tried on every render.
+_failed: dict = {}
+# Why MODEL was given up on until the next start, when it failed after being fetched.
+_gave_up: Optional[str] = None
 # One download at a time: the panel asks for the model as a render comes to need it.
 _fetching = threading.Lock()
 
 
 def configure(models_dir: Optional[str]) -> None:
-    global _models_dir, _failed
+    global _models_dir, _gave_up
     if models_dir != _models_dir:
         gpu.release_all()
         _models_dir = models_dir
-        _failed = None
+        _failed.clear()
+        _gave_up = None
 
 
 def _forget_session() -> None:
-    global _session
+    global _session, _session_spec
     _session = None
+    _session_spec = None
 
 
 gpu.register(_forget_session)
 
 
-def ensure(download: bool = True) -> Path:
-    """The model file, fetched if it is missing. Raises :class:`ModelsUnavailable`."""
-    global _failed
-    if not _models_dir:
-        raise ModelsUnavailable("no models folder is configured")
-    target = Path(_models_dir) / MODEL.name
-    if verify(target, MODEL):
+def _has_graphics_card() -> bool:
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return False
+    return any(p in ort.get_available_providers() for p in _CARD_PROVIDERS)
+
+
+def _wanted() -> list:
+    """The models to try, in order."""
+    return [MODEL, BACKUP] if _has_graphics_card() and not _gave_up else [BACKUP]
+
+
+def _fetch(spec: ModelSpec, download: bool) -> Path:
+    target = Path(_models_dir) / spec.name
+    if verify(target, spec):
         return target
     if not download:
-        raise ModelsUnavailable(f"{MODEL.name} is not in {_models_dir} yet")
+        raise ModelsUnavailable(f"{spec.name} is not in {_models_dir} yet")
     with _fetching:
-        if verify(target, MODEL):
+        if verify(target, spec):
             return target
-        if _failed:
-            raise ModelsUnavailable(_failed)
+        if spec.name in _failed:
+            raise ModelsUnavailable(_failed[spec.name])
         try:
-            _download(MODEL, target)
+            _download(spec, target)
         except ModelsUnavailable as exc:
-            _failed = str(exc)
+            _failed[spec.name] = str(exc)
             raise
     return target
+
+
+def _ensure_spec(download: bool = True) -> tuple:
+    """``(spec, file)`` of the first model that can be had. Raises :class:`ModelsUnavailable`."""
+    if not _models_dir:
+        raise ModelsUnavailable("no models folder is configured")
+    problem = None
+    for spec in _wanted():
+        try:
+            return spec, _fetch(spec, download)
+        except ModelsUnavailable as exc:
+            if download:
+                logger.warning("[depth] %s cannot be had: %s", spec.name, exc)
+            problem = exc
+    raise problem
+
+
+def ensure(download: bool = True) -> Path:
+    """The model's file, fetched if it is missing. Raises :class:`ModelsUnavailable`."""
+    return _ensure_spec(download)[1]
 
 
 def available() -> bool:
@@ -128,26 +178,64 @@ def available() -> bool:
         return False
 
 
-def _get_session():
-    """The model, opened when wanted. Called with ``gpu.LOCK`` held, and not to be kept
-    beyond it (see adjust.gpu)."""
-    global _session
-    if _session is not None:
-        return _session
-    try:
-        import onnxruntime as ort
-    except ImportError:
-        raise ModelsUnavailable("onnxruntime is not installed (pip install onnxruntime-directml)")
-    path = ensure()
+def _open(path: Path):
+    import onnxruntime as ort
+
     have = ort.get_available_providers()
-    providers = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider") if p in have] + ["CPUExecutionProvider"]
+    providers = [p for p in _CARD_PROVIDERS if p in have] + ["CPUExecutionProvider"]
     options = ort.SessionOptions()
     options.log_severity_level = 3
     options.enable_mem_pattern = False
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-    _session = ort.InferenceSession(str(path), sess_options=options, providers=providers)
-    logger.info("[depth] model loaded on %s", _session.get_providers()[0])
-    return _session
+    return ort.InferenceSession(str(path), sess_options=options, providers=providers)
+
+
+def _give_up(reason) -> None:
+    """Use the backup until the next start. Every session goes, as sessions must (adjust.gpu)."""
+    global _gave_up
+    _gave_up = str(reason) or "it failed"
+    logger.warning("[depth] %s failed, using %s until the next start: %s", MODEL.name, BACKUP.name, _gave_up)
+    gpu.release_all()
+
+
+def _get_session():
+    """The model, opened when wanted, and which one it is. Called with ``gpu.LOCK`` held, and
+    not to be kept beyond it (see adjust.gpu)."""
+    global _session, _session_spec
+    if _session is not None:
+        return _session, _session_spec
+    try:
+        import onnxruntime  # noqa: F401
+    except ImportError:
+        raise ModelsUnavailable("onnxruntime is not installed (pip install onnxruntime-directml)")
+    spec, path = _ensure_spec()
+    try:
+        session = _open(path)
+        if spec is MODEL and session.get_providers()[0] == "CPUExecutionProvider":
+            raise RuntimeError("it did not open on the graphics card")
+    except Exception as exc:
+        if spec is not MODEL:
+            raise
+        session = None
+        _give_up(exc)
+        return _get_session()
+    _session, _session_spec = session, spec
+    logger.info("[depth] %s loaded on %s", spec.name, session.get_providers()[0])
+    return session, spec
+
+
+def _input(picture: np.ndarray, spec: ModelSpec) -> np.ndarray:
+    import cv2
+
+    h, w = picture.shape[:2]
+    if spec is MODEL:
+        nw, nh = READ_SIZE, READ_SIZE
+    else:
+        k = READ_SIZE / max(h, w)
+        nw, nh = max(_PATCH, round(w * k / _PATCH) * _PATCH), max(_PATCH, round(h * k / _PATCH) * _PATCH)
+    x = cv2.resize(picture, (nw, nh), interpolation=cv2.INTER_AREA if max(nw, nh) < max(h, w) else cv2.INTER_CUBIC)
+    x = ((x.astype(np.float32) / 255.0 - _MEAN) / _STD).transpose(2, 0, 1)[None]
+    return x.astype(np.float16 if spec is MODEL else np.float32)
 
 
 def _read(picture: np.ndarray) -> np.ndarray:
@@ -155,15 +243,21 @@ def _read(picture: np.ndarray) -> np.ndarray:
     import cv2
 
     h, w = picture.shape[:2]
-    k = READ_SIZE / max(h, w)
-    nw, nh = max(_PATCH, round(w * k / _PATCH) * _PATCH), max(_PATCH, round(h * k / _PATCH) * _PATCH)
-    x = cv2.resize(picture, (nw, nh), interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_CUBIC)
-    x = ((x.astype(np.float32) / 255.0 - _MEAN) / _STD).transpose(2, 0, 1)[None].astype(np.float32)
     with gpu.LOCK:
-        session = _get_session()
-        out = session.run(None, {session.get_inputs()[0].name: x})[0]
-        del session
-    out = np.squeeze(out).astype(np.float32)
+        while True:
+            session, spec = _get_session()
+            try:
+                out = session.run(None, {session.get_inputs()[0].name: _input(picture, spec)})[0]
+                out = np.squeeze(out).astype(np.float32)
+                if out.ndim != 2 or not np.isfinite(out).all():
+                    raise RuntimeError("it gave no usable map")
+                del session
+                break
+            except Exception as exc:
+                del session
+                if spec is not MODEL:
+                    raise
+                _give_up(exc)
     # The nearest and farthest of this frame, past a stray pixel or two.
     low, high = np.percentile(out, [1.0, 99.0])
     out = np.clip((out - low) / max(float(high - low), 1e-6), 0.0, 1.0)
