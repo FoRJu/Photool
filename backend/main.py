@@ -148,6 +148,16 @@ async def lifespan(app: FastAPI):
         burst_max_gap_seconds=config.burst_max_gap_seconds,
     )
 
+    # A photograph already edited keeps the camera look it was finished on until the
+    # person updates it (export.engine).
+    from export.engine import set_edit_check
+
+    def is_edited(source: Path) -> bool:
+        folder = source.relative_to(Path(config.library_root)).parent.as_posix()
+        return db.frame_has_edit("" if folder == "." else folder, source.stem)
+
+    set_edit_check(is_edited)
+
     # Initialize thumbnail queue manager
     queue_manager = ThumbnailQueueManager(
         db=db,

@@ -259,12 +259,16 @@ const BW_TONES = [
 // information about how much to trust the starting point, not a warning.
 const LOOK_NOTES = {
   ready: (n) => ({
-    text: `from ${n} frames of this camera`,
-    title: "The camera's look was learned from many frames of this camera and style, so it should sit close to the camera's own JPEG.",
+    text: `colour from ${n} frames, tone from this frame`,
+    title: "The colour was learned from many frames of this camera and style. The tone comes from this frame's own JPEG, because the camera adjusts tone shot by shot, so the frame count says nothing about the tone. Hold “Camera's JPEG” to compare.",
   }),
   learning: (n) => ({
     text: n > 1 ? `still learning (${n} frames)` : "still learning (1 frame)",
-    title: "Learned from only the first frames of this camera, lens or style. It is a fair start and gets closer to the camera's JPEG as more of its frames are opened.",
+    title: "Learned from only the first frames of this camera, lens or style. The colour gets closer to the camera's JPEG as more of its frames are opened.",
+  }),
+  shared: (n) => ({
+    text: `colour and tone from ${n} frames`,
+    title: "The tone fitted to this frame alone drew it visibly flattened against the camera's JPEG, and the tone shared across this camera's frames drew it better, so that is used here. Hold “Camera's JPEG” to compare.",
   }),
   own: () => ({
     text: "from this frame alone",
@@ -285,6 +289,7 @@ const LOOK_NOTES = {
 const LOOK_HINTS = {
   rough: "This frame may sit away from the camera's own JPEG.",
   scene: "No other frame here looks like this scene yet, so exposure edits are less certain.",
+  older: "This edited frame keeps the look it was finished on, learned the old way.",
 };
 
 // The colour mixer: hue, saturation and luminance for eight bands of hue, the
@@ -3276,6 +3281,8 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
   // How established that look is (none | learning | own | ready), and from how
   // many frames: said once, quietly, under the Look heading.
   const [lookNote, setLookNote] = useState({ state: "", frames: 0, hint: "" });
+  const [cameraJpeg, setCameraJpeg] = useState(false);
+  const [cameraJpegUrl, setCameraJpegUrl] = useState(null);
   // Where the frame's noise reduction stands (off | working | ready | failed |
   // raw-only | unavailable), from the last preview drawn.
   const [noiseState, setNoiseState] = useState("off");
@@ -3391,6 +3398,34 @@ export default function DevelopView({ filepath, photos, onClose, onNavigate, onS
       if (res.ok) setLearnJob({ folder, ...(await res.json()) });
     } catch { /* the hint simply stays */ }
   }, []);
+
+  const relearnLook = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/camera-look/relearn`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filepath }),
+      });
+      if (res.ok) setLookRefresh((n) => n + 1);
+    } catch { /* the hint simply stays */ }
+  }, [filepath]);
+
+  // The camera's own JPEG, fetched the first time it is held and shown while it is.
+  const holdCameraJpeg = useCallback(async () => {
+    setCameraJpeg(true);
+    if (cameraJpegUrl?.file === filepath) return;
+    try {
+      const res = await fetch(`${API}/export/preview`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filepath, size: PREVIEW_SIZE, resize_only: true, adjustment: {} }),
+      });
+      if (!res.ok) return;
+      const url = URL.createObjectURL(await res.blob());
+      setCameraJpegUrl((old) => {
+        if (old) URL.revokeObjectURL(old.url);
+        return { file: filepath, url };
+      });
+    } catch { /* the picture simply stays */ }
+  }, [filepath, cameraJpegUrl]);
 
   // While a folder is being learned, ask how far it has got; when it is done the
   // frame on screen is drawn again from the finished pool.
@@ -5016,7 +5051,8 @@ ${known.license}
   // The preview on screen is only usable if it was drawn for the same mode: a
   // cropped picture under the crop box would put the box on the wrong pixels.
   const previewReady = preview && (previewFull === fullView || !framed);
-  const shown = showOriginal || !previewReady ? originalShown : preview;
+  const shown = cameraJpeg && cameraJpegUrl?.file === filepath ? cameraJpegUrl.url
+    : showOriginal || !previewReady ? originalShown : preview;
   const current = photos?.[position];
   const edited = isEdited(settings);
   const toneEdited = isToneEdited(settings);
@@ -5104,10 +5140,26 @@ ${known.license}
           return (
             <div className="text-[10px] text-neutral-600 space-y-0.5">
               <div title={note.title} data-testid="look-note">Camera look: {note.text}</div>
+              {lookNote.state !== "none" && (
+                <button data-testid="camera-jpeg"
+                  onPointerDown={holdCameraJpeg} onPointerUp={() => setCameraJpeg(false)}
+                  onPointerLeave={() => setCameraJpeg(false)} onPointerCancel={() => setCameraJpeg(false)}
+                  title="Hold to see the JPEG the camera made, which the look is learned from (a little different in framing: the camera corrects the lens)"
+                  className="underline decoration-neutral-700 hover:text-neutral-300 touch-none">
+                  Hold: Camera's JPEG
+                </button>
+              )}
               {(hint || running) && (
                 <div data-testid="look-hint">
                   {running ? `Learning from this folder… ${learnJob.done}/${learnJob.total}` : hint}
-                  {!running && folder && (
+                  {!running && lookNote.hint === "older" && (
+                    <button onClick={relearnLook}
+                      title="Learn this frame's look the new way. Its picture may change; undo is not offered for this."
+                      className="ml-1 underline decoration-neutral-700 hover:text-neutral-300">
+                      Update its look
+                    </button>
+                  )}
+                  {!running && lookNote.hint !== "older" && folder && (
                     <button onClick={() => learnFolder(folder)}
                       title="Open every RAW in this folder so the camera's look is learned from all of them. Runs in the background."
                       className="ml-1 underline decoration-neutral-700 hover:text-neutral-300">

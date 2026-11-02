@@ -2704,6 +2704,23 @@ async def learn_camera_look(req: LearnLookRequest, request: Request):
     return state
 
 
+class RelearnLookRequest(BaseModel):
+    filepath: str
+
+
+@router.post("/camera-look/relearn")
+async def relearn_camera_look(req: RelearnLookRequest, request: Request):
+    """Learn one photograph's look afresh: the develop view offers it on an edited
+    photograph still on a look learned the old way, which changes how it is drawn."""
+    from export import engine
+
+    source = engine.resolve_export_source(_library_file(request.app.state.config, req.filepath),
+                                          request.app.state.config.export_prefer_raw)
+    look = await _run_blocking(engine.relearn_look, source)
+    state, frames, hint = engine.look_status(source, look)
+    return {"state": state, "frames": frames, "hint": hint}
+
+
 @router.get("/camera-look/learn")
 async def camera_look_learning(folder: str):
     from export import engine

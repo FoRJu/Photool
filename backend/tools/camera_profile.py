@@ -544,7 +544,7 @@ def health(paths, profiles: Path, render: bool = False, size: int = DEFAULT_SIZE
            out=sys.stdout) -> list:
     """Every kept look under ``profiles`` (only those of photographs under
     ``paths``, when given), worst first, with whether it looks broken."""
-    from adjust.look import BANDING_MAX, EVEN_MIN, curve_evenness, tone_detail
+    from adjust.look import EVEN_MIN, FLATTENED_MAX, curve_evenness, tone_detail
     from export import engine
 
     wanted = [Path(p).resolve() for p in paths or []]
@@ -576,8 +576,8 @@ def health(paths, profiles: Path, render: bool = False, size: int = DEFAULT_SIZE
             detail = tone_detail(shown, camera) if shown is not None else None
             if detail is not None:
                 row.update(detail)
-        row["off"] = bool(even is not None and even < EVEN_MIN)
-        row["shows"] = bool(row["off"] and row.get("banding", 0.0) > BANDING_MAX)
+        row["shows"] = bool(row.get("flattened", 0.0) > FLATTENED_MAX)
+        row["off"] = bool(row["shows"] or (even is not None and even < EVEN_MIN))
         rows.append(row)
         if render:
             print(f"  {source.name}: even {row['even']}  banding {row.get('banding', '-')}"
@@ -603,9 +603,9 @@ def health(paths, profiles: Path, render: bool = False, size: int = DEFAULT_SIZE
         print(f"{name:<44} {even:>6} {band:>8}  {flags}{row['pooling'] or ''}", file=out)
     judged = [r for r in rows if "unreadable" not in r]
     off = [r for r in judged if r["off"]]
-    print(f"\n{len(off)} of {len(judged)} kept looks are off (even < {EVEN_MIN})"
+    print(f"\n{len(off)} of {len(judged)} kept looks are off (even < {EVEN_MIN} or visibly flattened)"
           + (f", {sum(r['shows'] for r in off)} visibly in their photograph "
-             f"(banding > {BANDING_MAX})" if render else ""), file=out)
+             f"(flattened > {FLATTENED_MAX})" if render else ""), file=out)
     folders: dict = {}
     for r in off:
         folders[str(Path(r["file"]).parent)] = folders.get(str(Path(r["file"]).parent), 0) + 1

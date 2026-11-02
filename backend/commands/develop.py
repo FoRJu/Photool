@@ -357,12 +357,12 @@ class LookHealthParams(BaseModel):
 def look_health(ctx: CommandContext, params: LookHealthParams):
     """Whether a RAW's camera look is drawn the way the camera drew it. ``even`` is how
     evenly its tone curve rises through the mid-tones; below ``even_min`` it has a
-    plateau and ``off`` is true. ``banding`` is how unevenly the photograph with no
-    edit keeps the camera JPEG's local contrast across its tones, in stops;
-    ``shows`` is an off look whose plateau can be seen in this photograph (faces or
-    skies posterized; ``flattest`` names the tone). Banding alone is not a fault: a
-    camera JPEG with heavy noise reduction is softer than any develop. A look that
-    is off: say so, rather than judge the photo by it."""
+    plateau and ``off`` is true. ``flattened`` is the share of the photograph's edges in
+    tones that keep too little of the camera JPEG's local contrast; above 0.05 ``shows``
+    and ``off`` are true: it is posterized where you can see it (``flattest`` names the
+    tone). ``banding``, the spread between its best and worst tone, is not a verdict:
+    one tiny tone near white can make it large on a picture that looks right. A look
+    that is off: say so, rather than judge the photo by it."""
     from export.engine import look_health as health
 
     return {"filepath": params.filepath, **health(_source(ctx, params.filepath))}
