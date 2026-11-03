@@ -594,6 +594,7 @@ async def get_thumb(
     size: str = Query("grid", pattern="^(grid|preview|full)$"),
     v: str = Query("", max_length=64),
     camera: bool = Query(False),
+    ver: int = Query(-1, ge=-1),
 ):
     """
     Get a thumbnail. folder_path includes the filename.
@@ -601,6 +602,8 @@ async def get_thumb(
 
     ``camera`` asks for the camera's own picture even of an edited frame: what Develop
     shows at once while it opens, since drawing the edit may have to learn its look.
+    ``ver`` draws one version (0 the photo's own edit, 1.. a virtual copy); without
+    it the photo's cover is drawn, the version chosen to be seen while browsing.
     """
     config = request.app.state.config
     full_path = Path(config.library_root) / folder_path
@@ -626,7 +629,7 @@ async def get_thumb(
             from thumbnails.edited import get_edited_thumbnail
 
             catalog = _get_catalog(request)
-            settings = await _run_blocking(catalog.photo_edit, folder_path)
+            settings = await _run_blocking(catalog.edit_of, folder_path, None if ver < 0 else ver)
             if settings:
                 develop_source = resolve_export_source(full_path, config.export_prefer_raw)
                 thumb_data = await loop.run_in_executor(
@@ -884,16 +887,21 @@ async def catalog_photos(
     # opens on a frame the user just clicked, and it should not need a second
     # round trip to know what the sliders were.
     edits = await _run_blocking(catalog.photo_edits, folder_path)
+    edited = await _run_blocking(catalog.edited_filepaths, folder_path)
+    versions = await _run_blocking(catalog.version_info, [p.filepath for p in photos])
     return {
         "photos": [
-            _photo_row(p, tag_map.get(p.filepath, []), edits.get(p.filepath, {}), p.filepath in edits)
+            _photo_row(p, tag_map.get(p.filepath, []), edits.get(p.filepath, {}), p.filepath in edited,
+                       versions.get(p.filepath))
             for p in photos
         ],
     }
 
 
-def _photo_row(p, tags: list, edit: dict, edited: bool) -> dict:
-    """One photo as the grid draws it."""
+def _photo_row(p, tags: list, edit: dict, edited: bool, versions: Optional[dict] = None) -> dict:
+    """One photo as the grid draws it. ``versions`` is its entry of
+    ``catalog.version_info``: how many virtual copies, and which is its cover."""
+    versions = versions or {}
     return {
         "filepath": p.filepath,
         "filename": p.filename,
@@ -917,6 +925,9 @@ def _photo_row(p, tags: list, edit: dict, edited: bool) -> dict:
         "duration": p.duration,
         "edit": edit,
         "edited": edited,
+        "copies": versions.get("copies", 0),
+        "cover": versions.get("cover", 0),
+        "cover_edit": versions.get("cover_edit", {}),
     }
 
 
@@ -953,14 +964,7 @@ async def search_library(
     kept = [p for p in found if not demoted(p)]
     found = kept + [p for p in found if demoted(p)]
     page = found[:limit]
-    edits = await _run_blocking(
-        catalog.photo_edits) if any(photo.edited for photo in page) else {}
-    rows = []
-    for photo in page:
-        row = _photo_row(photo.record, sorted(photo.tags),
-                         edits.get(photo.record.filepath, {}), photo.edited)
-        row.update(rating=photo.rating, flag=photo.flag, color_label=photo.label)
-        rows.append(row)
+    rows = await _run_blocking(_year_rows, catalog, page)
     return {"query": q, "understood": describe(q, describe_words), "total": len(found), "photos": rows,
             "unclear": unclear(found), "demoted": len(found) - len(kept)}
 
@@ -1002,25 +1006,19 @@ async def library_memories(
     today = _date.fromisoformat(day) if day else _date.today()
     # Copies: the years are kept for the next visit, and their photos become rows here.
     years = [dict(y) for y in await _run_blocking(catalog.on_this_day, today, owner_of(request)[0])]
-    edits = await _run_blocking(catalog.photo_edits) if any(
-        p.edited for y in years for p in y["photos"]) else {}
     for year in years:
-        rows = []
-        for photo in year["photos"]:
-            row = _photo_row(photo.record, sorted(photo.tags),
-                             edits.get(photo.record.filepath, {}), photo.edited)
-            row.update(rating=photo.rating, flag=photo.flag, color_label=photo.label)
-            rows.append(row)
-        year["photos"] = rows
+        year["photos"] = await _run_blocking(_year_rows, catalog, year["photos"])
     return {"day": today.isoformat(), "years": years}
 
 
 def _year_rows(catalog, photos: list) -> list:
-    """Photos as the grid draws them, edits included."""
+    """Search Photos (pairs merged) as the grid draws them, edits and covers included."""
     edits = catalog.photo_edits() if any(p.edited for p in photos) else {}
+    versions = catalog.version_info([p.record.filepath for p in photos]) if photos else {}
     rows = []
     for photo in photos:
-        row = _photo_row(photo.record, sorted(photo.tags), edits.get(photo.record.filepath, {}), photo.edited)
+        row = _photo_row(photo.record, sorted(photo.tags), edits.get(photo.record.filepath, {}), photo.edited,
+                         versions.get(photo.record.filepath))
         row.update(rating=photo.rating, flag=photo.flag, color_label=photo.label)
         rows.append(row)
     return rows
@@ -1290,7 +1288,7 @@ def _focus(request: Request, filepath: str) -> Optional[tuple]:
     the frame, when their faces are known and the frame is not cropped by an
     edit (the boxes are of the unedited frame). None for its middle."""
     catalog = _get_catalog(request)
-    if catalog.photo_edit(filepath):
+    if catalog.edit_of(filepath):
         return None
     record = catalog.db.get_photo(filepath)
     faces = catalog.db.list_faces(filepath)
@@ -1337,7 +1335,7 @@ def _open_previews(request: Request, filepaths: list[str]) -> tuple[list, list[s
 
 
 def _shown_preview(request: Request, filepath: str) -> Optional[bytes]:
-    """A photograph's preview as the grid shows it: its edit drawn when it has one."""
+    """A photograph's preview as the grid shows it: its cover's edit drawn when it has one."""
     from export.engine import resolve_export_source
     from thumbnails.edited import get_edited_thumbnail
 
@@ -1346,7 +1344,7 @@ def _shown_preview(request: Request, filepath: str) -> Optional[bytes]:
     full_path = Path(config.library_root) / filepath
     if not full_path.exists():
         return None
-    settings = _get_catalog(request).photo_edit(filepath)
+    settings = _get_catalog(request).edit_of(filepath)
     if settings:
         data = get_edited_thumbnail(resolve_export_source(full_path, config.export_prefer_raw),
                                     settings, cache, ThumbnailSize.PREVIEW)
@@ -2162,11 +2160,30 @@ class CopyUpdateRequest(BaseModel):
     export: Optional[bool] = None
 
 
+class CoverRequest(BaseModel):
+    filepath: str
+    version: int = 0
+
+
 @router.get("/photos/versions")
 async def list_photo_versions(filepath: str, request: Request):
     catalog = _get_catalog(request)
     return {"filepath": filepath,
-            "copies": await _run_blocking(catalog.photo_versions, filepath)}
+            "copies": await _run_blocking(catalog.photo_versions, filepath),
+            "cover": await _run_blocking(catalog.cover, filepath)}
+
+
+@router.put("/photos/versions/cover")
+async def set_photo_cover(req: CoverRequest, request: Request):
+    """Choose which version of a photograph is seen while browsing: 0 its own
+    edit, or one of its copies. Export is unchanged by it."""
+    catalog = _get_catalog(request)
+    if not catalog.db.get_photo(req.filepath):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not await _run_blocking(catalog.set_cover, req.filepath, req.version):
+        raise HTTPException(status_code=404, detail="No such copy")
+    return {"ok": True, "cover": req.version,
+            "copies": await _run_blocking(catalog.photo_versions, req.filepath)}
 
 
 @router.get("/photos/versions/counts")
@@ -2200,7 +2217,8 @@ async def delete_photo_version(filepath: str, version: int, request: Request):
     ok = await _run_blocking(catalog.delete_copy, filepath, version)
     if not ok:
         raise HTTPException(status_code=404, detail="No such copy")
-    return {"ok": True, "copies": await _run_blocking(catalog.photo_versions, filepath)}
+    return {"ok": True, "copies": await _run_blocking(catalog.photo_versions, filepath),
+            "cover": await _run_blocking(catalog.cover, filepath)}
 
 
 @router.post("/photos/edit/batch")
@@ -4058,7 +4076,8 @@ def _edit_frame(request: Request, shown: str, half: str) -> Optional[tuple]:
     from thumbnails import ThumbnailSize
 
     catalog = _get_catalog(request)
-    settings = catalog.photo_edit(shown) or catalog.photo_edit(half)
+    # The viewer draws the photo's cover, so its boxes go through the cover's crop.
+    settings = catalog.edit_of(shown) or catalog.edit_of(half)
     if not normalize_geometry(settings):
         return None
     source = Path(request.app.state.config.library_root) / half

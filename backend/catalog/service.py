@@ -231,6 +231,9 @@ class CatalogService:
                 self.db.restore_version(
                     rel_path, c["version"], c["name"], c["settings"], c["export"]
                 )
+            cover = self._read_copies_cover(self.library_root / rel_path)
+            if cover and any(c["version"] == cover for c in copies):
+                self.db.set_cover(rel_path, cover)
 
         return {"indexed": indexed, "folder": folder}
 
@@ -675,7 +678,7 @@ class CatalogService:
         closed = {fp for g in bursts["groups"] for fp in g.get("closed", [])}
         hints = self.folder_hints(folder, **filters)["hints"]
         stats = self.db.list_photo_stats_for_folder(folder)
-        edited = set(self.photo_edits(folder))
+        edited = self.edited_filepaths(folder)
 
         candidates = [r for r in records if r.flag != Flag.REJECT and r.filepath not in not_keepers]
         sharp = sorted(float((stats.get(r.filepath) or {}).get("sharpness") or 0.0) for r in candidates)
@@ -790,6 +793,10 @@ class CatalogService:
             for filepath, settings in self.db.list_photo_edits(folder).items()
         }
 
+    def edited_filepaths(self, folder: Optional[str] = None) -> set[str]:
+        """The photographs with an edit of their own or an edited virtual copy."""
+        return self.db.edited_filepaths(folder)
+
     def _write_edit_to_sidecar(self, filepath: str, settings: dict) -> bool:
         """Put an edit in its sidecar, replacing only this app's attributes."""
         from adjust.develop import CRS_KEYS, LIGHTROOM_CROP_KEYS, to_crs
@@ -825,6 +832,16 @@ class CatalogService:
     def _copies_path(abs_path: Path) -> Path:
         return abs_path.with_suffix(abs_path.suffix + ".copies.json")
 
+    def _read_copies_cover(self, abs_path: Path) -> int:
+        """The cover version the copies file records, 0 when none."""
+        import json
+
+        try:
+            raw = json.loads(self._copies_path(abs_path).read_text(encoding="utf-8"))
+            return max(0, int(raw.get("cover", 0))) if isinstance(raw, dict) else 0
+        except (OSError, ValueError, TypeError):
+            return 0
+
     def _read_copies_file(self, abs_path: Path) -> list[dict]:
         import json
         from adjust.develop import normalize
@@ -858,7 +875,11 @@ class CatalogService:
             if not copies:
                 path.unlink(missing_ok=True)
             elif abs_path.exists():
-                path.write_text(json.dumps({"copies": copies}, indent=1), encoding="utf-8")
+                record = {"copies": copies}
+                cover = self.db.get_cover(filepath)
+                if cover:
+                    record["cover"] = cover
+                path.write_text(json.dumps(record, indent=1), encoding="utf-8")
         except OSError as e:
             logger.warning(f"Cannot write copies for {filepath}: {e}")
 
@@ -868,6 +889,68 @@ class CatalogService:
         return [
             {**c, "settings": normalize(c["settings"])} for c in self.db.list_versions(filepath)
         ]
+
+    # ── The cover: which version a photograph shows ──────────────
+    #
+    # Browsing draws one picture per frame. Which one is the person's choice: the
+    # photo's own edit (0, the default) or one of its copies — the keeper is
+    # often the black-and-white or the crop made second. Export is unaffected;
+    # every version marked for export is still written.
+
+    def cover(self, filepath: str) -> int:
+        """The version that is this photograph's face (0 when its own edit)."""
+        version = self.db.get_cover(filepath)
+        if version and self.db.get_version(filepath, version) is None:
+            return 0
+        return version
+
+    def set_cover(self, filepath: str, version: int) -> bool:
+        """Show ``version`` for this photograph wherever it is browsed. False when
+        there is no such copy."""
+        version = max(0, int(version))
+        if version and self.db.get_version(filepath, version) is None:
+            return False
+        self.db.set_cover(filepath, version)
+        self._write_copies_file(filepath)
+        return True
+
+    def edit_of(self, filepath: str, version: Optional[int] = None) -> dict:
+        """The settings a picture of this photograph is drawn with: ``version``'s,
+        or with None its cover's."""
+        from adjust.develop import normalize
+
+        if version is None:
+            version = self.cover(filepath)
+        if version:
+            found = self.db.get_version(filepath, version)
+            if found is not None:
+                return normalize(found["settings"])
+        return self.photo_edit(filepath)
+
+    def version_info(self, filepaths) -> dict[str, dict]:
+        """For each of ``filepaths`` with copies: how many, which is the cover and
+        the cover's edit (for a thumbnail's cache key). The grid's badge."""
+        from adjust.develop import normalize
+
+        paths = list(filepaths)
+        if not paths:
+            return {}
+        folders = {p.rsplit("/", 1)[0] if "/" in p else "" for p in paths}
+        counts: dict[str, int] = {}
+        if len(folders) == 1:
+            counts = self.db.version_counts(next(iter(folders)) or None)
+        else:
+            counts = self.db.version_counts()
+        wanted = set(paths)
+        covers = self.db.list_cover_settings(p for p in paths if p in counts)
+        out = {}
+        for p, n in counts.items():
+            if p not in wanted:
+                continue
+            version, settings = covers.get(p, (0, {}))
+            out[p] = {"copies": n, "cover": version,
+                      "cover_edit": normalize(settings) if version else {}}
+        return out
 
     def create_copy(self, filepath: str, from_version: int = 0, name: str = "") -> dict:
         """Start a new copy from another version's edit (0 is the photo itself)."""

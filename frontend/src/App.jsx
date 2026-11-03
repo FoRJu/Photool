@@ -7,6 +7,7 @@ import FolderOverview, { FolderAbout } from "./FolderOverview.jsx";
 import PersonReview from "./PersonReview.jsx";
 import Slideshow from "./Slideshow.jsx";
 import CollageMaker from "./CollageMaker.jsx";
+import VersionsSheet from "./Versions.jsx";
 import { recall, remember, forgetAll } from "./remembered.js";
 import BatchMatch, { LastMatch } from "./BatchMatch.jsx";
 import { useAsReference, useMatchReference } from "./editClipboard.js";
@@ -231,16 +232,18 @@ function _applyPendingEdits(list, pendingEdits) {
 // own URL. The server draws the edit whether or not this is sent; what this does
 // is make the browser ask again when the edit changes, instead of showing the
 // copy it kept from before. An unedited photo has none, so its URL is unchanged.
+// A photo whose cover is one of its virtual copies is drawn with that copy's
+// edit, so the key is the copy's (and says which copy).
 function editKey(photo) {
-  const edit = photo && photo.edit;
-  if (!edit) return "";
-  const keys = Object.keys(edit).filter((k) => Number(edit[k]) !== 0).sort();
-  if (!keys.length) return "";
+  const cover = (photo && photo.cover) || 0;
+  const edit = cover ? photo.cover_edit : photo && photo.edit;
+  const keys = edit ? Object.keys(edit).filter((k) => Number(edit[k]) !== 0).sort() : [];
+  if (!keys.length) return cover ? `c${cover}` : "";
   let h = 5381;
-  for (const ch of keys.map((k) => `${k}=${edit[k]}`).join(";")) {
+  for (const ch of keys.map((k) => `${k}=${JSON.stringify(edit[k])}`).join(";")) {
     h = ((h << 5) + h + ch.charCodeAt(0)) | 0;
   }
-  return `e${(h >>> 0).toString(36)}`;
+  return `${cover ? `c${cover}` : ""}e${(h >>> 0).toString(36)}`;
 }
 
 // A per-viewer convenience kept in the browser (thumbnail size and the like).
@@ -1340,7 +1343,7 @@ function TagChips({ tags, max = 2, size = "text-[9px]" }) {
 
 // ── Image Grid (lazy loading) ───────────────────────────────────────
 
-function ImageGrid({ photos, folderPath, onSelect, onRate, basketSet, onToggleBasket, burstSizes, hintByPath, proposalByPath = null, onDevelop, cellSize = THUMB_SIZES.M, selected = null, selecting = false, onPick = null }) {
+function ImageGrid({ photos, folderPath, onSelect, onRate, basketSet, onToggleBasket, burstSizes, hintByPath, proposalByPath = null, onDevelop, onVersions = null, cellSize = THUMB_SIZES.M, selected = null, selecting = false, onPick = null }) {
   // Prefetch grid thumbnails for next batch as user scrolls
   const prefetchedRef = useRef(new Set());
   
@@ -1420,6 +1423,19 @@ function ImageGrid({ photos, folderPath, onSelect, onRate, basketSet, onToggleBa
               >NR</span>
             )}
           </div>
+
+          {/* A photo with virtual copies is a stack: the badge says how many
+              versions there are (★ when a copy is the one shown) and opens
+              them side by side, to choose which one the library shows. */}
+          {photo.copies > 0 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onVersions?.(photo); }}
+              data-testid="versions-badge"
+              className={`absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[10px] leading-none border z-[1]
+                ${photo.cover ? "bg-amber-500/90 border-amber-300 text-black" : "bg-neutral-900/85 border-neutral-600 text-neutral-100"}`}
+              title={`${photo.copies + 1} versions of this photo${photo.cover ? " — a copy is the one shown" : ""}. Click to see them side by side and choose which is shown.`}
+            >{photo.cover ? "★" : "◫"} {photo.copies + 1}</button>
+          )}
 
           {isPicked && <div className="absolute inset-0 bg-sky-400/15 pointer-events-none" />}
           {onPick && (
@@ -4090,12 +4106,14 @@ function PhotoolApp({ access }) {
   // Which edit of it to open: 0 the photo's own, or one of its copies.
   const [developVersion, setDevelopVersion] = useState(0);
   // A video is never developed: every way into the develop view comes through here.
-  const openDevelop = useCallback((filepath) => {
+  const openDevelop = useCallback((filepath, version = 0) => {
     if (!isVideo(filepath)) {
-      setDevelopVersion(0);
+      setDevelopVersion(version || 0);
       setDevelopFile(filepath);
     }
   }, []);
+  // The photo whose versions are laid out side by side, or null.
+  const [versionsOf, setVersionsOf] = useState(null);
   const openCopy = useCallback((filepath, version) => {
     setDevelopVersion(version);
     setDevelopFile(filepath);
@@ -4792,12 +4810,17 @@ function PhotoolApp({ access }) {
   // A frame edited in the develop view keeps its marker in the grid, and the
   // marker survives a folder refetch for the same reason a rating does: the
   // list that comes back can predate the write.
-  const handleEditSaved = useCallback((filepath, settings) => {
+  // ``settings`` is the photo's own edit when it changed (undefined when it did
+  // not); ``patch`` what else the grid draws from: its copies and its cover.
+  const handleEditSaved = useCallback((filepath, settings, patch = null) => {
     if (!filepath) return;
-    const stored = settings || {};
     const edits = pendingEditsRef.current.get(filepath) || {};
-    edits.edit = stored;
-    edits.edited = Object.keys(stored).length > 0;
+    if (settings !== undefined) {
+      const stored = settings || {};
+      edits.edit = stored;
+      edits.edited = Object.keys(stored).length > 0;
+    }
+    if (patch) Object.assign(edits, patch);
     pendingEditsRef.current.set(filepath, edits);
     setPhotos((prev) => prev.map((p) => (p.filepath === filepath ? { ...p, ...edits } : p)));
   }, []);
@@ -5364,6 +5387,11 @@ function PhotoolApp({ access }) {
         <Slideshow photos={slideshow.photos} start={slideshow.start} title={slideshow.title}
           onClose={() => setSlideshow(null)} />
       )}
+      {versionsOf && (
+        <VersionsSheet photo={versionsOf} onClose={() => setVersionsOf(null)}
+          onOpen={(filepath, version) => { setVersionsOf(null); openCopy(filepath, version); }}
+          onCoverChanged={(filepath, patch) => handleEditSaved(filepath, undefined, patch)} />
+      )}
       {developFile && (
         // Keyed on the frame, so moving with ←/→ starts clean and recovers from
         // a frame that failed rather than staying stuck on its error.
@@ -5620,7 +5648,8 @@ function PhotoolApp({ access }) {
                     const idx = photos.findIndex((p) => p.filepath === photo.filepath);
                     setCullIndex(idx >= 0 ? idx : 0);
                   }}
-                  onDevelop={(photo) => openDevelop(photo.filepath)}
+                  onDevelop={(photo) => openDevelop(photo.filepath, photo.cover)}
+                  onVersions={setVersionsOf}
                   onRate={handleRate}
                   basketSet={basketSet} onToggleBasket={toggleBasket}
                   selected={picked} selecting={picking} onPick={pickPhoto} />
@@ -5746,7 +5775,8 @@ function PhotoolApp({ access }) {
                       const idx = photos.findIndex((p) => p.filepath === photo.filepath);
                       setCullIndex(idx >= 0 ? idx : 0);
                     }}
-                    onDevelop={(photo) => openDevelop(photo.filepath)}
+                    onDevelop={(photo) => openDevelop(photo.filepath, photo.cover)}
+                    onVersions={setVersionsOf}
                     onRate={handleRate}
                     basketSet={basketSet} onToggleBasket={toggleBasket}
                     burstSizes={burstSizes}
