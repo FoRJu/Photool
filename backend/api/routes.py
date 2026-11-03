@@ -1024,6 +1024,114 @@ def _year_rows(catalog, photos: list) -> list:
     return rows
 
 
+def _slim_rows(catalog, photos: list) -> list:
+    """Search Photos as little as a thumbnail, a slideshow and a click need: the
+    timeline and the shelves send thousands of them."""
+    edits = catalog.photo_edits() if any(p.edited for p in photos) else {}
+    versions = catalog.version_info([p.record.filepath for p in photos]) if photos else {}
+    rows = []
+    for photo in photos:
+        r = photo.record
+        v = versions.get(r.filepath) or {}
+        rows.append({
+            "filepath": r.filepath, "filename": r.filename, "folder": r.folder,
+            "extension": r.extension, "capture_date": r.capture_date, "date": photo.date,
+            "rating": photo.rating, "flag": photo.flag, "edited": photo.edited,
+            "edit": edits.get(r.filepath, {}), "copies": v.get("copies", 0),
+            "cover": v.get("cover", 0), "cover_edit": v.get("cover_edit", {}),
+            "video": is_video(r.extension),
+        })
+    return rows
+
+
+@router.get("/library/collections")
+async def library_collections(request: Request):
+    """Scenes the library clearly holds — birthdays, the beach, snow — found by
+    smart search, each with a few covers from different years. ``available`` is
+    false while smart search is not set up (catalog/explore.py)."""
+    catalog = _get_catalog(request)
+    found = await _run_blocking(catalog.collections, owner_of(request)[0])
+    if found is None:
+        return {"available": False, "collections": []}
+    out = []
+    for c in found:
+        out.append({**c, "covers": await _run_blocking(_slim_rows, catalog, c["covers"])})
+    return {"available": True, "collections": out}
+
+
+@router.get("/library/collections/{key}")
+async def library_collection(key: str, request: Request):
+    """One collection a year at a time, the most recent first, each year its
+    best frames."""
+    from catalog import explore
+
+    catalog = _get_catalog(request)
+    years = await _run_blocking(catalog.collection, key, owner_of(request)[0])
+    if years is None:
+        raise HTTPException(status_code=404, detail="No such collection, or smart search is not set up")
+    _, title, text = explore.BY_KEY[key]
+    out = []
+    for y in years:
+        out.append({**y, "photos": await _run_blocking(_slim_rows, catalog, y["photos"])})
+    return {"key": key, "title": title, "query": f'shows:"{text}"',
+            "total": sum(y["total"] for y in years), "years": out}
+
+
+@router.get("/library/timeline")
+async def library_timeline(request: Request):
+    """Every year and month with photographs, the most recent first: each year
+    its best frames, each month its best few and its biggest shoots."""
+    catalog = _get_catalog(request)
+    years = await _run_blocking(catalog.timeline, owner_of(request)[0])
+
+    def rows():
+        out = []
+        for y in years:
+            months = []
+            for m in y["months"]:
+                months.append({
+                    **m,
+                    "photos": _slim_rows(catalog, m["photos"]),
+                    "shoots": [{"folder": s["folder"], "total": s["total"],
+                                "cover": _slim_rows(catalog, [s["cover"]])[0]} for s in m["shoots"]],
+                })
+            out.append({**y, "photos": _slim_rows(catalog, y["photos"]), "months": months})
+        return out
+    return {"years": await _run_blocking(rows)}
+
+
+@router.get("/library/rediscover")
+async def library_rediscover(
+    request: Request,
+    shuffle: str = Query("", max_length=32),
+    day: str = Query("", pattern=r"^(\d{4}-\d\d-\d\d)?$"),
+):
+    """Good frames from more than a year ago not looked at in half a year, and
+    one good day at random. The same all day; ``shuffle`` deals again."""
+    from datetime import date as _date
+
+    catalog = _get_catalog(request)
+    today = _date.fromisoformat(day) if day else _date.today()
+    found = await _run_blocking(catalog.rediscover, today, owner_of(request)[0], shuffle)
+    good_day = found["day"]
+    if good_day:
+        good_day = {**good_day, "photos": await _run_blocking(_slim_rows, catalog, good_day["photos"])}
+    return {"photos": await _run_blocking(_slim_rows, catalog, found["photos"]), "day": good_day}
+
+
+class ViewedRequest(BaseModel):
+    filepath: str
+
+
+@router.post("/library/viewed")
+async def library_viewed(req: ViewedRequest, request: Request):
+    """The person looked at this photograph up close (the viewer or Develop):
+    Rediscover leaves it out for a while."""
+    catalog = _get_catalog(request)
+    await _run_blocking(catalog.mark_viewed, req.filepath, owner_of(request)[0])
+    return {"ok": True}
+
+
 class DemoteRequest(BaseModel):
     folder: str
     camera: str = "*"        # a camera in the folder, "" for none recorded, "*" for all of it
