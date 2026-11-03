@@ -1265,6 +1265,60 @@ class CatalogService:
         return self._picked("day", owner, today,
                             lambda: memories.on_this_day(self._photos_for(owner), today))
 
+    # ── Exploring: collections, the timeline, Rediscover (catalog/explore.py) ──
+
+    def _collection_scores(self, keys) -> dict:
+        from analysis import clip
+        from catalog import explore
+
+        return {k: clip.scores(self.db, explore.BY_KEY[k][2]) for k in keys}
+
+    def collections(self, owner: str = "local") -> Optional[list]:
+        """The scenes the library clearly holds, biggest first; None while smart
+        search is not set up."""
+        from analysis import clip
+        from catalog import explore
+        from catalog.search import SHOWS_CLEAR, SHOWS_FLOOR
+
+        if not clip.available():
+            return None
+
+        def work():
+            scores = self._collection_scores(explore.BY_KEY)
+            return explore.shelf(self._photos_for(owner), scores, SHOWS_FLOOR, SHOWS_CLEAR)
+        return self._picked("collections", owner, None, work)
+
+    def collection(self, key: str, owner: str = "local") -> Optional[list]:
+        """One collection a year at a time; None for no such collection or no
+        smart search."""
+        from analysis import clip
+        from catalog import explore
+        from catalog.search import SHOWS_FLOOR
+
+        if key not in explore.BY_KEY or not clip.available():
+            return None
+        return self._picked("collection", owner, key, lambda: explore.by_year(
+            self._photos_for(owner), self._collection_scores([key])[key], SHOWS_FLOOR))
+
+    def timeline(self, owner: str = "local") -> list:
+        """The library a year and a month at a time (:func:`catalog.explore.timeline`)."""
+        from catalog import explore
+
+        return self._picked("timeline", owner, None, lambda: explore.timeline(self._photos_for(owner)))
+
+    def rediscover(self, today, owner: str = "local", shuffle: str = "") -> dict:
+        """Good old frames this person has not looked at in a while, and one good
+        day (:func:`catalog.explore.rediscover`). The same all day; ``shuffle``
+        deals again."""
+        from catalog import explore
+
+        seed = f"{today.isoformat()}|{owner}|{shuffle}"
+        return explore.rediscover(self._photos_for(owner), self.db.last_viewed(owner), today, seed)
+
+    def mark_viewed(self, filepath: str, owner: str = "local") -> None:
+        """This person looked at this photograph up close just now."""
+        self.db.mark_viewed(filepath, owner)
+
     def photo_years(self, owner: str = "local") -> list:
         """The years with photographs, the most recent first (:mod:`catalog.review`)."""
         from catalog import review
