@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import YearReview, { YearsStrip } from "./YearReview.jsx";
 import { recall, remember } from "./remembered.js";
 import ClockPanel from "./ClockPanel.jsx";
+import { Rediscover, Collections, Timeline } from "./Explore.jsx";
 
 // ── The Library's front page ─────────────────────────────────────────
 // Folders are filed by date (2026/2026-07-04), which says when and nothing
@@ -738,7 +739,7 @@ export function FolderAbout({ folder, card, onCards, before = null, after = null
   );
 }
 
-export default function FolderOverview({ folders, onOpen, onCards, onPlay, returnTo = null, restoreScroll = null, demoted = [] }) {
+export default function FolderOverview({ folders, onOpen, onCards, onPlay, onSearch = null, returnTo = null, restoreScroll = null, demoted = [] }) {
   const [data, setData] = useState(() => recall("cards") || null);
   const [status, setStatus] = useState(null);
   const [query, setQuery] = useState("");
@@ -828,6 +829,7 @@ export default function FolderOverview({ folders, onOpen, onCards, onPlay, retur
   }, [home, data]);
 
   // Every folder on disk, with its card when the catalog has one.
+  const cardsByFolder = useMemo(() => new Map((data?.cards || []).map((c) => [c.folder, c])), [data]);
   const entries = useMemo(() => {
     const byFolder = new Map((data?.cards || []).map((c) => [c.folder, c]));
     const seen = new Set();
@@ -935,6 +937,8 @@ export default function FolderOverview({ folders, onOpen, onCards, onPlay, retur
   return (
     <div className={`space-y-4 ${selecting ? "pb-48" : ""}`}>
       {onPlay && !query && <Memories onPlay={onPlay} onOpen={onOpen} />}
+      {onPlay && !query && <Rediscover onPlay={onPlay} onOpen={onOpen} />}
+      {!query && <Collections onOpen={onOpen} onSearch={onSearch} />}
       {!query && <YearsStrip onOpenYear={setOpenYear} />}
       {openYear && (
         <YearReview year={openYear} onClose={() => setOpenYear(null)}
@@ -942,7 +946,7 @@ export default function FolderOverview({ folders, onOpen, onCards, onPlay, retur
       )}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="flex rounded border border-neutral-800 overflow-hidden text-sm">
-          {[["cards", "Folders"], ["map", "Map"]].map(([k, label]) => (
+          {[["cards", "Folders"], ["timeline", "Timeline"], ["map", "Map"]].map(([k, label]) => (
             <button key={k} onClick={() => chooseView(k)}
               className={`px-3 py-1 ${view === k ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-300"}`}>
               {label}
@@ -985,7 +989,10 @@ export default function FolderOverview({ folders, onOpen, onCards, onPlay, retur
         </div>
       </div>
 
-      {view === "map" ? (
+      {view === "timeline" ? (
+        <Timeline onOpen={onOpen} onPlay={onPlay || (() => {})}
+          titleOf={(folder) => cardTitle(cardsByFolder.get(folder), folder)} />
+      ) : view === "map" ? (
         <FolderMap entries={shown} home={home} onOpen={onOpen} onEdit={setEditing} />
       ) : (
         years.map(({ year, entries: group }) => (

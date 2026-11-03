@@ -238,12 +238,15 @@ function editKey(photo) {
   const cover = (photo && photo.cover) || 0;
   const edit = cover ? photo.cover_edit : photo && photo.edit;
   const keys = edit ? Object.keys(edit).filter((k) => Number(edit[k]) !== 0).sort() : [];
-  if (!keys.length) return cover ? `c${cover}` : "";
+  // A photo with copies always says which version it shows: the browser keeps
+  // pictures by address, and the main edit and a copy must never share one.
+  const which = cover || (photo && photo.copies) ? `c${cover}` : "";
+  if (!keys.length) return which;
   let h = 5381;
   for (const ch of keys.map((k) => `${k}=${JSON.stringify(edit[k])}`).join(";")) {
     h = ((h << 5) + h + ch.charCodeAt(0)) | 0;
   }
-  return `${cover ? `c${cover}` : ""}e${(h >>> 0).toString(36)}`;
+  return `${which}e${(h >>> 0).toString(36)}`;
 }
 
 // A per-viewer convenience kept in the browser (thumbnail size and the like).
@@ -4810,6 +4813,22 @@ function PhotoolApp({ access }) {
   // A frame edited in the develop view keeps its marker in the grid, and the
   // marker survives a folder refetch for the same reason a rating does: the
   // list that comes back can predate the write.
+  // A photo looked at up close — held in the viewer a moment, or opened in
+  // Develop — is remembered for this person, so Rediscover leaves it out for a
+  // while. Passing through on the arrow keys is not a look.
+  const viewedPath = developFile || (cullIndex !== null ? photos[cullIndex]?.filepath : null);
+  useEffect(() => {
+    if (!viewedPath) return undefined;
+    const timer = setTimeout(() => {
+      fetch(`${API}/library/viewed`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filepath: viewedPath }),
+      }).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [viewedPath]);
+
   // ``settings`` is the photo's own edit when it changed (undefined when it did
   // not); ``patch`` what else the grid draws from: its copies and its cover.
   const handleEditSaved = useCallback((filepath, settings, patch = null) => {
@@ -5663,6 +5682,7 @@ function PhotoolApp({ access }) {
               ) : (
                 <FolderOverview folders={folders} onOpen={openFromOverview} onCards={setFolderCards}
                   onPlay={playSlides} demoted={demoted}
+                  onSearch={(q) => { setSearchText(q); runSearch(q); }}
                   returnTo={returnTo} restoreScroll={overviewScrollRef.current} />
               )
             )}

@@ -47,7 +47,7 @@ configuring it, see [setup.md](setup.md); for an overview, the
 | **Compare view** | ✅ v2.3 | 2-up / 3-up side-by-side of one burst, with a 1:1 crop to judge focus |
 | **Develop** | ✅ v4 | A full-screen develop view (`D`) for one photo at a time, working in linear light from the RAW data — exposure (±5 EV), highlights, shadows, whites, blacks, HDR squeeze, contrast, clarity, white balance, vibrance, saturation, fade and split toning, a point tone curve (RGB and per channel) and an 8-band colour mixer (hue, saturation, luminance), noise reduction, sharpening, lens corrections and transform — with Auto, one-click rescue and look presets, saved presets, copy/paste, apply-to-burst, a before/after split, a histogram and a clipping overlay. Library thumbnails show the edit. The edit is non-destructive and per-photo: the catalog and the XMP sidecar are both written on save, so it survives the basket, a catalog rebuild, and opens in Lightroom |
 | **Crop & level** | ✅ v4.1 | In the develop view (`C`): drag a crop box, pick a shape (Original, 1:1, 4:5, 5:4, 3:2, 2:3, 4:3, 3:4, 16:9, 9:16 for Stories/Reels) and level a horizon with the Level control. It is part of the edit — non-destructive, shown in library thumbnails, applied on export, and saved to the XMP sidecar (also as Lightroom's `crs:Crop*` when the frame is not turned). Copy/paste, presets and *To burst* carry the tone and leave each frame's own crop alone |
-| **Virtual copies** | ✅ v4.2 | More than one edit of the same file — a colour and a black-and-white, a square and a 9:16. In the develop view, **Versions → + Copy** starts a new edit from the one you are on; each has its own tone and crop, a name, and an *export* switch. No second file is made: copies live in the catalog and in `<photo>.copies.json` beside the photo (so a catalog rebuild keeps them). Exporting a basket frame writes the main edit as `IMG_0001.jpg` and each copy beside it as `IMG_0001_vc1-name.jpg`; the basket shows `+N` for a frame with copies. The grid and thumbnails show the main edit; paste, apply-to-many and *To burst* never touch copies |
+| **Virtual copies** | ✅ v4.2 | More than one edit of the same file — a colour and a black-and-white, a square and a 9:16. In the develop view, **Versions → + Copy** starts a new edit from the one you are on; each has its own tone and crop, a name, and an *export* switch. No second file is made: copies live in the catalog and in `<photo>.copies.json` beside the photo (so a catalog rebuild keeps them). Exporting a basket frame writes the main edit as `IMG_0001.jpg` and each copy beside it as `IMG_0001_vc1-name.jpg`; the basket shows `+N` for a frame with copies. The grid shows each photo's *cover*: the main edit unless a copy was chosen (see [Versions and the cover](#versions-and-the-cover)); paste, apply-to-many and *To burst* never touch copies |
 | **1:1 loupe** | ✅ v4.1 | Click the picture in the develop view (or `L`) to see that spot at full size in a floating pane — for checking a face, a highlight or a shadow. **1:1** shows the photograph's own pixels one for one, from the full-resolution RAW decode, and **2:1** shows each as four screen pixels, kept square rather than smoothed so a soft upscale is not mistaken for soft focus. The patch is sent losslessly (PNG): as a JPEG at quality 88 it lost more than a third of its fine detail, and at 95 a sixth. It follows the sliders as you drag them, is toned from the same whole-frame base as the preview so the two agree, and stays on the same spot when you step to the next frame |
 | **Histogram & readout** | ✅ v1 | The develop view's histogram shows red, green and blue on their own as well as the brightness, so a channel pinned at white (a blue sky at 255 in blue, only 75% bright) shows at the right edge where the readout counts it. The pixel under the cursor is read out as its place in the whole photograph and its colour in the edited picture, in RGB, RGB %, HSL or Lab |
 | **Tone curve & colour mixer** | ✅ v5.2 | In the develop view: a point curve for RGB and for R, G and B (click the line to add a point, drag to shape, double-click to remove; monotone, so it never overshoots between points), and Lightroom's eight colour bands with hue, saturation and luminance each. The mixer keeps a colour's brightness unless luminance is what you move, so a blue taken to grey stays a dark grey. Both are part of the edit like any slider — presets, copy/paste and *To burst* carry them, the mixer is written to the sidecar under Lightroom's own `crs:HueAdjustmentRed`… names, and the curves under this app's own `crs:PhotoolToneCurve…` |
@@ -1237,6 +1237,56 @@ A month's face is its best one, not its first: large and clear first, then a
 frame you picked or rated, never a reject. A photograph's month is its EXIF
 date or the date in its folder's name. One taken with a camera whose clock was
 wrong lands in the wrong month — fix the date and it moves.
+
+## Versions and the cover
+
+A photo with virtual copies is a stack. Its grid tile carries **◫ n** (how many
+versions there are), or **★ n** when one of the copies is the one shown.
+Clicking the badge lays the versions out side by side. **★ Show this** makes
+one of them the photo's *cover*, and a picture opens that version in Develop.
+In Develop, **☆ Show this version in the library** does the same, and ★ marks
+the cover among the versions.
+
+The cover is what the library draws for the photo: the grid, the viewer, the
+slideshow, collages, On this day, Year in review, the timeline, Rediscover and
+the collections. Develop opens a photo on its cover. Exporting is unchanged:
+the main edit and every copy marked for export are still written. The cover is
+kept in the catalog and in `<photo>.copies.json`, so a catalog rebuild keeps it.
+Deleting the copy that is the cover puts the main edit back.
+
+A copy with an edit counts as work done on the photo. `is:edited` finds it, and
+On this day, Year in review and *Suggest best* weigh it as they weigh an edited
+photo.
+
+## Exploring the library
+
+The Library's front page offers ways in besides a folder and a day:
+
+- **Rediscover.** Good photos (picked, rated 3 or more, or edited) from more
+  than a year ago that you have not opened up close in the last six months,
+  one per day at most. Older and better photos come up more often. Below them
+  is **a day at random**: a whole day from an earlier year, to play or open.
+  The choice stays the same all day, and **↻ Shuffle** deals again. A photo
+  counts as opened when it is held in the viewer for a moment or opened in
+  Develop. Each person's looks are their own.
+- **Collections.** Scenes a family library is full of: birthdays, Christmas,
+  Halloween, the beach, snow, swimming, mountains, babies, playgrounds, on
+  stage, sports, graduations, weddings, dogs, cats, meals together, fireworks
+  and gardens. They are found by smart search, so they appear once **✦ Describe**
+  is set up. Only scenes the library clearly holds are shown. A collection opens
+  a year at a time, newest first, with each year's best frames, so you get the
+  birthdays every year. **▶ Play the best of every year** shows them all, and
+  **Show all in the grid** runs the collection as a search
+  (`shows:"a birthday cake with candles"`).
+- **Timeline.** A view beside *Folders* and *Map*. **Years** shows each year's
+  best frames (at most one per day first) and a bar per month. A month's bar
+  opens that month. **Months** shows each month's best few and its biggest
+  shoots, each one click from its folder. The scrubber down the right side goes
+  to any year, by tap or by dragging along it.
+
+The endpoints are `GET /api/library/rediscover` (`?shuffle=`),
+`POST /api/library/viewed`, `GET /api/library/collections`,
+`GET /api/library/collections/{key}` and `GET /api/library/timeline`.
 
 ## Year in review
 
