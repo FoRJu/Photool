@@ -541,8 +541,17 @@ def _source_jpeg(source: Path) -> Optional[bytes]:
         logger.info(f"No embedded JPEG in {source.name}, falling back to rawpy")
         return _decode_raw_with_rawpy(source)
 
-    if suffix in (".tif", ".tiff"):
-        return _read_standard_image(source)
+    from .raster import RASTER_EXTENSIONS, open_raster
+
+    if suffix in RASTER_EXTENSIONS:
+        # A scan, a Photoshop document, a PNG: read whatever its depth, colour
+        # model or layers (thumbnails.raster).
+        img = open_raster(source)
+        if img is None:
+            return None
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=92)
+        return buf.getvalue()
 
     from config import is_video
 

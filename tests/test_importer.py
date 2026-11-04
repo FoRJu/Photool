@@ -248,7 +248,10 @@ class TestOtherDevices:
         config = load_config(str(path))
         assert config.import_extensions == [".cr3", ".mp4"]
         assert config.sd_mount_paths == ["X:/"]
-        assert config.photo_extensions == [".cr3", ".mp4"]
+        # The library shows what is imported first, and scans and older clips
+        # besides (config.RASTER_EXTENSIONS, VIDEO_EXTENSIONS), whatever the list says.
+        assert config.photo_extensions[:2] == [".cr3", ".mp4"]
+        assert ".mp4" not in config.photo_extensions[2:]
 
 
 class TestBuildDestPath:

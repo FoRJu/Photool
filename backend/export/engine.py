@@ -47,9 +47,13 @@ def resolve_export_source(source: Path, prefer_raw: bool = True) -> Path:
     """
     from config import is_video
 
+    from thumbnails.raster import RASTER_EXTENSIONS
+
     if not prefer_raw or is_video(source.suffix):
         return source
-    if source.suffix.lower() in _RAW_EXTENSIONS:
+    # A scan or a Photoshop document is its own picture, never a rendering of a
+    # RAW beside it with the same name.
+    if source.suffix.lower() in _RAW_EXTENSIONS or source.suffix.lower() in RASTER_EXTENSIONS:
         return source
     # Listed once rather than probed one extension at a time, so the sibling is
     # found under the name it really has on disk instead of a guessed case.
@@ -148,6 +152,10 @@ def _load_image(source: Path, max_resolution: int = 0) -> Optional[Image.Image]:
     ext = source.suffix.lower()
     if ext in _RAW_EXTENSIONS:
         return _load_raw(source, max_resolution)
+    from thumbnails.raster import RASTER_EXTENSIONS, open_raster
+
+    if ext in RASTER_EXTENSIONS:
+        return open_raster(source)
     try:
         img = Image.open(source)
         img.load()

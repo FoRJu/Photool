@@ -169,8 +169,16 @@ class Config:
 
     @property
     def photo_extensions(self) -> list[str]:
-        """What the library shows: everything imported, videos included."""
-        return list(self.import_extensions)
+        """What the library shows: everything imported, videos included, and the
+        pictures a camera card never holds but an older library does — scans,
+        Photoshop documents, PNGs (RASTER_EXTENSIONS) and the clips of older
+        cameras (VIDEO_EXTENSIONS) — whatever ``import_extensions`` says."""
+        out = list(self.import_extensions)
+        have = {e.lower() for e in out}
+        for ext in sorted(RASTER_EXTENSIONS | VIDEO_EXTENSIONS):
+            if ext not in have:
+                out.append(ext)
+        return out
 
     def __post_init__(self):
         if not self.db_path:
@@ -189,7 +197,14 @@ class Config:
 # Videos are copied off a card beside the photographs and shown with them, to be
 # watched, rated, tagged and exported as they are: never developed, and left out
 # of a burst. Their thumbnail is a frame from the clip (thumbnails.video).
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mts", ".m4v"}
+# The older ones (.avi, .wmv, .mpg, .3gp) are what a point-and-shoot of the
+# 2000s recorded; a browser plays none of them, so they are shown through the
+# copy thumbnails.video makes with ffmpeg.
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mts", ".m4v", ".wmv", ".mpg", ".mpeg", ".3gp"}
+
+# Pictures that are not a camera's: scans, Photoshop documents, PNGs
+# (thumbnails/raster.py reads them). Shown in the library; not taken off a card.
+RASTER_EXTENSIONS = {".tif", ".tiff", ".psd", ".png", ".bmp"}
 
 
 def is_video(name) -> bool:

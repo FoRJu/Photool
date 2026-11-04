@@ -474,7 +474,7 @@ function denoised(photo) {
 
 // Videos sit in the grid beside the photographs, to be watched and culled like
 // them (stars, flags, tags, basket), but are never developed.
-const VIDEO_EXTS = [".mp4", ".mov", ".avi", ".mts", ".m4v"];
+const VIDEO_EXTS = [".mp4", ".mov", ".avi", ".mts", ".m4v", ".wmv", ".mpg", ".mpeg", ".3gp"];
 
 function isVideo(photoOrPath) {
   if (!photoOrPath) return false;
