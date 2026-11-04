@@ -36,3 +36,10 @@ Thumbs.db
 
 # Camera profiles written by "python -m tools.camera_profile learn" when pointed inside the project
 photool-profiles/
+
+# The archive import's plan, log, cache and rules describe one family's own
+# folders and files (tools/archive_import.py): they stay on that computer.
+archive-plan*.csv
+archive-plan*.cache.json
+archive-log.csv
+archive-rules.txt

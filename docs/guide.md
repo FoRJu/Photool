@@ -1492,6 +1492,84 @@ you calibrate against, what earlier runs found and a log of results, lives at
 Adding a tool is adding a command: a function with `@command("area.verb",
 params=SomeModel)` in `backend/commands/`. Its docstring is what the agent reads.
 
+## Bringing in an old collection
+
+A card goes in through the Import tab. A collection that grew over twenty years
+on other drives goes in with a command, on the computer that holds the library.
+It is not offered on the page: reading any folder on this computer is not
+something a phone on the network should be able to ask for.
+
+```
+cd backend
+python -m tools.archive_import plan "E:\Old photos"
+python -m tools.archive_import apply archive-plan.csv --dry-run
+python -m tools.archive_import apply archive-plan.csv
+```
+
+Install ExifTool on that computer first. Without it the dates of RAW files
+cannot be read, and scans cannot be given theirs. Keep Photool running while
+`apply` runs, so the new folders are indexed as they arrive.
+
+**plan** reads the folder and writes `archive-plan.csv`, one row per folder.
+Nothing is copied yet. Each row says what will happen to the folder:
+
+| action | for | goes to |
+|--------|-----|---------|
+| `merge` | folders already by day: `2010-02-21 Picnic`, `2012/07/16 party`, `Camera 2011-06-12` | the library's own day folder (one already there for the day, under any name, is joined) |
+| `archive` | scans and named events | `Archive/<year>/<date> <name>`. A scan is dated by its folder's name, to the day, month or year (`200210 Lakeside` → `2002-10 Lakeside`, `Coast trip Aug 2006/10234` → `2006-08 Coast trip`). A digital photograph is dated by its camera |
+| `split` | camera dumps with no event to them (`DCIM/101CANON`) | a folder per day, `Archive/<year>/<date>` |
+| `star` | a folder of favourites that are copies (`Starred Photos`, `Favorites`) | the originals get 4 stars; one found nowhere else is copied to `Archive/Starred` |
+| `skip` | application caches, what the rules file names, or a folder whose every photograph is also somewhere else | nowhere |
+
+A photograph found more than once (a backup copied into another backup) is
+copied once, from the copy with the best date. One the library already has
+(same name and size) is left alone. Rows marked `review` need a look, most
+often a scan whose folder name has no date (`Archive/Undated/…`).
+
+**The collection's own rules** go in `archive-rules.txt`, beside the plan, before
+`plan` runs. One rule a line; a pattern is a folder name, with `*` and `?` as
+wildcards, and case does not matter:
+
+```
+# folders that are not family photographs
+skip: work files
+skip: music*
+# folder names that say nothing about what is in them
+generic: from the old laptop
+# folders of favourites whose originals are elsewhere
+star: picks for the album
+```
+
+The plan, the rules, the log and `archive-plan.cache.json` name your own
+folders and files, so they stay on that computer. `.gitignore` keeps them out
+of the repository.
+
+**To change a row,** edit `action` or `dest` in Excel and save as CSV. A
+folder's date is the start of the last part of `dest`: change
+`Archive/Undated/Wedding` to `Archive/2004/2004-01 Wedding`. The `date` column
+is only for reading, because Excel rewrites dates in it when it saves.
+
+**apply** copies what the plan says. `--dry-run` writes what it would do to
+`archive-log.csv` and copies nothing. When it runs for real:
+
+- It never writes over a file, and checks every copy against its source's
+  SHA-256.
+- An edited scan or Photoshop document with the same name as the JPEG or RAW
+  beside it gets a suffix (`scan0001-psd.psd`), so the library shows both
+  rather than taking them for one photograph.
+- With `set_date` `yes`, a scan is given its folder's date (needs ExifTool),
+  so it appears in its own year and not the year it was scanned.
+- The running Photool indexes every new folder and gives the favourites their
+  stars. If Photool is not running, start it and run `apply` again.
+- Run again, it carries on: what is already copied is not copied twice.
+
+The rules are in `backend/importer/archive_plan.py`.
+
+The library also shows the formats an older collection is full of: TIFF
+(16-bit scans included), Photoshop documents (their flattened image), PNG and
+BMP, and the AVI, WMV and MPG clips of older cameras (played through a copy
+made with ffmpeg).
+
 ## Other computers
 
 The album can be opened from a laptop, a tablet or a phone in the house — but
