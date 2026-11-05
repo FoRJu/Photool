@@ -283,6 +283,13 @@ def start_export(config, catalog, options, owner: str = "local",
                 state["failed"] += 1
         state["status"] = "completed"
         state["current_file"] = ""
+        if download and state["files"]:
+            # Built now, while the person is waiting anyway, so the browser's
+            # automatic download starts streaming the moment it asks.
+            try:
+                download_zip(job_id, owner)
+            except Exception:
+                logging.getLogger(__name__).exception("Could not pre-build the ZIP")
 
     def _run():
         try:

@@ -5,8 +5,10 @@ import { recall, remember } from "./remembered.js";
 // ── Exploring the library ───────────────────────────────────────────
 // Ways in besides a folder and a day (backend catalog/explore.py):
 //   Rediscover   good frames not looked at in a long while, and a day at random
-//   Collections  scenes the library is full of — birthdays, the beach, snow —
-//                found by smart search, each a year at a time
+//   Looks like   scenes the library is full of — birthdays, the beach, snow —
+//                the closest matches by smart search, each a year at a time.
+//                Smart search measures resemblance, not fact: no counts are
+//                claimed, and "Not this" teaches a shelf what does not belong.
 //   Timeline     the whole library by year and month, with a scrubber
 // Every picture is drawn as the library shows it: a photo whose cover is one of
 // its virtual copies shows that copy.
@@ -158,7 +160,7 @@ export function Collections({ onOpen, onSearch }) {
   if (!data.available) {
     return (
       <p className="text-xs text-neutral-600" data-testid="collections-off">
-        Collections — birthdays, the beach, snow, every year — appear here once smart search is on
+        Looks like — birthdays, the beach, snow, every year — appears here once smart search is on
         (✦ Describe, beside the search box).
       </p>
     );
@@ -167,8 +169,8 @@ export function Collections({ onOpen, onSearch }) {
   return (
     <section className="space-y-2" data-testid="collections">
       <div className="flex items-baseline gap-3">
-        <h2 className="text-sm font-medium text-neutral-200">Collections</h2>
-        <span className="text-xs text-neutral-500">Found by what the pictures show, a year at a time</span>
+        <h2 className="text-sm font-medium text-neutral-200">Looks like</h2>
+        <span className="text-xs text-neutral-500">The closest matches by what the pictures show. A guess, not a label.</span>
       </div>
       <div className="flex gap-2 overflow-x-auto pb-1">
         {data.collections.map((c) => (
@@ -183,7 +185,7 @@ export function Collections({ onOpen, onSearch }) {
             </div>
             <div className="px-2 py-1.5">
               <div className="text-sm text-neutral-100 truncate">{c.title}</div>
-              <div className="text-[11px] text-neutral-500">{plural(c.total, "photo")} · {plural(c.years, "year")}</div>
+              <div className="text-[11px] text-neutral-500">Across {plural(c.years, "year")}</div>
             </div>
           </button>
         ))}
@@ -208,7 +210,21 @@ function useEscape(onClose, active = true) {
 }
 
 function CollectionPage({ entry, onClose, onOpenFolder, onSearch }) {
-  const [data, failed] = useJson(`${API}/library/collections/${entry.key}`);
+  const [loaded, failed] = useJson(`${API}/library/collections/${entry.key}`);
+  // Photos said not to belong go at once; the server keeps that for next time.
+  const [gone, setGone] = useState(() => new Set());
+  const notThis = (p) => {
+    setGone((g) => new Set(g).add(p.filepath));
+    fetch(`${API}/library/collections/${entry.key}/hide`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filepath: p.filepath }),
+    }).catch(() => {});
+  };
+  const data = useMemo(() => (loaded ? {
+    ...loaded,
+    years: loaded.years.map((y) => ({ ...y, photos: y.photos.filter((p) => !gone.has(p.filepath)) }))
+      .filter((y) => y.photos.length),
+  } : null), [loaded, gone]);
   const [slides, setSlides] = useState(null);       // { photos, start, title }
   const closeSlides = useCallback(() => setSlides(null), []);
   useEscape(onClose, !slides);
@@ -220,14 +236,14 @@ function CollectionPage({ entry, onClose, onOpenFolder, onSearch }) {
         onClick={(e) => e.stopPropagation()}>
         <div className="flex items-baseline gap-3 flex-wrap">
           <h2 className="text-lg text-neutral-100">{entry.title}</h2>
-          {data && <span className="text-sm text-neutral-500">{plural(data.total, "photo")} over {plural(data.years.length, "year")}</span>}
+          {data && <span className="text-sm text-neutral-500">Closest matches over {plural(data.years.length, "year")}</span>}
           {all.length > 1 && (
             <button onClick={() => setSlides({ photos: all, start: 0, title: entry.title })}
               className="text-sm text-sky-300 hover:text-sky-200">▶ Play the best of every year</button>
           )}
           {onSearch && (
             <button onClick={() => onSearch(entry.query)} className="text-sm text-neutral-400 hover:text-white"
-              title={`Every match in the grid, as a search: ${entry.query}`}>Show all in the grid</button>
+              title={`Everything that looks like this, as a search: ${entry.query}`}>See more like this in the grid</button>
           )}
           <button onClick={onClose} className="ml-auto text-neutral-400 hover:text-white text-lg leading-none" aria-label="Close">✕</button>
         </div>
@@ -250,8 +266,7 @@ function CollectionPage({ entry, onClose, onOpenFolder, onSearch }) {
             <section key={y.year} id={`coll-${y.year}`} className="space-y-1.5 scroll-mt-4">
               <div className="flex items-baseline gap-2 text-sm">
                 <span className="text-neutral-100">{y.year || "Undated"}</span>
-                <span className="text-xs text-neutral-500">{plural(y.total, "photo")}</span>
-                <button onClick={() => setSlides({ photos: y.photos, start: 0, title })} className="text-xs text-sky-300 hover:text-sky-200">▶ Play</button>
+                                <button onClick={() => setSlides({ photos: y.photos, start: 0, title })} className="text-xs text-sky-300 hover:text-sky-200">▶ Play</button>
               </div>
               <div className="grid gap-1.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(150px, 30vw), 1fr))" }}>
                 {y.photos.map((p, i) => (
@@ -260,6 +275,10 @@ function CollectionPage({ entry, onClose, onOpenFolder, onSearch }) {
                       className="block w-full aspect-square rounded overflow-hidden border border-neutral-800 hover:border-neutral-500">
                       <img src={photoThumb(p)} alt="" loading="lazy" className="w-full h-full object-cover bg-neutral-900" />
                     </button>
+                    <button onClick={() => notThis(p)} data-testid="collection-not-this"
+                      title={`Not ${entry.title.toLowerCase()}: take it out of this shelf`}
+                      className="absolute top-1 right-1 text-[10px] text-neutral-200 bg-black/70 hover:bg-red-900/80 rounded px-1.5 py-0.5 opacity-0 group-hover:opacity-100 focus:opacity-100">
+                      Not this</button>
                     <button onClick={() => onOpenFolder(p.folder)}
                       className="absolute bottom-1 left-1 right-1 truncate text-left text-[10px] text-neutral-200 bg-black/60 rounded px-1 opacity-0 group-hover:opacity-100"
                       title={`Open ${p.folder}`}>{dayText(p.date) || p.folder}</button>

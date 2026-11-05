@@ -1285,7 +1285,8 @@ class CatalogService:
 
         def work():
             scores = self._collection_scores(explore.BY_KEY)
-            return explore.shelf(self._photos_for(owner), scores, SHOWS_FLOOR, SHOWS_CLEAR)
+            return explore.shelf(self._photos_for(owner), scores, SHOWS_FLOOR, SHOWS_CLEAR,
+                                 self.db.collection_hides(owner))
         return self._picked("collections", owner, None, work)
 
     def collection(self, key: str, owner: str = "local") -> Optional[list]:
@@ -1298,7 +1299,20 @@ class CatalogService:
         if key not in explore.BY_KEY or not clip.available():
             return None
         return self._picked("collection", owner, key, lambda: explore.by_year(
-            self._photos_for(owner), self._collection_scores([key])[key], SHOWS_FLOOR))
+            self._photos_for(owner), self._collection_scores([key])[key], SHOWS_FLOOR,
+            hidden=self.db.collection_hides(owner).get(key, frozenset())))
+
+    def hide_from_collection(self, key: str, filepath: str, owner: str = "local") -> bool:
+        """Say a photograph does not belong in a collection. Both frames of a
+        RAW+JPG pair go; the shelves are picked again. False for no such shelf."""
+        from catalog import explore
+
+        if key not in explore.BY_KEY:
+            return False
+        paired = next((list(p.filepaths) for p in self._photos_for(owner) if filepath in p.filepaths), [])
+        self.db.hide_from_collection(key, sorted(set(paired) | {filepath}), owner)
+        self.forget_picks()
+        return True
 
     def timeline(self, owner: str = "local") -> list:
         """The library a year and a month at a time (:func:`catalog.explore.timeline`)."""

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import YearReview, { YearsStrip } from "./YearReview.jsx";
 import { recall, remember } from "./remembered.js";
 import ClockPanel from "./ClockPanel.jsx";
-import { Rediscover, Collections, Timeline } from "./Explore.jsx";
+import { Timeline } from "./Explore.jsx";
 
 // ── The Library's front page ─────────────────────────────────────────
 // Folders are filed by date (2026/2026-07-04), which says when and nothing
@@ -739,7 +739,7 @@ export function FolderAbout({ folder, card, onCards, before = null, after = null
   );
 }
 
-export default function FolderOverview({ folders, onOpen, onCards, onPlay, onSearch = null, returnTo = null, restoreScroll = null, demoted = [] }) {
+export default function FolderOverview({ folders, onOpen, onCards, onPlay, returnTo = null, restoreScroll = null, demoted = [] }) {
   const [data, setData] = useState(() => recall("cards") || null);
   const [status, setStatus] = useState(null);
   const [query, setQuery] = useState("");
@@ -936,9 +936,6 @@ export default function FolderOverview({ folders, onOpen, onCards, onPlay, onSea
 
   return (
     <div className={`space-y-4 ${selecting ? "pb-48" : ""}`}>
-      {onPlay && !query && <Memories onPlay={onPlay} onOpen={onOpen} />}
-      {onPlay && !query && <Rediscover onPlay={onPlay} onOpen={onOpen} />}
-      {!query && <Collections onOpen={onOpen} onSearch={onSearch} />}
       {!query && <YearsStrip onOpenYear={setOpenYear} />}
       {openYear && (
         <YearReview year={openYear} onClose={() => setOpenYear(null)}

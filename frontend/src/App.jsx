@@ -4,6 +4,7 @@ import DevelopView from "./DevelopView.jsx";
 import { makeDoubleExposure } from "./doubleExposure.js";
 import { enterFullscreen } from "./fullscreen.js";
 import FolderOverview, { FolderAbout } from "./FolderOverview.jsx";
+import ExploreTab from "./ExploreTab.jsx";
 import PersonReview from "./PersonReview.jsx";
 import Slideshow from "./Slideshow.jsx";
 import CollageMaker from "./CollageMaker.jsx";
@@ -360,7 +361,7 @@ function thumbUrl(folderPath, filename, size = "grid", edit = "") {
 
 // ── Where the app is, as an address ─────────────────────────────────
 
-const TABS = ["import", "library", "people", "activity", "export", "devices"];
+const TABS = ["import", "library", "explore", "people", "activity", "export", "devices"];
 
 function routeHash(r) {
   const folder = r.folder ? "/" + r.folder.split("/").map(encodeURIComponent).join("/") : "";
@@ -3826,13 +3827,31 @@ function ExportDownload({ job }) {
   };
 
   const one = names.length === 1;
+
+  // The download starts by itself when the pictures are ready: nobody should
+  // have to come back and click after a long export. Once per job, so a
+  // re-render or a revisit does not download again; the button stays for a
+  // second copy, and for a browser that blocked the automatic one.
+  const started = useRef(null);
+  useEffect(() => {
+    if (!names.length || started.current === job.job_id) return;
+    started.current = job.job_id;
+    const a = document.createElement("a");
+    a.href = one ? `${base}/file/${encodeURIComponent(names[0])}` : `${base}/photos.zip`;
+    a.download = "";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, [names, one, base, job.job_id]);
+
   return (
     <div className="border border-neutral-800 rounded-lg p-4 space-y-2">
       <div className="flex flex-wrap items-center gap-3">
         <a href={one ? `${base}/file/${encodeURIComponent(names[0])}` : `${base}/photos.zip`}
           download
           className="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded text-sm font-medium">
-          {one ? "Download photo" : `Download ${job.files} photos (ZIP)`}
+          {one ? "Download photo again" : `Download ${job.files} photos again (ZIP)`}
         </a>
         {shareSupported && names.length > 0 && names.length <= SHARE_MAX && (
           <button onClick={share} disabled={!files}
@@ -3847,7 +3866,7 @@ function ExportDownload({ job }) {
             ? `Share takes up to ${SHARE_MAX} photos at a time; download the ZIP instead, or export fewer.`
             : "Share, then Save to Photos to put them in iCloud Photos, or pick Google Photos.")
           : "To put them in Google Photos or iCloud, upload the downloaded photos at photos.google.com or icloud.com/photos."}
-        {" "}Available for an hour.
+        {" "}The download starts by itself; if your browser blocked it, use the button. Available for an hour.
       </p>
       {shareMsg && <p className="text-xs text-red-400">{shareMsg}</p>}
     </div>
@@ -5449,7 +5468,7 @@ function PhotoolApp({ access }) {
         style={phone ? { paddingTop: "max(0.5rem, env(safe-area-inset-top))" } : undefined}>
         <h1 className="text-lg font-semibold tracking-tight whitespace-nowrap">Photool</h1>
         <nav className={phone ? "hidden" : "flex flex-wrap gap-1"}>
-          {["import", "library", "people", "activity", "export", ...(access.local ? ["devices"] : [])].map((t) => (
+          {["import", "library", "explore", "people", "activity", "export", ...(access.local ? ["devices"] : [])].map((t) => (
             <button key={t} onClick={() => { setTab(t); if (t === "library") loadFolders(); if (t === "export") loadBasket(); }}
               className={`px-3 py-1.5 rounded text-sm capitalize transition-colors ${
                 tab === t ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-300"
@@ -5482,7 +5501,7 @@ function PhotoolApp({ access }) {
       {phone && cullIndex === null && developFile === null && !(picked.size > 0 || picking) && (
         <nav className="fixed inset-x-0 bottom-0 z-40 bg-neutral-950/95 backdrop-blur border-t border-neutral-800 flex"
           style={{ paddingBottom: "env(safe-area-inset-bottom)" }} data-testid="tab-bar">
-          {[["library", "Library", "▦"], ["people", "People", "☺"],
+          {[["library", "Library", "▦"], ["explore", "Explore", "✦"], ["people", "People", "☺"],
             ["export", basketCount > 0 ? `Export ${basketCount}` : "Export", "⬡"]].map(([t, label, icon]) => (
             <button key={t} onClick={() => { setMoreOpen(false); setTab(t); if (t === "library") loadFolders(); if (t === "export") loadBasket(); }}
               className={`flex-1 h-14 flex flex-col items-center justify-center text-[11px] ${tab === t ? "text-white" : "text-neutral-500"}`}>
@@ -5682,7 +5701,6 @@ function PhotoolApp({ access }) {
               ) : (
                 <FolderOverview folders={folders} onOpen={openFromOverview} onCards={setFolderCards}
                   onPlay={playSlides} demoted={demoted}
-                  onSearch={(q) => { setSearchText(q); runSearch(q); }}
                   returnTo={returnTo} restoreScroll={overviewScrollRef.current} />
               )
             )}
@@ -5835,6 +5853,12 @@ function PhotoolApp({ access }) {
         )}
         {tab === "library" && (picked.size > 0 || picking) && <div className="h-28" />}
         {collageOf && <CollageMaker filepaths={collageOf} onClose={() => setCollageOf(null)} />}
+
+        {tab === "explore" && (
+          <ExploreTab onPlay={playSlides}
+            onOpen={(folder) => { setTab("library"); openFromOverview(folder); }}
+            onSearch={(q) => { setTab("library"); setSearchText(q); runSearch(q); }} />
+        )}
 
         {tab === "devices" && access.local && <DevicesPanel lanAccess={access.lan_access} />}
 

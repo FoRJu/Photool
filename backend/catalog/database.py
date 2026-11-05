@@ -588,6 +588,15 @@ _MIGRATIONS = [
         viewed_at TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (owner, filepath)
     )""",
+    # Photographs a person said do not belong in a "looks like" shelf (a parade
+    # among the weddings). Smart search measures resemblance, so this is the
+    # correction it learns from; it is kept per person and shelf.
+    """CREATE TABLE IF NOT EXISTS collection_hides (
+        owner TEXT NOT NULL,
+        collection TEXT NOT NULL,
+        filepath TEXT NOT NULL,
+        PRIMARY KEY (owner, collection, filepath)
+    )""",
 ]
 
 
@@ -1866,6 +1875,23 @@ class CatalogDB:
             rows = conn.execute(
                 "SELECT filepath, viewed_at FROM photo_views WHERE owner = ?", (owner,)).fetchall()
         return {r["filepath"]: r["viewed_at"] for r in rows}
+
+    # ── Collections: what a person said does not belong ──────────
+
+    def hide_from_collection(self, collection: str, filepaths: list, owner: str = "local") -> None:
+        with self._connect() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO collection_hides (owner, collection, filepath) VALUES (?, ?, ?)",
+                [(owner, collection, f) for f in filepaths])
+
+    def collection_hides(self, owner: str = "local") -> dict[str, frozenset]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT collection, filepath FROM collection_hides WHERE owner = ?", (owner,)).fetchall()
+        out: dict = {}
+        for r in rows:
+            out.setdefault(r["collection"], set()).add(r["filepath"])
+        return {k: frozenset(v) for k, v in out.items()}
 
     def version_counts(self, folder: Optional[str] = None) -> dict[str, int]:
         """How many copies each photograph has, for the ones that have any."""

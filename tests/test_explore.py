@@ -70,6 +70,23 @@ def test_within_a_year_the_better_match_and_the_better_frame_come_first():
     assert [p.record.filename for p in year["photos"]] == ["tree_pick.jpg"]
 
 
+def test_a_match_far_from_the_best_one_is_left_out_even_over_the_floor():
+    real = _photo("2015-06-06", "bride.jpg")
+    parade = _photo("2019-07-04", "parade.jpg")
+    scores = {real.record.filepath: 0.09, parade.record.filepath: 0.03}   # both over FLOOR
+    found = explore.members([real, parade], scores, FLOOR)
+    assert [p.record.filename for _, p in found] == ["bride.jpg"]
+
+
+def test_a_photo_said_not_to_belong_is_left_out_of_that_collection_only():
+    a = _photo("2015-06-06", "a.jpg")
+    b = _photo("2016-06-06", "b.jpg")
+    scores = {a.record.filepath: 0.06, b.record.filepath: 0.06}
+    hidden = frozenset({a.record.filepath})
+    assert [p.record.filename for _, p in explore.members([a, b], scores, FLOOR, hidden)] == ["b.jpg"]
+    assert len(explore.members([a, b], scores, FLOOR)) == 2
+
+
 # ── The timeline ────────────────────────────────────────────────────
 
 def test_the_timeline_is_years_then_months_most_recent_first():
@@ -216,3 +233,17 @@ def test_a_collection_through_the_api(client, monkeypatch):
     beach = client.get("/api/library/collections/beach").json()
     assert beach["title"] == "The beach" and beach["total"] == explore.DAY_MIN_PHOTOS
     assert [y["year"] for y in beach["years"]] == [2019]
+
+
+def test_saying_not_this_keeps_a_photo_out_of_a_collection(client, monkeypatch):
+    from analysis import clip
+
+    paths = [f"{API_FOLDER}/IMG_{i}.JPG" for i in range(explore.DAY_MIN_PHOTOS)]
+    monkeypatch.setattr(clip, "available", lambda: True)
+    monkeypatch.setattr(clip, "scores", lambda db, text: (
+        {p: 0.06 for p in paths} if "beach" in text else {p: 0.0 for p in paths}))
+    assert client.post("/api/library/collections/beach/hide", json={"filepath": paths[0]}).status_code == 200
+    beach = client.get("/api/library/collections/beach").json()
+    shown = [p["filepath"] for y in beach["years"] for p in y["photos"]]
+    assert paths[0] not in shown and beach["total"] == len(paths) - 1
+    assert client.post("/api/library/collections/nope/hide", json={"filepath": paths[0]}).status_code == 404

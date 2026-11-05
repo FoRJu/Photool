@@ -6,11 +6,14 @@ All three read the library as search sees it (pairs merged, :mod:`catalog.search
 and pick frames the way On this day does (:mod:`catalog.memories`): picked, then
 rated, then developed, never a reject, and a burst of one moment once.
 
-**Collections** are scenes a family library is full of — birthdays, Christmas,
-the beach, snow — found by smart search (analysis/clip.py) from a fixed set of
-descriptions, so nobody has to know what to type. A collection is shown only
-when the library clearly holds it, and opens a year at a time: the birthdays,
-every year.
+**Looks like** (collections) are scenes a family library is full of —
+birthdays, Christmas, the beach, snow — found by smart search (analysis/clip.py)
+from a fixed set of descriptions, so nobody has to know what to type. Smart
+search measures resemblance, not fact, so these are the closest matches and are
+shown as that: a match must be near the best one the library has (not only over
+a fixed floor), and a person can say "not this" to a photo, which is remembered
+and keeps it out of that shelf. A shelf is shown only when the library clearly
+holds it, and opens a year at a time.
 
 **The timeline** is the library a month at a time, each month its best few
 frames and its shoots, for scrolling decades instead of paging days.
@@ -44,7 +47,7 @@ COLLECTIONS = [
     ("stage", "On stage", "a performance on a stage"),
     ("sports", "Sports", "children playing a sport"),
     ("graduation", "Graduations", "a graduation ceremony with caps and gowns"),
-    ("wedding", "Weddings", "a wedding"),
+    ("wedding", "Weddings", "a bride and groom at a wedding ceremony"),
     ("dogs", "Dogs", "a dog"),
     ("cats", "Cats", "a cat"),
     ("food", "Meals together", "a family meal around a table"),
@@ -57,6 +60,10 @@ BY_KEY = {k: (k, t, q) for k, t, q in COLLECTIONS}
 # match (search.SHOWS_CLEAR), to be offered: a library with no snow in it has
 # no Snow shelf made of its nearest blurs.
 MIN_MEMBERS = 3
+# ...and a match must come within this share of the best one in the library: a
+# fixed floor lets a parade in as a wedding when the nearest real wedding is a
+# long way off; measured against the best, only what resembles it stays.
+NEAR_BEST = 0.5
 COVERS = 4
 PER_YEAR = 12
 
@@ -71,16 +78,20 @@ def _relevance(photo, scores: dict) -> float:
     return max(values) if values else -1.0
 
 
-def members(photos: list, scores: dict, floor: float) -> list:
+def members(photos: list, scores: dict, floor: float, hidden=frozenset()) -> list:
     """``[(relevance, photo)]`` of what a collection holds, most relevant first.
-    Rejects are left out."""
+    Rejects are left out, and so is any frame ``hidden`` (filepaths this person
+    said do not belong)."""
     out = []
     for photo in photos:
-        if photo.flag == -1:
+        if photo.flag == -1 or any(f in hidden for f in photo.filepaths):
             continue
         rel = _relevance(photo, scores)
         if rel >= floor:
             out.append((rel, photo))
+    if out:
+        best = max(rel for rel, _ in out)
+        out = [(rel, photo) for rel, photo in out if rel >= best * NEAR_BEST]
     out.sort(key=lambda t: (-t[0], t[1].record.filepath))
     return out
 
@@ -91,13 +102,13 @@ def _worth(rel: float, photo) -> float:
     return 400 * rel + _score(photo)
 
 
-def shelf(photos: list, scores_by_key: dict, floor: float, clear: float) -> list:
+def shelf(photos: list, scores_by_key: dict, floor: float, clear: float, hidden_by_key=None) -> list:
     """One entry per collection the library holds: ``{key, title, query, total,
     years, covers}``, the biggest first. ``covers`` are search Photos, one per
     year from the years it is best in."""
     out = []
     for key, title, text in COLLECTIONS:
-        found = members(photos, scores_by_key.get(key) or {}, floor)
+        found = members(photos, scores_by_key.get(key) or {}, floor, (hidden_by_key or {}).get(key, frozenset()))
         if len(found) < MIN_MEMBERS or found[0][0] < clear:
             continue
         best_by_year: dict = {}
@@ -133,11 +144,11 @@ def _spread(pairs: list, limit: int, minutes: int = 3) -> list:
     return sorted(chosen, key=lambda p: (p.record.capture_date or "", p.record.filepath))
 
 
-def by_year(photos: list, scores: dict, floor: float, per_year: int = PER_YEAR) -> list:
+def by_year(photos: list, scores: dict, floor: float, per_year: int = PER_YEAR, hidden=frozenset()) -> list:
     """A collection a year at a time, the most recent first: ``[{year, total,
     photos}]``. A frame with no date comes last, under year 0."""
     years: dict = {}
-    for rel, photo in members(photos, scores, floor):
+    for rel, photo in members(photos, scores, floor, hidden):
         years.setdefault(_year(photo) or 0, []).append((_worth(rel, photo), photo))
     return [{"year": y, "total": len(years[y]), "photos": _spread(years[y], per_year)}
             for y in sorted(years, key=lambda y: (y == 0, -y))]

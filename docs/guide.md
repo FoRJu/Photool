@@ -1260,7 +1260,11 @@ photo.
 
 ## Exploring the library
 
-The Library's front page offers ways in besides a folder and a day:
+The **Library** tab is the plain way in: years, then folders by date, with the
+Timeline and Map views. The **Explore** tab holds the ways in that suggest or
+guess, so the two are never mixed:
+
+- **On this day.** Earlier years' photos from today's date.
 
 - **Rediscover.** Good photos (picked, rated 3 or more, or edited) from more
   than a year ago that you have not opened up close in the last six months,
@@ -1269,15 +1273,18 @@ The Library's front page offers ways in besides a folder and a day:
   The choice stays the same all day, and **↻ Shuffle** deals again. A photo
   counts as opened when it is held in the viewer for a moment or opened in
   Develop. Each person's looks are their own.
-- **Collections.** Scenes a family library is full of: birthdays, Christmas,
+- **Looks like.** Scenes a family library is full of: birthdays, Christmas,
   Halloween, the beach, snow, swimming, mountains, babies, playgrounds, on
   stage, sports, graduations, weddings, dogs, cats, meals together, fireworks
-  and gardens. They are found by smart search, so they appear once **✦ Describe**
-  is set up. Only scenes the library clearly holds are shown. A collection opens
-  a year at a time, newest first, with each year's best frames, so you get the
-  birthdays every year. **▶ Play the best of every year** shows them all, and
-  **Show all in the grid** runs the collection as a search
-  (`shows:"a birthday cake with candles"`).
+  and gardens. Smart search measures how much a photo resembles a description,
+  not what it is, so these are the closest matches and are shown as that, with
+  no counts. A match has to be near the best the library has, and only scenes
+  the library clearly holds are shown. They appear once **✦ Describe** is set
+  up. A shelf opens a year at a time, newest first. Hover a photo and choose
+  **Not this** to take it out of that shelf for good; the shelf is picked
+  again. **▶ Play the best of every year** shows them all, and **See more like
+  this in the grid** runs the shelf as a search (`shows:"a birthday cake with
+  candles"`).
 - **Timeline.** A view beside *Folders* and *Map*. **Years** shows each year's
   best frames (at most one per day first) and a bar per month. A month's bar
   opens that month. **Months** shows each month's best few and its biggest
@@ -1286,7 +1293,8 @@ The Library's front page offers ways in besides a folder and a day:
 
 The endpoints are `GET /api/library/rediscover` (`?shuffle=`),
 `POST /api/library/viewed`, `GET /api/library/collections`,
-`GET /api/library/collections/{key}` and `GET /api/library/timeline`.
+`GET /api/library/collections/{key}`, `POST /api/library/collections/{key}/hide`
+(`{"filepath"}`, for *Not this*) and `GET /api/library/timeline`.
 
 ## Year in review
 

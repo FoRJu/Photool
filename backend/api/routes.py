@@ -1077,6 +1077,20 @@ async def library_collection(key: str, request: Request):
             "total": sum(y["total"] for y in years), "years": out}
 
 
+class CollectionHideRequest(BaseModel):
+    filepath: str
+
+
+@router.post("/library/collections/{key}/hide")
+async def library_collection_hide(key: str, req: CollectionHideRequest, request: Request):
+    """Say a photograph does not belong in a collection. Smart search measures
+    resemblance, so this is how a wrong match is corrected, and it stays so."""
+    catalog = _get_catalog(request)
+    if not await _run_blocking(catalog.hide_from_collection, key, req.filepath, owner_of(request)[0]):
+        raise HTTPException(status_code=404, detail="No such collection")
+    return {"ok": True}
+
+
 @router.get("/library/timeline")
 async def library_timeline(request: Request):
     """Every year and month with photographs, the most recent first: each year
