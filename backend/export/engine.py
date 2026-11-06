@@ -2368,6 +2368,9 @@ def loupe_image(
         small = healed(small, spots)
     blur = {k: clean.pop(k) for k in ("lens_blur", "blur_focus", "blur_sharp") if k in clean}
     second = clean.pop("second", None)
+    if second and second.get("version") is not None:
+        # As edited, it is laid on at the end of develop_frame, on the patch as on any frame.
+        clean["second"], second = second, None
     sw, sh = small.size
     su, sv = source_point(clean, u, v, sw, sh)
 

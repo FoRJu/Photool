@@ -11,9 +11,20 @@ linear light. Its four modes are the ones Canon bodies offer:
   * ``darken``   whichever is darker at each pixel.
 
 An edit names the second photograph by its path under the library and how it is laid on
-(:func:`normalize_second`). It is read as shot, without that photograph's own edit, and placed
-to cover the frame, however differently shaped. It can be kept to the people, the subject or
-the sky of the first, which is how a landscape comes to fill a silhouette.
+(:func:`normalize_second`), placed to cover the frame, however differently shaped. It can be
+kept to the people, the subject or the sky of the first, which is how a landscape comes to
+fill a silhouette.
+
+The second comes in one of two ways:
+
+  * **as shot**, with no ``version``: its raw light, mixed before the tone, so the first
+    photograph's edit shapes the two as one picture, as a camera's multiple exposure does.
+  * **as edited**, with a ``version``: that version of it (0 its own edit, 1.. a virtual
+    copy) finished by its own ``edit``, which the second keeps a copy of. Each picture then
+    keeps its own look, crop and colour, and the two are mixed as light once both are done
+    (:func:`laid_on`). A black-and-white copy laid over a colour frame stays black and white.
+    The copy of the edit keeps the double exposure as it was made when the other photo is
+    edited again; the panel says when the two differ and offers to take the new one.
 
 The second file is needed each time the edit is drawn. If it has gone, the frame is drawn
 without it, and :func:`missing` is how the panel knows to say so.
@@ -97,7 +108,28 @@ def normalize_second(raw) -> Optional[dict]:
     out["flip"] = bool(raw.get("flip"))
     out["reach"] = raw.get("reach") if raw.get("reach") in REACHES else ""
     out["invert"] = bool(raw.get("invert")) and bool(out["reach"])
+    version = raw.get("version")
+    if isinstance(version, (int, float)) and not isinstance(version, bool) and np.isfinite(version)             and version >= 0:
+        out["version"] = int(version)
+        out["edit"] = _edit_of(raw.get("edit"))
     return out
+
+
+def _edit_of(raw) -> dict:
+    """A second's own edit, made clean. Its own second exposure is left out: one photograph
+    laid over another, never a chain of them."""
+    from adjust.develop import normalize
+
+    if not isinstance(raw, dict):
+        return {}
+    clean = normalize({k: v for k, v in raw.items() if k != "second"})
+    clean.pop("second", None)
+    return clean
+
+
+def developed(second: dict) -> bool:
+    """Whether the second comes as edited, with a look of its own, rather than as shot."""
+    return "version" in second
 
 
 def second_to_text(second: dict) -> str:
@@ -133,14 +165,18 @@ def _picture(path: str, longest: float) -> Optional[np.ndarray]:
     from export.engine import _load_linear, resolve_export_source
 
     size = _READ_SIZE if longest <= _READ_SIZE else 0
-    stat = file.stat()
-    key = (str(file), stat.st_mtime_ns, size)
+    return _kept((str(file), file.stat().st_mtime_ns, size), path,
+                 lambda: _load_linear(resolve_export_source(file), size))
+
+
+def _kept(key: tuple, path: str, read) -> Optional[np.ndarray]:
+    """``read()`` once for ``key``, then the picture kept."""
     with _reading:
         kept = _pictures.get(key)
         if kept is not None:
             _pictures.move_to_end(key)
             return kept
-        rgb = _load_linear(resolve_export_source(file), size)
+        rgb = read()
         if rgb is None:
             logger.warning("[double] the second exposure %s cannot be read", path)
             return None
@@ -148,6 +184,43 @@ def _picture(path: str, longest: float) -> Optional[np.ndarray]:
         while len(_pictures) > _KEPT:
             _pictures.popitem(last=False)
     return rgb
+
+
+def _finished(second: dict, longest: float) -> Optional[np.ndarray]:
+    """The second photograph as its own edit finishes it, back in linear light, at about
+    ``longest`` pixels or more: its crop, its colour, its grain and all."""
+    path = second["path"]
+    file = _file_of(path)
+    if file is None:
+        if path not in _warned:
+            _warned.add(path)
+            logger.warning("[double] the second exposure %s is not there; drawing without it", path)
+        return None
+    size = _READ_SIZE if longest <= _READ_SIZE else 0
+    edit = second["edit"]
+
+    def read():
+        from adjust.render import decode, develop_frame, resize_linear
+        from export.engine import (_load_linear, _with_camera_look, _with_denoiser, frame_of,
+                                   linear_base, resolve_export_source)
+
+        source = resolve_export_source(file)
+        if size:
+            # The same decode the develop view keeps of that photo, when it has one.
+            frame = linear_base(source, size)
+        else:
+            rgb = _load_linear(source, 0)
+            frame = None
+            if rgb is not None:
+                frame = frame_of(source, resize_linear(rgb, 0))
+                _with_camera_look(source, frame)
+                _with_denoiser(source, frame, 0)
+        if frame is None:
+            return None
+        picture = develop_frame(frame, edit)
+        return decode(np.asarray(picture, dtype=np.float32) / 255.0).astype(np.float32)
+
+    return _kept((str(file), file.stat().st_mtime_ns, size, second_to_text(edit)), path, read)
 
 
 def place(second_rgb: np.ndarray, shape: tuple, window: tuple, second: dict) -> tuple:
@@ -218,6 +291,28 @@ def pixels(frame, rgb: np.ndarray, window: tuple, second: dict) -> np.ndarray:
             return rgb
         weight = weight * reach
     return mix(rgb, placed, weight, second)
+
+
+def laid_on(frame, enc: np.ndarray, second: dict) -> np.ndarray:
+    """``enc``, ``frame`` as its own edit finished it (display-encoded, on the frame's grid,
+    before its framing), with the second laid on as edited: the two mixed as light. ``enc``
+    itself when there is nothing to lay on."""
+    from adjust.render import decode, encode, mask_reach
+
+    h, w = enc.shape[:2]
+    window = frame.window
+    longest = max(w / max(window[2] - window[0], 1e-9), h / max(window[3] - window[1], 1e-9))
+    picture = _finished(second, longest)
+    if picture is None:
+        return enc
+    placed, weight = place(picture, (h, w), window, second)
+    if second["reach"]:
+        reach = mask_reach(frame, {"kind": second["reach"], "invert": second["invert"]})
+        if reach is None:
+            return enc
+        weight = weight * reach
+    mixed = mix(decode(enc).astype(np.float32), placed, weight, second)
+    return encode(np.clip(mixed, 0.0, 1.0)).astype(np.float32)
 
 
 def exposed(frame, second: dict):

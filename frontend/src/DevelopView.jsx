@@ -1,4 +1,5 @@
-import { makeDoubleExposure } from "./doubleExposure.js";
+import DoubleExposureDialog from "./DoubleExposureDialog.jsx";
+import { editKey, makeDoubleExposure, sameEdit, secondOf, secondOfRow, versionThumb, versionsOf } from "./doubleExposure.js";
 import { useState, useEffect, useCallback, useRef, useMemo, useId, createContext, useContext } from "react";
 import { copiedEdit, copyEdit, useCopiedEdit, copyChoice, keepCopyChoice, PASTE_AS, pasteAs, keepPasteAs,
   usePasteAs, pasteSummary } from "./editClipboard.js";
@@ -3329,23 +3330,74 @@ const SECOND_DEFS = [
   { key: "scale", label: "Size", min: 100, max: 400, step: 1, format: (v) => `${v}%`, title: "100% just covers the frame." },
 ];
 
-function SecondPanel({ second, photos, filepath, onSet, onSwap }) {
+// Which version of the second photo is laid on: as shot, or one of its versions as edited.
+// ``second.edit`` is the copy of that version's edit the double exposure keeps.
+function SecondVersions({ second, info, onChoose }) {
+  const versions = info?.versions || [];
+  const asShot = second.version === undefined || second.version === null;
+  const found = asShot ? null : versions.find((v) => v.version === second.version);
+  const tile = (picked) => `shrink-0 w-14 rounded overflow-hidden border text-left ${picked ? "border-amber-400 ring-1 ring-amber-400" : "border-neutral-800 hover:border-neutral-500"}`;
+  return (
+    <div className="space-y-1" data-testid="second-versions">
+      <div className="flex gap-1 overflow-x-auto pb-1">
+        <button className={tile(asShot)} onClick={() => onChoose(null)} data-testid="second-as-shot"
+          title="Its raw light, without an edit of its own: this photo's edit tones the two as one picture, as a camera's multiple exposure does.">
+          <img alt="" loading="lazy" className="w-14 h-14 object-cover bg-neutral-900"
+            src={`${versionThumb(second.path, 0, "grid")}&camera=1`} />
+          <div className="px-1 text-[10px] text-neutral-300 truncate bg-neutral-950">As shot</div>
+        </button>
+        {versions.map((v) => (
+          <button key={v.version} className={tile(!asShot && second.version === v.version)} onClick={() => onChoose(v)}
+            data-testid={`second-version-${v.version}`}
+            title="This version as it is edited: its crop, colour and look come with it, and this photo's edit leaves it alone.">
+            <img alt="" loading="lazy" className="w-14 h-14 object-cover bg-neutral-900"
+              src={versionThumb(second.path, v.version, "grid", editKey(v.settings))} />
+            <div className="px-1 text-[10px] text-neutral-300 truncate bg-neutral-950">
+              {v.version === info.cover && <span className="text-amber-300" title="The version the grid shows">★ </span>}{v.name}
+            </div>
+          </button>
+        ))}
+      </div>
+      {!asShot && info && !found && (
+        <div className="text-[11px] text-neutral-500" data-testid="second-copy-gone">
+          That version has been deleted; it is still drawn as it was.
+        </div>
+      )}
+      {found && !sameEdit(found.settings, second.edit) && (
+        <div className="text-[11px] text-amber-300/90 flex items-center gap-2" data-testid="second-edit-changed">
+          <span>{found.name} has been edited since.</span>
+          <button className="underline hover:text-white" onClick={() => onChoose(found)} data-testid="second-take-edit">Use its new edit</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SecondPanel({ second, photos, filepath, onSet, onSwap, onPair }) {
   const [choosing, setChoosing] = useState(false);
   const [gone, setGone] = useState(false);
   const [reachNote, setReachNote] = useState("");
+  const [info, setInfo] = useState(null);
   const path = second?.path;
   useEffect(() => {
     setGone(false);
+    setInfo(null);
     if (!path) return undefined;
     let cancelled = false;
     fetch(`${API}/export/develop/second?path=${encodeURIComponent(path)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (!cancelled && d) setGone(!d.exists); })
       .catch(() => {});
+    versionsOf(path).then((d) => { if (!cancelled) setInfo(d); }).catch(() => {});
     return () => { cancelled = true; };
   }, [path]);
   const others = (photos || []).filter((p) => p.filepath !== filepath);
   const set = (patch) => onSet({ ...SECOND_DEFAULTS, ...second, ...patch });
+  // Another photo or version, laid on the same way.
+  const lay = (which) => {
+    const { path: _p, version: _v, edit: _e, ...how } = second || {};
+    onSet({ ...SECOND_DEFAULTS, ...how, ...which });
+  };
   // The model that finds where it reaches is fetched first, as a mask's is.
   const setReach = async (reach) => {
     setReachNote("");
@@ -3380,10 +3432,21 @@ function SecondPanel({ second, photos, filepath, onSet, onSwap }) {
               title="A new copy of the other photo with this one laid over it. This copy stays.">Swap</button>}
             <button className={small} data-testid="second-remove" onClick={() => onSet(null)}>Remove</button>
           </div>
+          {onPair && (
+            <button data-testid="second-pair" onClick={onPair}
+              title="Back to the double exposure window: which versions, which way round, the blend, and placing it by hand."
+              className="w-full text-xs px-2 py-1 rounded border border-amber-500/60 text-amber-200 hover:bg-amber-500/10">
+              ◐ Pair & place…
+            </button>
+          )}
           {gone && (
             <div className="text-[11px] text-red-400" data-testid="second-gone">
               This photo can't be found, so it isn't in the picture or in an export. Move it back or choose another.
             </div>
+          )}
+          {!gone && (
+            <SecondVersions second={second} info={info}
+              onChoose={(v) => lay(v ? secondOf(path, v.version, v.settings) : { path })} />
           )}
         </>
       )}
@@ -3394,10 +3457,10 @@ function SecondPanel({ second, photos, filepath, onSet, onSwap }) {
         others.length ? (
           <div className="grid grid-cols-4 gap-1 max-h-48 overflow-y-auto" data-testid="second-photos">
             {others.map((p) => (
-              <button key={p.filepath} title={p.filename} onClick={() => { setChoosing(false); set({ path: p.filepath }); }}
+              <button key={p.filepath} title={p.filename} onClick={() => { setChoosing(false); lay(secondOfRow(p)); }}
                 className="aspect-square overflow-hidden rounded border border-neutral-800 hover:border-amber-400">
                 <img loading="lazy" alt={p.filename} className="w-full h-full object-cover"
-                  src={`${API}/thumb/${p.folder}/${encodeURIComponent(p.filename)}?size=grid`} />
+                  src={versionThumb(p.filepath, p.cover || 0, "grid", editKey(p.cover ? p.cover_edit : p.edit))} />
               </button>
             ))}
           </div>
@@ -3466,6 +3529,8 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
   const probePixels = useRef(null);
   const [photoSize, setPhotoSize] = useState(null);
   const [clip, setClip] = useState({ high: 0, low: 0 });
+  // The double exposure window, opened again on this copy.
+  const [pairing, setPairing] = useState(false);
   const [clipUrl, setClipUrl] = useState(null);
   const [showClip, setShowClip] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
@@ -5754,18 +5819,28 @@ Number(settings.mono) ? (
     second: (
       <Fold id="second" title="Second exposure" edited={!!settings.second} open={folds.includes("second")} onToggle={toggleFold}
         summary={settings.second ? settings.second.path.split("/").pop() : ""}
-        hint="Lay another photo over this one, as a camera's multiple exposure does. Pick it here, or select two photos in the folder view and use Double exposure. To keep this photo's edit as it is, make a copy first.">
+        hint="Lay another photo over this one, as a camera's multiple exposure does. Pick it here, or select two photos in the folder view and use Double exposure. It comes as one of its versions, with that version's own look, or as shot, toned with this photo. To keep this photo's edit as it is, make a copy first.">
         <SecondPanel second={settings.second} photos={photos} filepath={filepath}
           onSet={(next) => change("second", next)}
           onSwap={onOpenCopy && (async () => {
             flushSave();
-            const { path, ...how } = settings.second;
+            const { path, version: from, edit: _e, ...how } = settings.second;
+            // The other photo keeps the new copy, from the version laid on here (its cover
+            // if it came as shot); this one is laid over it the same way it came.
+            const asShot = from === undefined || from === null;
+            const row = (photos || []).find((p) => p.filepath === path);
             try {
-              onOpenCopy(path, await makeDoubleExposure(path, filepath, how));
+              // This copy laid on as the version it was made from, when one has its edit.
+              const own = activeOnly(settings);
+              const mine = asShot ? null : await versionsOf(filepath).catch(() => null);
+              const origin = mine?.versions.find((v) => !v.settings.second && sameEdit(v.settings, own));
+              onOpenCopy(path, await makeDoubleExposure(path, asShot ? (row?.cover || 0) : from,
+                { ...how, ...(asShot ? { path: filepath } : secondOf(filepath, origin ? origin.version : version, own)) }));
             } catch (e) {
               setNote(e.message || "Could not swap them");
             }
-          })} />
+          })}
+          onPair={() => { flushSave(); setPairing(true); }} />
       </Fold>
     ),
     sharpen: section("sharpen"),
@@ -5775,6 +5850,24 @@ Number(settings.mono) ? (
 
   return (
     <div data-modal="develop" className="fixed inset-0 z-[60] bg-neutral-950 text-neutral-100 flex flex-col">
+      {pairing && settings.second && (
+        <DoubleExposureDialog
+          first={{ filepath, filename: filepath.split("/").pop() }}
+          other={{ filepath: settings.second.path, filename: settings.second.path.split("/").pop() }}
+          editing={{
+            version,
+            settings: activeOnly(settings),
+            // A new blend or second on this copy is one step back in its history; a new
+            // base edit replaces the copy's own, the second laid on it.
+            onApply: ({ second, baseEdit }) => {
+              setPairing(false);
+              if (baseEdit) applySettings(asSettings({ ...baseEdit, second }), "Double exposure");
+              else change("second", second);
+            },
+          }}
+          onMade={(base, made) => { setPairing(false); onOpenCopy?.(base, made); }}
+          onClose={() => setPairing(false)} />
+      )}
       <header className="flex items-center justify-between px-5 py-2 border-b border-neutral-800 shrink-0">
         <div className="flex items-baseline gap-3 min-w-0">
           <span className="font-medium truncate">{current?.filename || filepath}</span>

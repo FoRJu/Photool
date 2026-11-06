@@ -1,7 +1,7 @@
 import { Component, Fragment, useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 import DevelopView from "./DevelopView.jsx";
-import { makeDoubleExposure } from "./doubleExposure.js";
+import DoubleExposureDialog from "./DoubleExposureDialog.jsx";
 import { enterFullscreen } from "./fullscreen.js";
 import FolderOverview, { FolderAbout } from "./FolderOverview.jsx";
 import ExploreTab from "./ExploreTab.jsx";
@@ -4222,6 +4222,8 @@ function PhotoolApp({ access }) {
   const [picked, setPicked] = useState(() => new Set());
   // A collage being made from the picked photos (their filepaths, in grid order).
   const [collageOf, setCollageOf] = useState(null);
+  // The two photos being made into a double exposure, in the order they were picked, or null.
+  const [doubleOf, setDoubleOf] = useState(null);
   const [picking, setPicking] = useState(false);
   const [pickBusy, setPickBusy] = useState(false);
   const [pickMessage, setPickMessage] = useState("");
@@ -5949,16 +5951,11 @@ function PhotoolApp({ access }) {
             onSelectAll={() => setPicked(new Set(photos.map((p) => p.filepath)))} onClear={clearPicked}
             copied={clipboard} onPaste={pastePicked} onUndoPaste={pasteUndo ? undoPaste : null}
             onMatch={() => setMatching(true)}
-            onDouble={async () => {
+            onDouble={() => {
               // In the order they were selected: the first is the one that keeps the copy.
-              const [base, other] = [...picked];
+              const rows = [...picked].map((f) => photos.find((p) => p.filepath === f)).filter(Boolean);
               setPickMessage("");
-              try {
-                openCopy(base, await makeDoubleExposure(base, other));
-                clearPicked();
-              } catch (e) {
-                setPickMessage(e.message || "Could not make the double exposure");
-              }
+              if (rows.length === 2) setDoubleOf(rows);
             }} />
         )}
         {matching && matchRef && (
@@ -5967,6 +5964,10 @@ function PhotoolApp({ access }) {
         )}
         {tab === "library" && (picked.size > 0 || picking) && <div className="h-28" />}
         {collageOf && <CollageMaker filepaths={collageOf} onClose={() => setCollageOf(null)} />}
+        {doubleOf && (
+          <DoubleExposureDialog first={doubleOf[0]} other={doubleOf[1]} onClose={() => setDoubleOf(null)}
+            onMade={(base, version) => { setDoubleOf(null); clearPicked(); openCopy(base, version); }} />
+        )}
 
         {tab === "explore" && (
           <ExploreTab onPlay={playSlides}
