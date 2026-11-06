@@ -571,6 +571,32 @@ _MIGRATIONS = [
         decided_at TEXT DEFAULT ''
     )""",
     "CREATE INDEX IF NOT EXISTS idx_cull_proposals_folder ON cull_proposals(folder, status)",
+    # Which version of a photograph is its face: the one the grid, the slideshow,
+    # On this day and the year's best draw. No row (or 0) is the photo's own
+    # edit; a number is one of its virtual copies, so the black-and-white copy
+    # that is the keeper is what is seen while browsing, not buried behind it.
+    """CREATE TABLE IF NOT EXISTS photo_covers (
+        filepath TEXT PRIMARY KEY,
+        version INTEGER NOT NULL DEFAULT 0
+    )""",
+    # When one person last looked at a photograph up close (the viewer or the
+    # develop view), so Rediscover can offer good frames nobody has opened in a
+    # long while. One row per person and photograph, the latest look only.
+    """CREATE TABLE IF NOT EXISTS photo_views (
+        owner TEXT NOT NULL,
+        filepath TEXT NOT NULL,
+        viewed_at TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (owner, filepath)
+    )""",
+    # Photographs a person said do not belong in a "looks like" shelf (a parade
+    # among the weddings). Smart search measures resemblance, so this is the
+    # correction it learns from; it is kept per person and shelf.
+    """CREATE TABLE IF NOT EXISTS collection_hides (
+        owner TEXT NOT NULL,
+        collection TEXT NOT NULL,
+        filepath TEXT NOT NULL,
+        PRIMARY KEY (owner, collection, filepath)
+    )""",
 ]
 
 
@@ -964,6 +990,10 @@ class CatalogDB:
                         denoised.add(r["filepath"])
                 except (TypeError, ValueError, AttributeError):
                     pass
+            # A virtual copy with an edit is work done on the photograph too: the
+            # keeper is often a copy, and leaving it out made it "unedited" to
+            # search, On this day and the year's best.
+            edited |= self._copies_with_edit(conn)
             basket = {r["filepath"] for r in conn.execute(
                 "SELECT filepath FROM export_basket WHERE owner = ?", (owner,))}
         return records, tags, edited, basket, mono, denoised
@@ -1762,7 +1792,106 @@ class CatalogDB:
                 "DELETE FROM photo_versions WHERE filepath = ? AND version = ?",
                 (filepath, version),
             )
+            # A copy that was the face takes the face with it: the photo shows
+            # its own edit again rather than pointing at nothing.
+            conn.execute("DELETE FROM photo_covers WHERE filepath = ? AND version = ?",
+                         (filepath, version))
             return cursor.rowcount > 0
+
+    @staticmethod
+    def _copies_with_edit(conn, folder: Optional[str] = None) -> set[str]:
+        """The photographs with at least one copy that carries an edit."""
+        sql = "SELECT DISTINCT filepath FROM photo_versions WHERE settings != '' AND settings != '{}'"
+        args: tuple = ()
+        if folder:
+            sql += " AND filepath LIKE ?"
+            args = (f"{folder}/%",)
+        return {r["filepath"] for r in conn.execute(sql, args)}
+
+    def edited_filepaths(self, folder: Optional[str] = None) -> set[str]:
+        """Every photograph with an edit of its own or an edited copy."""
+        with self._connect() as conn:
+            if folder:
+                rows = conn.execute(
+                    "SELECT filepath FROM photo_edits WHERE filepath LIKE ? AND settings != ''",
+                    (f"{folder}/%",)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT filepath FROM photo_edits WHERE settings != ''").fetchall()
+            return {r["filepath"] for r in rows} | self._copies_with_edit(conn, folder)
+
+    # ── Covers: which version a photograph shows ─────────────────
+
+    def get_cover(self, filepath: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT version FROM photo_covers WHERE filepath = ?", (filepath,)).fetchone()
+        return int(row["version"]) if row else 0
+
+    def set_cover(self, filepath: str, version: int) -> None:
+        """Make ``version`` the photograph's face; 0 puts its own edit back."""
+        with self._connect() as conn:
+            if version:
+                conn.execute(
+                    "INSERT OR REPLACE INTO photo_covers (filepath, version) VALUES (?, ?)",
+                    (filepath, int(version)))
+            else:
+                conn.execute("DELETE FROM photo_covers WHERE filepath = ?", (filepath,))
+
+    def list_covers(self, folder: Optional[str] = None) -> dict[str, int]:
+        with self._connect() as conn:
+            if folder:
+                rows = conn.execute(
+                    "SELECT filepath, version FROM photo_covers WHERE filepath LIKE ? AND version > 0",
+                    (f"{folder}/%",)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT filepath, version FROM photo_covers WHERE version > 0").fetchall()
+        return {r["filepath"]: int(r["version"]) for r in rows}
+
+    def list_cover_settings(self, filepaths) -> dict[str, tuple[int, dict]]:
+        """For each of ``filepaths`` whose face is a copy: (version, its settings)."""
+        wanted = set(filepaths)
+        if not wanted:
+            return {}
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT c.filepath, c.version, v.settings FROM photo_covers c "
+                "JOIN photo_versions v ON v.filepath = c.filepath AND v.version = c.version "
+                "WHERE c.version > 0").fetchall()
+        return {r["filepath"]: (int(r["version"]), _decode_settings(r["settings"]))
+                for r in rows if r["filepath"] in wanted}
+
+    # ── Views: when a photograph was last looked at ──────────────
+
+    def mark_viewed(self, filepath: str, owner: str = "local", when: Optional[str] = None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO photo_views (owner, filepath, viewed_at) VALUES (?, ?, ?)",
+                (owner, filepath, when or datetime.now().isoformat(timespec="seconds")))
+
+    def last_viewed(self, owner: str = "local") -> dict[str, str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT filepath, viewed_at FROM photo_views WHERE owner = ?", (owner,)).fetchall()
+        return {r["filepath"]: r["viewed_at"] for r in rows}
+
+    # ── Collections: what a person said does not belong ──────────
+
+    def hide_from_collection(self, collection: str, filepaths: list, owner: str = "local") -> None:
+        with self._connect() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO collection_hides (owner, collection, filepath) VALUES (?, ?, ?)",
+                [(owner, collection, f) for f in filepaths])
+
+    def collection_hides(self, owner: str = "local") -> dict[str, frozenset]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT collection, filepath FROM collection_hides WHERE owner = ?", (owner,)).fetchall()
+        out: dict = {}
+        for r in rows:
+            out.setdefault(r["collection"], set()).add(r["filepath"])
+        return {k: frozenset(v) for k, v in out.items()}
 
     def version_counts(self, folder: Optional[str] = None) -> dict[str, int]:
         """How many copies each photograph has, for the ones that have any."""

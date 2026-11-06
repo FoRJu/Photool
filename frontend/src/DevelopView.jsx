@@ -3517,6 +3517,7 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
   const [geoOriginal, setGeoOriginal] = useState({ key: "", url: null });
   const [version, setVersion] = useState(startVersion);         // 0 is the photo's own edit, 1.. its copies
   const [copies, setCopies] = useState([]);          // virtual copies of this frame
+  const [cover, setCover] = useState(0);             // the version the library shows for it
   const [loupe, setLoupe] = useState(() => lastLoupe);          // {u, v} on the picture, or null
   const [loupeUrl, setLoupeUrl] = useState(null);
   const [loupeZoom, setLoupeZoomState] = useState(lastLoupeZoom);
@@ -3703,7 +3704,7 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
       try {
         fetch(`${API}/photos/versions?filepath=${encodeURIComponent(filepath)}`)
           .then((r) => (r.ok ? r.json() : { copies: [] }))
-          .then((d) => { if (!cancelled) setCopies(d.copies || []); })
+          .then((d) => { if (!cancelled) { setCopies(d.copies || []); setCover(d.cover || 0); } })
           .catch(() => {});
         const [stored, baseline] = await Promise.all([
           fetch(`${API}/photos/edit?filepath=${encodeURIComponent(filepath)}&version=${startVersion}`)
@@ -3989,14 +3990,19 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
         });
         if (!res.ok) { if (!keepalive) setNote("Could not save this edit"); return; }
         const data = await res.json();
-        // The library shows the photo's own edit; a copy is not what the grid draws.
+        // The library shows the photo's own edit, or the copy chosen as its cover.
         if (version === 0) onSaved?.(filepath, data.settings || {});
+        else onSaved?.(filepath, undefined, {
+          edited: true, ...(version === coverRef.current ? { cover_edit: data.settings || {} } : {}),
+        });
       } catch {
         if (!keepalive) setNote("Could not save this edit");
       }
     },
     [filepath, onSaved, version],
   );
+  const coverRef = useRef(cover);
+  coverRef.current = cover;
   const persistRef = useRef(persist);
   persistRef.current = persist;
 
@@ -5090,6 +5096,7 @@ ${known.license}
       if (!res.ok) throw new Error("copy");
       const data = await res.json();
       setCopies(data.copies || []);
+      onSaved?.(filepath, undefined, { copies: (data.copies || []).length });
       await switchVersion(data.version);
       setNote("New copy made from this edit — change it freely; the other stays as it was");
     } catch {
@@ -5097,7 +5104,7 @@ ${known.license}
     } finally {
       setBusy(false);
     }
-  }, [filepath, version, flushSave, switchVersion]);
+  }, [filepath, version, flushSave, switchVersion, onSaved]);
 
   const patchCopy = useCallback(async (patch) => {
     const res = await fetch(`${API}/photos/versions`, {
@@ -5107,6 +5114,26 @@ ${known.license}
     });
     if (res.ok) setCopies((await res.json()).copies || []);
   }, [filepath, version]);
+
+  // Which version the library shows for this photo: the grid, slideshows, On
+  // this day and the year's best. Export is not changed by it.
+  const showVersion = useCallback(async (target) => {
+    flushSave();
+    const res = await fetch(`${API}/photos/versions/cover`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filepath, version: target }),
+    });
+    if (!res.ok) { setNote("Could not change which version is shown"); return; }
+    const data = await res.json();
+    setCover(target);
+    setCopies(data.copies || []);
+    const found = (data.copies || []).find((c) => c.version === target);
+    onSaved?.(filepath, undefined, {
+      cover: target, cover_edit: target ? (found?.settings || {}) : {}, copies: (data.copies || []).length,
+    });
+    setNote(target ? "This copy is now what the library shows for the photo" : "The library shows the main edit again");
+  }, [filepath, flushSave, onSaved]);
 
   const renameCopy = useCallback(() => {
     const found = copies.find((c) => c.version === version);
@@ -5124,7 +5151,13 @@ ${known.license}
       `${API}/photos/versions?filepath=${encodeURIComponent(filepath)}&version=${gone}`,
       { method: "DELETE" });
     if (!res.ok) { setNote("Could not delete this copy"); return; }
-    setCopies((await res.json()).copies || []);
+    const left = await res.json();
+    setCopies(left.copies || []);
+    setCover(left.cover || 0);
+    const shown = (left.copies || []).find((c) => c.version === left.cover);
+    onSaved?.(filepath, undefined, {
+      copies: (left.copies || []).length, cover: left.cover || 0, cover_edit: shown?.settings || {},
+    });
     // Back to the photo's own edit; version 0 is read afresh from the server.
     const back = await fetch(`${API}/photos/edit?filepath=${encodeURIComponent(filepath)}`)
       .then((r) => r.json()).catch(() => ({ settings: {} }));
@@ -5137,7 +5170,7 @@ ${known.license}
     startHistory(next);
     setCropMode(false);
     setNote("Copy deleted");
-  }, [version, filepath]);
+  }, [version, filepath, onSaved]);
 
   const step = useCallback((delta) => {
     if (!photos?.length) return;
@@ -5921,14 +5954,14 @@ Number(settings.mono) ? (
                 title="This photograph's own edit"
                 className={`text-[11px] px-2 py-0.5 rounded border ${version === 0
                   ? "border-amber-500 text-amber-400"
-                  : "border-neutral-700 text-neutral-300 hover:text-white"}`}>Main</button>
+                  : "border-neutral-700 text-neutral-300 hover:text-white"}`}>{copies.length > 0 && cover === 0 && "★ "}Main</button>
               {copies.map((c) => (
                 <button key={c.version} onClick={() => switchVersion(c.version)}
                   title={c.export ? "Exported with this photo" : "Not exported"}
                   className={`text-[11px] px-2 py-0.5 rounded border max-w-[8rem] truncate ${version === c.version
                     ? "border-amber-500 text-amber-400"
                     : "border-neutral-700 text-neutral-300 hover:text-white"} ${c.export ? "" : "opacity-60"}`}>
-                  {c.name || `Copy ${c.version}`}
+                  {cover === c.version && "★ "}{c.name || `Copy ${c.version}`}
                 </button>
               ))}
               <button onClick={newCopy} disabled={busy}
@@ -5937,6 +5970,22 @@ Number(settings.mono) ? (
                 + Copy
               </button>
             </div>
+            {copies.length > 0 && (
+              <div className="text-[11px] text-neutral-400">
+                {cover === version ? (
+                  <span className="text-amber-400/80"
+                    title="★ marks the version the grid, slideshows, On this day and Year in review show for this photo">
+                    ★ Shown in the library
+                  </span>
+                ) : (
+                  <button onClick={() => showVersion(version)} data-testid="show-version"
+                    className="hover:text-amber-300"
+                    title="Show this version for the photo in the grid, slideshows, On this day and Year in review. Export is unchanged.">
+                    ☆ Show this version in the library
+                  </button>
+                )}
+              </div>
+            )}
             {version !== 0 && (
               <div className="flex items-center gap-3 text-[11px] text-neutral-400">
                 <button onClick={renameCopy} className="hover:text-white">Rename</button>
