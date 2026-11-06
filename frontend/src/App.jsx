@@ -4,9 +4,11 @@ import DevelopView from "./DevelopView.jsx";
 import { makeDoubleExposure } from "./doubleExposure.js";
 import { enterFullscreen } from "./fullscreen.js";
 import FolderOverview, { FolderAbout } from "./FolderOverview.jsx";
+import ExploreTab from "./ExploreTab.jsx";
 import PersonReview from "./PersonReview.jsx";
 import Slideshow from "./Slideshow.jsx";
 import CollageMaker from "./CollageMaker.jsx";
+import VersionsSheet from "./Versions.jsx";
 import { recall, remember, forgetAll } from "./remembered.js";
 import BatchMatch, { LastMatch } from "./BatchMatch.jsx";
 import { useAsReference, useMatchReference } from "./editClipboard.js";
@@ -231,16 +233,21 @@ function _applyPendingEdits(list, pendingEdits) {
 // own URL. The server draws the edit whether or not this is sent; what this does
 // is make the browser ask again when the edit changes, instead of showing the
 // copy it kept from before. An unedited photo has none, so its URL is unchanged.
+// A photo whose cover is one of its virtual copies is drawn with that copy's
+// edit, so the key is the copy's (and says which copy).
 function editKey(photo) {
-  const edit = photo && photo.edit;
-  if (!edit) return "";
-  const keys = Object.keys(edit).filter((k) => Number(edit[k]) !== 0).sort();
-  if (!keys.length) return "";
+  const cover = (photo && photo.cover) || 0;
+  const edit = cover ? photo.cover_edit : photo && photo.edit;
+  const keys = edit ? Object.keys(edit).filter((k) => Number(edit[k]) !== 0).sort() : [];
+  // A photo with copies always says which version it shows: the browser keeps
+  // pictures by address, and the main edit and a copy must never share one.
+  const which = cover || (photo && photo.copies) ? `c${cover}` : "";
+  if (!keys.length) return which;
   let h = 5381;
-  for (const ch of keys.map((k) => `${k}=${edit[k]}`).join(";")) {
+  for (const ch of keys.map((k) => `${k}=${JSON.stringify(edit[k])}`).join(";")) {
     h = ((h << 5) + h + ch.charCodeAt(0)) | 0;
   }
-  return `e${(h >>> 0).toString(36)}`;
+  return `${which}e${(h >>> 0).toString(36)}`;
 }
 
 // A per-viewer convenience kept in the browser (thumbnail size and the like).
@@ -354,7 +361,7 @@ function thumbUrl(folderPath, filename, size = "grid", edit = "") {
 
 // ── Where the app is, as an address ─────────────────────────────────
 
-const TABS = ["import", "library", "people", "activity", "export", "devices"];
+const TABS = ["import", "library", "explore", "people", "activity", "export", "devices"];
 
 function routeHash(r) {
   const folder = r.folder ? "/" + r.folder.split("/").map(encodeURIComponent).join("/") : "";
@@ -1340,7 +1347,7 @@ function TagChips({ tags, max = 2, size = "text-[9px]" }) {
 
 // ── Image Grid (lazy loading) ───────────────────────────────────────
 
-function ImageGrid({ photos, folderPath, onSelect, onRate, basketSet, onToggleBasket, burstSizes, hintByPath, proposalByPath = null, onDevelop, cellSize = THUMB_SIZES.M, selected = null, selecting = false, onPick = null }) {
+function ImageGrid({ photos, folderPath, onSelect, onRate, basketSet, onToggleBasket, burstSizes, hintByPath, proposalByPath = null, onDevelop, onVersions = null, cellSize = THUMB_SIZES.M, selected = null, selecting = false, onPick = null }) {
   // Prefetch grid thumbnails for next batch as user scrolls
   const prefetchedRef = useRef(new Set());
   
@@ -1420,6 +1427,19 @@ function ImageGrid({ photos, folderPath, onSelect, onRate, basketSet, onToggleBa
               >NR</span>
             )}
           </div>
+
+          {/* A photo with virtual copies is a stack: the badge says how many
+              versions there are (★ when a copy is the one shown) and opens
+              them side by side, to choose which one the library shows. */}
+          {photo.copies > 0 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onVersions?.(photo); }}
+              data-testid="versions-badge"
+              className={`absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[10px] leading-none border z-[1]
+                ${photo.cover ? "bg-amber-500/90 border-amber-300 text-black" : "bg-neutral-900/85 border-neutral-600 text-neutral-100"}`}
+              title={`${photo.copies + 1} versions of this photo${photo.cover ? " — a copy is the one shown" : ""}. Click to see them side by side and choose which is shown.`}
+            >{photo.cover ? "★" : "◫"} {photo.copies + 1}</button>
+          )}
 
           {isPicked && <div className="absolute inset-0 bg-sky-400/15 pointer-events-none" />}
           {onPick && (
@@ -3883,13 +3903,31 @@ function ExportDownload({ job }) {
   };
 
   const one = names.length === 1;
+
+  // The download starts by itself when the pictures are ready: nobody should
+  // have to come back and click after a long export. Once per job, so a
+  // re-render or a revisit does not download again; the button stays for a
+  // second copy, and for a browser that blocked the automatic one.
+  const started = useRef(null);
+  useEffect(() => {
+    if (!names.length || started.current === job.job_id) return;
+    started.current = job.job_id;
+    const a = document.createElement("a");
+    a.href = one ? `${base}/file/${encodeURIComponent(names[0])}` : `${base}/photos.zip`;
+    a.download = "";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, [names, one, base, job.job_id]);
+
   return (
     <div className="border border-neutral-800 rounded-lg p-4 space-y-2">
       <div className="flex flex-wrap items-center gap-3">
         <a href={one ? `${base}/file/${encodeURIComponent(names[0])}` : `${base}/photos.zip`}
           download
           className="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded text-sm font-medium">
-          {one ? "Download photo" : `Download ${job.files} photos (ZIP)`}
+          {one ? "Download photo again" : `Download ${job.files} photos again (ZIP)`}
         </a>
         {shareSupported && names.length > 0 && names.length <= SHARE_MAX && (
           <button onClick={share} disabled={!files}
@@ -3904,7 +3942,7 @@ function ExportDownload({ job }) {
             ? `Share takes up to ${SHARE_MAX} photos at a time; download the ZIP instead, or export fewer.`
             : "Share, then Save to Photos to put them in iCloud Photos, or pick Google Photos.")
           : "To put them in Google Photos or iCloud, upload the downloaded photos at photos.google.com or icloud.com/photos."}
-        {" "}Available for an hour.
+        {" "}The download starts by itself; if your browser blocked it, use the button. Available for an hour.
       </p>
       {shareMsg && <p className="text-xs text-red-400">{shareMsg}</p>}
     </div>
@@ -4166,12 +4204,14 @@ function PhotoolApp({ access }) {
   // Which edit of it to open: 0 the photo's own, or one of its copies.
   const [developVersion, setDevelopVersion] = useState(0);
   // A video is never developed: every way into the develop view comes through here.
-  const openDevelop = useCallback((filepath) => {
+  const openDevelop = useCallback((filepath, version = 0) => {
     if (!isVideo(filepath)) {
-      setDevelopVersion(0);
+      setDevelopVersion(version || 0);
       setDevelopFile(filepath);
     }
   }, []);
+  // The photo whose versions are laid out side by side, or null.
+  const [versionsOf, setVersionsOf] = useState(null);
   const openCopy = useCallback((filepath, version) => {
     setDevelopVersion(version);
     setDevelopFile(filepath);
@@ -4868,12 +4908,33 @@ function PhotoolApp({ access }) {
   // A frame edited in the develop view keeps its marker in the grid, and the
   // marker survives a folder refetch for the same reason a rating does: the
   // list that comes back can predate the write.
-  const handleEditSaved = useCallback((filepath, settings) => {
+  // A photo looked at up close — held in the viewer a moment, or opened in
+  // Develop — is remembered for this person, so Rediscover leaves it out for a
+  // while. Passing through on the arrow keys is not a look.
+  const viewedPath = developFile || (cullIndex !== null ? photos[cullIndex]?.filepath : null);
+  useEffect(() => {
+    if (!viewedPath) return undefined;
+    const timer = setTimeout(() => {
+      fetch(`${API}/library/viewed`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filepath: viewedPath }),
+      }).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [viewedPath]);
+
+  // ``settings`` is the photo's own edit when it changed (undefined when it did
+  // not); ``patch`` what else the grid draws from: its copies and its cover.
+  const handleEditSaved = useCallback((filepath, settings, patch = null) => {
     if (!filepath) return;
-    const stored = settings || {};
     const edits = pendingEditsRef.current.get(filepath) || {};
-    edits.edit = stored;
-    edits.edited = Object.keys(stored).length > 0;
+    if (settings !== undefined) {
+      const stored = settings || {};
+      edits.edit = stored;
+      edits.edited = Object.keys(stored).length > 0;
+    }
+    if (patch) Object.assign(edits, patch);
     pendingEditsRef.current.set(filepath, edits);
     setPhotos((prev) => prev.map((p) => (p.filepath === filepath ? { ...p, ...edits } : p)));
   }, []);
@@ -5440,6 +5501,11 @@ function PhotoolApp({ access }) {
         <Slideshow photos={slideshow.photos} start={slideshow.start} title={slideshow.title}
           onClose={() => setSlideshow(null)} />
       )}
+      {versionsOf && (
+        <VersionsSheet photo={versionsOf} onClose={() => setVersionsOf(null)}
+          onOpen={(filepath, version) => { setVersionsOf(null); openCopy(filepath, version); }}
+          onCoverChanged={(filepath, patch) => handleEditSaved(filepath, undefined, patch)} />
+      )}
       {developFile && (
         // Keyed on the frame, so moving with ←/→ starts clean and recovers from
         // a frame that failed rather than staying stuck on its error.
@@ -5478,7 +5544,7 @@ function PhotoolApp({ access }) {
         style={phone ? { paddingTop: "max(0.5rem, env(safe-area-inset-top))" } : undefined}>
         <h1 className="text-lg font-semibold tracking-tight whitespace-nowrap">Photool</h1>
         <nav className={phone ? "hidden" : "flex flex-wrap gap-1"}>
-          {["import", "library", "people", "activity", "export", ...(access.local ? ["devices"] : [])].map((t) => (
+          {["import", "library", "explore", "people", "activity", "export", ...(access.local ? ["devices"] : [])].map((t) => (
             <button key={t} onClick={() => { setTab(t); if (t === "library") loadFolders(); if (t === "export") loadBasket(); }}
               className={`px-3 py-1.5 rounded text-sm capitalize transition-colors ${
                 tab === t ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-300"
@@ -5511,7 +5577,7 @@ function PhotoolApp({ access }) {
       {phone && cullIndex === null && developFile === null && !(picked.size > 0 || picking) && (
         <nav className="fixed inset-x-0 bottom-0 z-40 bg-neutral-950/95 backdrop-blur border-t border-neutral-800 flex"
           style={{ paddingBottom: "env(safe-area-inset-bottom)" }} data-testid="tab-bar">
-          {[["library", "Library", "▦"], ["people", "People", "☺"],
+          {[["library", "Library", "▦"], ["explore", "Explore", "✦"], ["people", "People", "☺"],
             ["export", basketCount > 0 ? `Export ${basketCount}` : "Export", "⬡"]].map(([t, label, icon]) => (
             <button key={t} onClick={() => { setMoreOpen(false); setTab(t); if (t === "library") loadFolders(); if (t === "export") loadBasket(); }}
               className={`flex-1 h-14 flex flex-col items-center justify-center text-[11px] ${tab === t ? "text-white" : "text-neutral-500"}`}>
@@ -5696,7 +5762,8 @@ function PhotoolApp({ access }) {
                     const idx = photos.findIndex((p) => p.filepath === photo.filepath);
                     setCullIndex(idx >= 0 ? idx : 0);
                   }}
-                  onDevelop={(photo) => openDevelop(photo.filepath)}
+                  onDevelop={(photo) => openDevelop(photo.filepath, photo.cover)}
+                  onVersions={setVersionsOf}
                   onRate={handleRate}
                   basketSet={basketSet} onToggleBasket={toggleBasket}
                   selected={picked} selecting={picking} onPick={pickPhoto} />
@@ -5822,7 +5889,8 @@ function PhotoolApp({ access }) {
                       const idx = photos.findIndex((p) => p.filepath === photo.filepath);
                       setCullIndex(idx >= 0 ? idx : 0);
                     }}
-                    onDevelop={(photo) => openDevelop(photo.filepath)}
+                    onDevelop={(photo) => openDevelop(photo.filepath, photo.cover)}
+                    onVersions={setVersionsOf}
                     onRate={handleRate}
                     basketSet={basketSet} onToggleBasket={toggleBasket}
                     burstSizes={burstSizes}
@@ -5861,6 +5929,12 @@ function PhotoolApp({ access }) {
         )}
         {tab === "library" && (picked.size > 0 || picking) && <div className="h-28" />}
         {collageOf && <CollageMaker filepaths={collageOf} onClose={() => setCollageOf(null)} />}
+
+        {tab === "explore" && (
+          <ExploreTab onPlay={playSlides}
+            onOpen={(folder) => { setTab("library"); openFromOverview(folder); }}
+            onSearch={(q) => { setTab("library"); setSearchText(q); runSearch(q); }} />
+        )}
 
         {tab === "devices" && access.local && <DevicesPanel lanAccess={access.lan_access} />}
 

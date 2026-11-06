@@ -197,3 +197,62 @@ def test_a_none_export_of_a_developed_frame_writes_the_development(env):
     assert sorted(p.name for p in out.glob("*.jpg")) == ["IMG_0001.jpg"]
     written = Image.open(out / "IMG_0001.jpg").convert("L")
     assert float(np.asarray(written, dtype=np.float32).mean()) > 100  # 80, plus a stop
+
+
+# ── Copies count as work done, and one can be the photo's face ─────────
+
+def _row(c):
+    rows = c.get(f"/api/catalog/photos/{FOLDER}").json()["photos"]
+    return next(r for r in rows if r["filepath"] == PHOTO)
+
+
+def _mean(c, **params):
+    r = c.get(f"/api/thumb/{PHOTO}", params={"size": "grid", **params})
+    assert r.status_code == 200
+    from io import BytesIO
+    return float(np.asarray(Image.open(BytesIO(r.content)).convert("L"), dtype=np.float32).mean())
+
+
+def test_a_photo_whose_only_edit_is_a_copy_is_edited(env):
+    """The keeper is often a copy: search, On this day and the year's best must
+    not take the photo for untouched because its own edit is."""
+    c, _, _ = env
+    v = c.post("/api/photos/versions", json={"filepath": PHOTO}).json()["version"]
+    assert _row(c)["edited"] is False          # an untouched second start is not work
+    _put(c, v, exposure=-1.0)
+    assert _row(c)["edited"] is True
+    found = c.get("/api/catalog/search", params={"q": "is:edited"}).json()
+    assert [p["filepath"] for p in found["photos"]] == [PHOTO]
+    assert c.get("/api/catalog/search", params={"q": "is:unedited"}).json()["total"] == 0
+
+
+def test_the_cover_is_what_the_grid_draws(env):
+    c, _, _ = env
+    v = c.post("/api/photos/versions", json={"filepath": PHOTO, "name": "Dark"}).json()["version"]
+    _put(c, v, exposure=-2.0)
+    plain = _mean(c)
+    assert _row(c)["copies"] == 1 and _row(c)["cover"] == 0
+
+    r = c.put("/api/photos/versions/cover", json={"filepath": PHOTO, "version": v})
+    assert r.status_code == 200, r.text
+    row = _row(c)
+    assert row["cover"] == v and row["cover_edit"] == {"exposure": -2.0}
+    assert _mean(c) < plain - 20                 # the dark copy is the face now
+    assert abs(_mean(c, ver=0) - plain) < 2      # the photo's own edit is still there
+    assert c.get("/api/photos/versions", params={"filepath": PHOTO}).json()["cover"] == v
+
+
+def test_the_cover_is_kept_beside_the_photo_and_goes_with_its_copy(env):
+    c, library, _ = env
+    v = c.post("/api/photos/versions", json={"filepath": PHOTO}).json()["version"]
+    c.put("/api/photos/versions/cover", json={"filepath": PHOTO, "version": v})
+    record = json.loads((library / (PHOTO + ".copies.json")).read_text())
+    assert record["cover"] == v
+    c.request("DELETE", "/api/photos/versions", params={"filepath": PHOTO, "version": v})
+    assert _row(c)["cover"] == 0
+
+
+def test_no_cover_can_be_a_copy_that_does_not_exist(env):
+    c, _, _ = env
+    r = c.put("/api/photos/versions/cover", json={"filepath": PHOTO, "version": 4})
+    assert r.status_code == 404
