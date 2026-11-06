@@ -28,7 +28,7 @@ import numpy as np
 from PIL import Image
 
 from catalog.database import CLEAR_FACE_QUALITY, CatalogDB
-from faces.clustering import _score, centroid, group, pick_exemplars, unit
+from faces.clustering import LOW_QUALITY_MARGIN, _refuted, _score, centroid, group, pick_exemplars, unit
 from faces.detect import MIN_GROUP_PX
 
 # A face this far under the seed quality joins only a person who is already clear.
@@ -117,13 +117,14 @@ def _vector(row: dict) -> Optional[np.ndarray]:
 class _StoredFace:
     """A stored face in the shape the grouping wants."""
 
-    __slots__ = ("face_id", "filepath", "px", "embedding", "cluster_id", "quality", "not_people")
+    __slots__ = ("face_id", "filepath", "face_index", "px", "embedding", "cluster_id", "quality", "not_people")
 
     def __init__(self, row: dict, vector: np.ndarray):
         from catalog.database import parse_refused
 
         self.face_id = int(row["id"])
         self.filepath = row["filepath"]
+        self.face_index = int(row.get("face_index") or 0)
         self.px = float(row.get("px") or 0.0)
         self.embedding = vector
         self.cluster_id = int(row.get("cluster_id") or 0)
@@ -306,6 +307,141 @@ def _weighted_centroid(faces: list) -> np.ndarray:
     return unit((stack * weights[:, None]).sum(axis=0))
 
 
+# A person is defined by their clear faces when they have at least this many.
+MIN_DEFINING = 3
+
+
+def _defining(members: list) -> list:
+    """The faces that say what a person looks like: the clear ones, when there
+    are enough of them. Blurred and turned-away faces may belong to a person,
+    but measured into their average they pull it towards everyone else."""
+    clear = [m for m in members if m.quality >= MIN_SEED_QUALITY]
+    return clear if len(clear) >= MIN_DEFINING else members
+
+
+def _usable(rows: list) -> list:
+    """Rows as stored faces, the vectors all of the one length most of them have."""
+    faces = []
+    for row in rows:
+        vector = _vector(row)
+        if vector is not None:
+            faces.append(_StoredFace(row, vector))
+    if faces:
+        length = max({f.embedding.size for f in faces}, key=lambda n: sum(f.embedding.size == n for f in faces))
+        faces = [f for f in faces if f.embedding.size == length]
+    return faces
+
+
+def _taken_out_of(db: CatalogDB, cluster_ids: set) -> dict[int, list[np.ndarray]]:
+    """The faces each of these people has been told are not them."""
+    out: dict[int, list[np.ndarray]] = {}
+    for face in _usable(db.list_all_faces()):
+        for refused in face.not_people:
+            if refused in cluster_ids:
+                out.setdefault(refused, []).append(face.embedding)
+    return out
+
+
+def tidy_named(db: CatalogDB, threshold: float, apply: bool = False) -> dict:
+    """Find the poor faces on named people that do not look like them.
+
+    A poor face could once join a group freely and move its average, so a
+    person's group can hold blurred faces that resemble only the other blurred
+    faces. Each is measured again against the person's clear faces alone, at
+    the plain threshold; those that fail go back to "found, not grouped". They
+    are not remembered as "not them" — too unclear to say who — so a better
+    reading, from Look closer, can still find them a person. Faces drawn by
+    hand, and people with too few clear faces to say what they look like, are
+    left alone.
+
+    Returns how many would go (or went), per person; ``apply`` does it, and
+    the caller takes the names off photos the person has left.
+    """
+    named = {c["id"]: c["name"] for c in db.list_clusters() if c.get("name")}
+    taken_out = _taken_out_of(db, set(named))
+    release: dict[int, list[_StoredFace]] = {}
+    checked = 0
+    for cluster_id in named:
+        rows = db.faces_in_cluster(cluster_id)
+        members = _usable(rows)
+        defining = _defining(members)
+        if len(defining) < MIN_DEFINING or defining is members:
+            continue
+        drawn = {(r["filepath"], int(r["face_index"])) for r in rows if r.get("drawn")}
+        average = _weighted_centroid(defining)
+        exemplars = pick_exemplars([m.embedding for m in defining], [m.quality for m in defining])
+        counter = taken_out.get(cluster_id)
+        counter = np.stack([unit(v) for v in counter]) if counter else None
+        for face in members:
+            if face.quality >= MIN_SEED_QUALITY or (face.filepath, face.face_index) in drawn:
+                continue
+            checked += 1
+            vector = unit(face.embedding)
+            score = _score(vector, average, exemplars, threshold)
+            if score < threshold or _refuted(vector, score, counter):
+                release.setdefault(cluster_id, []).append(face)
+    people = sorted(
+        ({"id": cid, "name": named[cid], "faces": len(fs)} for cid, fs in release.items()),
+        key=lambda p: -p["faces"])
+    total = sum(p["faces"] for p in people)
+    if apply and total:
+        db.set_face_clusters({f.face_id: 0 for fs in release.values() for f in fs})
+    return {"checked": checked, "released": total, "people": people, "applied": bool(apply and total),
+            "left": {cid: [f.filepath for f in fs] for cid, fs in release.items()}}
+
+
+def sort_person(db: CatalogDB, cluster_id: int, threshold: float) -> list[dict]:
+    """One person's faces sorted into look-alike sets, for "which of these is them?".
+
+    The clear faces are grouped among themselves as the library is, with
+    nothing seeded; each poor face then goes with the set it clearly matches,
+    or into a last set of faces too unclear to place. Faces drawn by hand have
+    no vector and were put here by a person, so they are a set of their own.
+    The sets with the most clear faces come first.
+    """
+    rows = db.faces_in_cluster(cluster_id)
+    members = _usable(rows)
+    found = {(m.filepath, m.face_index) for m in members}
+    clear = [m for m in members if m.quality >= MIN_SEED_QUALITY]
+    poor = [m for m in members if m.quality < MIN_SEED_QUALITY]
+    assignments, averages, _ = group(clear, threshold) if clear else ([], {}, {})
+    sets: dict[int, list] = {}
+    for face, key in zip(clear, assignments):
+        sets.setdefault(key, []).append(face)
+    unclear: list = sets.pop(0, [])
+    keys = list(sets)
+    if keys:
+        stack = np.stack([unit(averages[k]) for k in keys])
+        for face in poor:
+            sims = stack @ unit(face.embedding)
+            best = int(np.argmax(sims))
+            if float(sims[best]) >= threshold + LOW_QUALITY_MARGIN:
+                sets[keys[best]].append(face)
+            else:
+                unclear.append(face)
+    else:
+        unclear.extend(poor)
+    by_hand = [r for r in rows if (r["filepath"], int(r["face_index"])) not in found]
+
+    def entry(key: int, faces: list, kind: str) -> dict:
+        faces = sorted(faces, key=lambda f: -f.quality)
+        return {
+            "key": key, "kind": kind, "count": len(faces),
+            "clear": sum(f.quality >= MIN_SEED_QUALITY for f in faces),
+            "faces": [{"filepath": f.filepath, "face_index": f.face_index, "quality": round(f.quality, 2)}
+                      for f in faces],
+        }
+
+    out = sorted((entry(k, sets[k], "set") for k in keys), key=lambda e: (-e["clear"], -e["count"]))
+    if unclear:
+        out.append(entry(0, unclear, "unclear"))
+    if by_hand:
+        out.append({"key": -1, "kind": "drawn", "count": len(by_hand), "clear": 0,
+                    "faces": [{"filepath": r["filepath"], "face_index": int(r["face_index"]), "quality": None}
+                              for r in by_hand]})
+    return out
+
+
 def rebuild_people(db: CatalogDB, threshold: float, min_group_px: float = MIN_GROUP_PX,
                    model: Optional[str] = None) -> dict:
     """Group every stored face, keeping the names already given out.
@@ -351,11 +487,12 @@ def rebuild_people(db: CatalogDB, threshold: float, min_group_px: float = MIN_GR
             if refused in named:
                 taken_out.setdefault(refused, []).append(face.embedding)
     for cluster_id, members in by_named.items():
+        defining = _defining(members)
         seeds.append((
             cluster_id,
-            _weighted_centroid(members),
-            len(members),
-            pick_exemplars([m.embedding for m in members], [m.quality for m in members]),
+            _weighted_centroid(defining),
+            len(defining),
+            pick_exemplars([m.embedding for m in defining], [m.quality for m in defining]),
             taken_out.get(cluster_id, []),
         ))
 
@@ -366,7 +503,7 @@ def rebuild_people(db: CatalogDB, threshold: float, min_group_px: float = MIN_GR
 
     assignments, averages, _counts = group(
         pending, threshold, seeds=seeds, min_px=min_group_px,
-        min_seed_quality=MIN_SEED_QUALITY,
+        min_seed_quality=MIN_SEED_QUALITY, poor_into_unnamed=False,
     )
 
     # Every group the pass produced needs a row of its own before any face points

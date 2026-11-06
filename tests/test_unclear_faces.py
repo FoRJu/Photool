@@ -91,11 +91,12 @@ def test_groups_are_listed_by_their_clear_faces(tmp_path):
     rng = np.random.default_rng(3)
     db = _db(tmp_path, {
         **{f"f/sharp_{i}.jpg": [face] for i, face in enumerate(_person(rng, 3, 3))},
-        # One clear face starts the group; eight soft ones join it.
+        # One clear face starts a group; eight soft ones look like it. They no
+        # longer join an unnamed group, so it stays the one clear face.
         **{f"f/soft_{i}.jpg": [_face(np.eye(DIM)[5] * 3 + rng.normal(0, 0.1, DIM),
                                      quality=0.6 if i == 0 else 0.1)]
            for i in range(9)},
     })
     face_service.rebuild_people(db, 0.42, min_group_px=0, model="arcface")
     groups = db.list_clusters()
-    assert [(g["faces"], g["clear"]) for g in groups[:2]] == [(3, 3), (9, 1)]
+    assert [(g["faces"], g["clear"]) for g in groups[:2]] == [(3, 3), (1, 1)]

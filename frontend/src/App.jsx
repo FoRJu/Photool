@@ -5,6 +5,7 @@ import { makeDoubleExposure } from "./doubleExposure.js";
 import { enterFullscreen } from "./fullscreen.js";
 import FolderOverview, { FolderAbout } from "./FolderOverview.jsx";
 import PersonReview from "./PersonReview.jsx";
+import PersonSortOut from "./PersonSortOut.jsx";
 import Slideshow from "./Slideshow.jsx";
 import CollageMaker from "./CollageMaker.jsx";
 import { recall, remember, forgetAll } from "./remembered.js";
@@ -2730,7 +2731,7 @@ function faceCropUrl(filepath, index, size = 96) {
 // a menu and asks first, so a stray click or keystroke cannot change who
 // someone is. Unnamed groups are the work still to do, so their name box and
 // "is this …?" are right there.
-function PersonTile({ person, people, onChanged, onOpen, open }) {
+function PersonTile({ person, people, onChanged, onOpen, onSortOut, open }) {
   const named = !!person.name;
   const [name, setName] = useState(person.name || "");
   const [busy, setBusy] = useState(false);
@@ -2833,6 +2834,9 @@ function PersonTile({ person, people, onChanged, onOpen, open }) {
             <div className="absolute inset-x-1 top-9 z-10 rounded border border-neutral-700 bg-neutral-900 shadow-lg text-xs py-1"
               onMouseLeave={() => setMenu(false)}>
               <button onClick={rename} className="block w-full text-left px-3 py-1.5 text-neutral-200 hover:bg-neutral-800">Rename…</button>
+              <button onClick={() => { setMenu(false); onSortOut(person); }}
+                title="Split into look-alike sets and keep the ones that are really them"
+                className="block w-full text-left px-3 py-1.5 text-neutral-200 hover:bg-neutral-800">Sort out…</button>
               <button onClick={() => { setMenu(false); setPicking(true); }}
                 className="block w-full text-left px-3 py-1.5 text-neutral-200 hover:bg-neutral-800">Same person as…</button>
               <button onClick={split} className="block w-full text-left px-3 py-1.5 text-red-300 hover:bg-neutral-800">Take apart…</button>
@@ -2898,6 +2902,30 @@ function PeoplePanel({ folder }) {
   const [showSingles, setShowSingles] = useState(false);
   const [showUnclear, setShowUnclear] = useState(false);
   const [regrouping, setRegrouping] = useState(false);
+  const [tidying, setTidying] = useState(false);
+  const [sortPerson, setSortPerson] = useState(null);
+
+  // Blurred faces on named people that do not look like their clear faces:
+  // counted first, let go on a yes, then the library regrouped so each can
+  // still find the person it does look like.
+  const tidy = async () => {
+    setTidying(true);
+    setNote("");
+    const post = (path, body) => fetch(`${API}${path}`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+    try {
+      const look = await post("/faces/people/tidy", { apply: false });
+      if (!look.released) { setNote(`Checked ${look.checked.toLocaleString()} blurred faces on named people: all look like them.`); return; }
+      const most = look.people.slice(0, 5).map((p) => `${p.name} ${p.faces}`).join(", ");
+      if (!window.confirm(`${look.released.toLocaleString()} of ${look.checked.toLocaleString()} blurred or turned-away faces on `
+        + `named people do not look like that person's clear faces (most: ${most}). Let them go? `
+        + "They are not marked as someone else, and the library is regrouped after.")) return;
+      const done = await post("/faces/people/tidy", { apply: true });
+      await post("/faces/people/rebuild", {});
+      setNote(`Let go of ${done.released.toLocaleString()} faces; ${done.untagged.toLocaleString()} photos lost a name. Regrouped.`);
+      await load();
+    } catch { setNote("Tidy did not finish"); } finally { setTidying(false); }
+  };
   // Rows are drawn a page at a time: the list comes named-first and largest-first,
   // so the people worth naming are on the first page, and a scanned library's
   // thousand-odd groups are not a thousand rows and face crops at once.
@@ -3058,6 +3086,13 @@ function PeoplePanel({ folder }) {
             {regrouping ? "Regrouping…" : "Regroup"}
           </button>
         )}
+        {status?.named > 0 && !running && (
+          <button disabled={tidying || regrouping} onClick={tidy}
+            title="Let go of blurred faces on named people that do not look like that person's clear faces"
+            className="px-3 py-1.5 rounded text-sm border border-neutral-800 text-neutral-400 hover:text-white disabled:opacity-50">
+            {tidying ? "Tidying…" : "Tidy named"}
+          </button>
+        )}
         {!folder && (
           <span className="text-xs text-neutral-600">open a folder to scan just that one</span>
         )}
@@ -3146,7 +3181,7 @@ function PeoplePanel({ folder }) {
             <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(136px, 1fr))" }}>
               {list.map((p) => (
                 <PersonTile key={p.id} person={p} people={people}
-                  onChanged={load} onOpen={showPerson} open={openPerson?.id === p.id} />
+                  onChanged={load} onOpen={showPerson} onSortOut={setSortPerson} open={openPerson?.id === p.id} />
               ))}
             </div>
           </section>
@@ -3161,6 +3196,9 @@ function PeoplePanel({ folder }) {
       {openPerson && (
         <PersonReview person={openPerson} people={people} onChanged={load}
           onClose={() => setOpenPerson(null)} />
+      )}
+      {sortPerson && (
+        <PersonSortOut person={sortPerson} onChanged={load} onClose={() => setSortPerson(null)} />
       )}
     </div>
   );

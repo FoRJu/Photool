@@ -135,6 +135,7 @@ def group(
     min_px: float = 0.0,
     merge_margin: float = MERGE_MARGIN,
     min_seed_quality: float = 0.0,
+    poor_into_unnamed: bool = False,
 ) -> tuple[list[int], dict[int, np.ndarray], dict[int, int]]:
     """Assign every face to a group.
 
@@ -145,12 +146,23 @@ def group(
     vectors, and a fifth: an array of counterexamples, faces taken out of it. Faces under ``min_px`` come back assigned to 0, meaning "found, not
     grouped"; so do faces under ``min_seed_quality`` that resemble no group.
 
+    A poor face (under ``min_seed_quality``) only ever *joins*: it never moves
+    a group's average, and unless ``poor_into_unnamed`` it joins only a seed —
+    a named person. Left free, blurred and turned-away faces of different
+    people piled into one unnamed group and dragged its average about until
+    it took in anyone of that age at that event; named later, the drift came
+    with the name.
+
     Returns ``(assignments, averages, counts)`` where ``assignments[i]`` is the
     group for ``faces[i]``, and the two dictionaries describe the resulting
     groups.
     """
     assignments = [0] * len(faces)
     counts: dict[int, int] = {}
+    # How many faces each average stands for: the clear ones only, as poor
+    # faces join without moving it.
+    weights: dict[int, int] = {}
+    seed_ids: set[int] = set()
     counter: dict[int, np.ndarray] = {}
     # The groups each group's members have refused, for the closing merge.
     refusing: dict[int, set[int]] = {}
@@ -198,6 +210,8 @@ def group(
             members = [vector]
         add_group(group_id, vector, members)
         counts[group_id] = max(0, int(count))
+        weights[group_id] = max(1, int(count))
+        seed_ids.add(group_id)
         if len(seed) > 4 and seed[4] is not None and len(seed[4]):
             counter[group_id] = np.stack([unit(v) for v in seed[4]])
         next_id = max(next_id, group_id + 1)
@@ -248,6 +262,9 @@ def group(
             for group_id in refused:
                 if group_id in row_of:
                     scores[row_of[group_id]] = -np.inf
+            if poor and not poor_into_unnamed:
+                # The seeds are the first rows; every row after is unnamed.
+                scores[len(seed_ids):] = -np.inf
             for group_id, examples in counter.items():
                 row = row_of[group_id]
                 if scores[row] >= threshold and _refuted(vector, float(scores[row]), examples):
@@ -258,9 +275,11 @@ def group(
             bar = threshold + (LOW_QUALITY_MARGIN if poor else 0.0)
             if best > -2.0 and best >= bar:
                 best_id = group_ids[row]
-                size = counts[best_id]
-                avg_rows[row] = unit((avg_rows[row] * size + vector) / (size + 1))
-                counts[best_id] = size + 1
+                if not poor:
+                    size = weights.get(best_id, counts[best_id])
+                    avg_rows[row] = unit((avg_rows[row] * size + vector) / (size + 1))
+                    weights[best_id] = size + 1
+                counts[best_id] = counts[best_id] + 1
                 assignments[index] = best_id
                 if refused:
                     refusing.setdefault(best_id, set()).update(refused)
@@ -275,6 +294,7 @@ def group(
             continue
         add_group(next_id, vector, [vector])
         counts[next_id] = 1
+        weights[next_id] = 1
         assignments[index] = next_id
         if refused:
             refusing[next_id] = set(refused)

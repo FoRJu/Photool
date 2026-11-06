@@ -427,6 +427,35 @@ class CatalogService:
             self._sync_to_xmp(filepath)
         return {"removed": removed, "untagged": len(touched)}
 
+    def sort_out_person(self, cluster_id: int, not_them, unclear) -> dict:
+        """Apply "which of these is them?": the faces of the sets not chosen leave.
+
+        ``not_them`` were in a clear set that is someone else: remembered as not
+        this person, so no rebuild puts them back. ``unclear`` were too blurred
+        to place: let go without that note.
+        """
+        gone = self.db.detach_faces_of(cluster_id, not_them, remember=True)
+        let_go = self.db.detach_faces_of(cluster_id, unclear, remember=False)
+        touched = self._untag_if_gone(gone + let_go, cluster_id)
+        for filepath in touched:
+            self._sync_to_xmp(filepath)
+        return {"removed": len(gone), "released": len(let_go), "untagged": len(touched)}
+
+    def tidy_named(self, threshold: float, apply: bool) -> dict:
+        """Poor faces on named people that do not look like them, found or let go."""
+        from faces.service import tidy_named
+
+        result = tidy_named(self.db, threshold, apply=apply)
+        left = result.pop("left")
+        touched: set = set()
+        if result["applied"]:
+            self.db.drop_empty_clusters()
+            for cluster_id, paths in left.items():
+                touched |= self._untag_if_gone(paths, cluster_id)
+            for filepath in touched:
+                self._sync_to_xmp(filepath)
+        return {**result, "untagged": len(touched)}
+
     def move_faces(self, faces, into: int = 0, name: str = "") -> dict:
         """Put faces in another person's group, or a new group with a new name.
 
