@@ -2680,6 +2680,36 @@ class CatalogDB:
             self.drop_empty_clusters()
         return changed
 
+    def detach_faces_of(self, cluster_id: int, faces, remember: bool) -> list[str]:
+        """Take many of one person's faces out at once; the files they were in.
+
+        ``remember`` notes the person on each face as "not them", as
+        ``detach_face`` does; without it a face is only let go — too unclear to
+        say who — and a later reading may still put it back.
+        """
+        cluster_id = int(cluster_id)
+        paths: list[str] = []
+        with self._connect() as conn:
+            for filepath, face_index in faces:
+                row = conn.execute(
+                    """SELECT id, not_people FROM photo_faces
+                       WHERE filepath = ? AND face_index = ? AND cluster_id = ?""",
+                    (filepath, int(face_index), cluster_id),
+                ).fetchone()
+                if row is None:
+                    continue
+                refused = parse_refused(row["not_people"])
+                if remember:
+                    refused.add(cluster_id)
+                conn.execute(
+                    "UPDATE photo_faces SET cluster_id = 0, not_people = ? WHERE id = ?",
+                    (",".join(str(i) for i in sorted(refused)), int(row["id"])),
+                )
+                paths.append(filepath)
+        if paths:
+            self.drop_empty_clusters()
+        return paths
+
     def forget_faces(self, filepath: str) -> int:
         """Drop what is known about the faces of one file.
 

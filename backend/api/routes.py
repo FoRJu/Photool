@@ -4414,6 +4414,50 @@ class MoveFacesRequest(FacesRequest):
     name: str = ""          # a person by name (made when there is none)
 
 
+class SortOutRequest(BaseModel):
+    not_them: list[FaceRef] = []   # clear sets that are someone else: remembered
+    unclear: list[FaceRef] = []    # too unclear to place: let go, not remembered
+
+
+class TidyRequest(BaseModel):
+    apply: bool = False
+
+
+@router.get("/faces/people/{cluster_id}/sort")
+async def faces_sort_person(cluster_id: int, request: Request):
+    """One person's faces in look-alike sets, to pick which of them are really them."""
+    from faces.service import sort_person
+
+    catalog = _get_catalog(request)
+    if not catalog.db.get_cluster(cluster_id):
+        raise HTTPException(status_code=404, detail="No such person")
+    _models_dir, threshold, _min_px = _face_defaults(request)
+    sets = await _run_blocking(sort_person, catalog.db, cluster_id, threshold)
+    return {"sets": sets}
+
+
+@router.post("/faces/people/{cluster_id}/sort")
+async def faces_sort_apply(cluster_id: int, req: SortOutRequest, request: Request):
+    """Keep the chosen sets: the rest of the faces leave this person."""
+    catalog = _get_catalog(request)
+    if not catalog.db.get_cluster(cluster_id):
+        raise HTTPException(status_code=404, detail="No such person")
+    result = await _run_blocking(
+        catalog.sort_out_person, cluster_id,
+        [(f.filepath, f.face_index) for f in req.not_them],
+        [(f.filepath, f.face_index) for f in req.unclear])
+    return {"ok": True, **result}
+
+
+@router.post("/faces/people/tidy")
+async def faces_tidy(req: TidyRequest, request: Request):
+    """Poor faces on named people that do not look like them: counted, or let go."""
+    _models_dir, threshold, _min_px = _face_defaults(request)
+    catalog = _get_catalog(request)
+    result = await _run_blocking(catalog.tidy_named, threshold, req.apply)
+    return {"ok": True, **result}
+
+
 @router.get("/faces/people/{cluster_id}/faces")
 async def faces_of_person(cluster_id: int, request: Request):
     """One person's faces, least alike first, for checking the group by eye."""

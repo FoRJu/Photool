@@ -62,11 +62,38 @@ class TestQuality:
         assert assignments[1] == 0
 
     def test_a_poor_face_still_joins_a_clear_match(self):
+        """…a named person's, that is; or an unnamed group's when allowed."""
+        seeded, _a, _c = group(
+            [_face(2, _v(0.95, 0.31, 0), quality=0.1)],
+            threshold=0.5, min_seed_quality=0.3, seeds=[(7, _v(1, 0, 0), 5)],
+        )
+        assert seeded == [7]
+        allowed, _a, _c = group(
+            [_face(1, _v(1, 0, 0)), _face(2, _v(0.95, 0.31, 0), quality=0.1)],
+            threshold=0.5, min_seed_quality=0.3, poor_into_unnamed=True,
+        )
+        assert allowed[0] == allowed[1] != 0
+
+    def test_a_poor_face_does_not_join_an_unnamed_group(self):
+        """Blurred faces piled into unnamed groups and dragged them about."""
         assignments, _a, _c = group(
             [_face(1, _v(1, 0, 0)), _face(2, _v(0.95, 0.31, 0), quality=0.1)],
             threshold=0.5, min_seed_quality=0.3,
         )
-        assert assignments[0] == assignments[1] != 0
+        assert assignments[0] != 0
+        assert assignments[1] == 0
+
+    def test_a_poor_face_does_not_move_the_average(self):
+        """Many blurred faces leaning one way cannot walk a person towards a stranger."""
+        lean = [_face(10 + i, _v(0.8, 0.6, 0), quality=0.05) for i in range(20)]
+        stranger = _face(99, _v(0.45, 0.89, 0), quality=1.0)
+        assignments, averages, _c = group(
+            lean + [stranger], threshold=0.6, min_seed_quality=0.3, seeds=[(7, _v(1, 0, 0), 1)],
+            merge_margin=None,
+        )
+        assert all(a == 7 for a in assignments[:20])
+        assert assignments[20] != 7
+        assert float(averages[7] @ _v(1, 0, 0)) > 0.999
 
     def test_a_poor_face_needs_a_little_more_to_join(self):
         """Just over the bar is enough for a clear face, not for a poor one."""
