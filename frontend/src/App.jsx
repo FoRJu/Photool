@@ -2745,9 +2745,16 @@ function faceCropUrl(filepath, index, size = 96) {
   return `${API}/faces/crop/${filepath}?index=${index}&size=${size}`;
 }
 
-function PersonRow({ person, people, onChanged, onOpen, open }) {
+// A tile: the face, large, and under it what can be done. Named people are
+// settled — their name is text, and renaming, merging or splitting one is in
+// a menu and asks first, so a stray click or keystroke cannot change who
+// someone is. Unnamed groups are the work still to do, so their name box and
+// "is this …?" are right there.
+function PersonTile({ person, people, onChanged, onOpen, open }) {
+  const named = !!person.name;
   const [name, setName] = useState(person.name || "");
   const [busy, setBusy] = useState(false);
+  const [menu, setMenu] = useState(false);
   // The merge list is built only when asked for. A library holds thousands of
   // groups, and a list of every other group in every row is millions of
   // options — which is what froze this panel once the library was scanned.
@@ -2771,7 +2778,9 @@ function PersonRow({ person, people, onChanged, onOpen, open }) {
         headers: body ? { "Content-Type": "application/json" } : undefined,
         body: body ? JSON.stringify(body) : undefined,
       });
-      if (res.ok) onChanged();
+      // Busy until the list is fresh: a second over a large library, and the
+      // tile should not show the old name, or take a click, in between.
+      if (res.ok) await onChanged();
     } catch {} finally { setBusy(false); }
   };
 
@@ -2780,66 +2789,122 @@ function PersonRow({ person, people, onChanged, onOpen, open }) {
     call(`/faces/people/${person.id}/name`, { name });
   };
 
+  const rename = () => {
+    setMenu(false);
+    const next = window.prompt(`Rename ${person.name}? Every photo tagged ${person.name} follows.`, person.name);
+    if (next == null || !next.trim() || next.trim() === person.name) return;
+    call(`/faces/people/${person.id}/name`, { name: next.trim() });
+  };
+
+  const merge = (into) => {
+    setPicking(false);
+    const target = people.find((o) => o.id === into);
+    if (named && !window.confirm(`Fold ${person.name} into ${target?.name || `group #${into}`}? `
+      + `Their ${person.photos} photo${person.photos === 1 ? "" : "s"} move there.`)) return;
+    call(`/faces/people/${person.id}/merge`, { into });
+  };
+
+  const split = () => {
+    setMenu(false);
+    if (named && !window.confirm(`Take ${person.name} apart? The name comes off their `
+      + `${person.photos} photo${person.photos === 1 ? "" : "s"} and the faces go back to unnamed.`)) return;
+    call(`/faces/people/${person.id}/detach`, null);
+  };
+
+  const asking = !named && person.suggest_id > 0 && !!person.suggest_name;
+  const count = `${person.photos} photo${person.photos === 1 ? "" : "s"}`
+    + (person.faces !== person.photos ? ` · ${person.faces} faces` : "");
+
+  const picker = (
+    <select value="" disabled={busy} autoFocus
+      onChange={(e) => { if (e.target.value) merge(+e.target.value); }}
+      onBlur={() => setPicking(false)}
+      title="This is the same person as…"
+      className="w-full bg-neutral-900 border border-neutral-700 rounded text-[11px] text-neutral-300">
+      <option value="">same person as…</option>
+      {targets.map((o) => (
+        <option key={o.id} value={o.id}>
+          {o.name || `#${o.id}`} · {o.photos} photo{o.photos === 1 ? "" : "s"}
+        </option>
+      ))}
+    </select>
+  );
+
   return (
-    <div className={`flex items-center gap-2 rounded border px-2 py-1.5 ${
-      open ? "border-amber-500/50 bg-amber-500/5" : "border-neutral-800"
-    }`}>
+    <div className={`group relative flex flex-col rounded-lg border ${menu ? "z-20" : ""} ${
+      open ? "border-amber-500/60 bg-amber-500/5" : "border-neutral-800 bg-neutral-950"
+    }`} data-testid="person-tile">
       <button onClick={() => onOpen(person)} title="Check this person's faces"
-        className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-neutral-900">
+        className="aspect-square w-full bg-neutral-900 rounded-t-lg overflow-hidden">
         {person.sample && (
-          <img src={faceCropUrl(person.sample.filepath, person.sample.face_index, 80)} loading="lazy"
+          <img src={faceCropUrl(person.sample.filepath, person.sample.face_index, 224)} loading="lazy"
             alt={person.name || "unnamed person"} className="w-full h-full object-cover" />
         )}
       </button>
-      <div className="flex-1 min-w-0">
-        <input value={name} onChange={(e) => setName(e.target.value)}
-          onBlur={save}
-          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
-          placeholder="Name this person"
-          className="w-full bg-neutral-900 border border-neutral-800 rounded px-2 py-0.5 text-sm text-neutral-200 placeholder-neutral-600" />
-        <p className="text-[10px] text-neutral-500 mt-0.5">
-          {person.photos} photo{person.photos === 1 ? "" : "s"}
-          {person.faces !== person.photos ? ` · ${person.faces} faces` : ""}
-        </p>
+
+      {named && (
+        <>
+          {/* Faint until hovered, never hidden: a phone has no hover. */}
+          <button onClick={() => setMenu((v) => !v)} disabled={busy} aria-label="Change this person"
+            title="Rename, merge or take apart"
+            className={`absolute top-1 right-1 w-7 h-7 rounded-full bg-black/60 text-neutral-200 hover:bg-black/80 disabled:opacity-40 ${
+              menu ? "" : "opacity-40 group-hover:opacity-100 focus:opacity-100"}`}>⋯</button>
+          {menu && (
+            <div className="absolute inset-x-1 top-9 z-10 rounded border border-neutral-700 bg-neutral-900 shadow-lg text-xs py-1"
+              onMouseLeave={() => setMenu(false)}>
+              <button onClick={rename} className="block w-full text-left px-3 py-1.5 text-neutral-200 hover:bg-neutral-800">Rename…</button>
+              <button onClick={() => { setMenu(false); setPicking(true); }}
+                className="block w-full text-left px-3 py-1.5 text-neutral-200 hover:bg-neutral-800">Same person as…</button>
+              <button onClick={split} className="block w-full text-left px-3 py-1.5 text-red-300 hover:bg-neutral-800">Take apart…</button>
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="p-1.5 space-y-1">
+        {named ? (
+          <div className="text-sm text-neutral-100 truncate" title={person.name}>{person.name}</div>
+        ) : (
+          <input value={name} onChange={(e) => setName(e.target.value)}
+            onBlur={save}
+            onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+            placeholder="Name…"
+            className="w-full bg-neutral-900 border border-neutral-800 rounded px-1.5 py-0.5 text-sm text-neutral-200 placeholder-neutral-600" />
+        )}
+        <p className="text-[10px] text-neutral-500 truncate">{count}</p>
+
+        {/* "Is this Alice?" — an unnamed group close to a named person. Yes folds
+            it in; no is remembered on its faces, so it is not asked again. */}
+        {asking && (
+          <p className="text-[11px] text-amber-200/90 truncate" title={`${person.suggest_name}? `
+            + `Similarity ${Number(person.suggest_score).toFixed(2)}`}>
+            {person.suggest_name}?
+          </p>
+        )}
+
+        {/* Folding an unnamed group into someone is the correction for a split;
+            taking one apart, the correction for a merge. */}
+        {picking ? picker : !named && (
+          <div className="flex items-center gap-1 text-[11px]">
+            {asking && (
+              <>
+                <button disabled={busy} title={`Yes, this is ${person.suggest_name}`}
+                  onClick={() => call(`/faces/people/${person.id}/merge`, { into: person.suggest_id })}
+                  className="px-1.5 rounded bg-emerald-800/60 hover:bg-emerald-700 text-emerald-100 disabled:opacity-40">yes</button>
+                <button disabled={busy} title={`Not ${person.suggest_name}: not asked again`}
+                  onClick={() => call(`/faces/people/${person.id}/not/${person.suggest_id}`, null)}
+                  className="px-1.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 disabled:opacity-40">no</button>
+              </>
+            )}
+            <button onClick={() => setPicking(true)} disabled={busy} title="This is the same person as…"
+              className="flex-1 min-w-0 truncate text-[10px] py-0.5 rounded border border-neutral-800 text-neutral-400 hover:text-neutral-200 disabled:opacity-40">
+              {asking ? "other" : "same as…"}
+            </button>
+            <button onClick={split} disabled={busy} title="Not one person after all — take the group apart"
+              className="text-xs px-1 text-neutral-600 hover:text-red-400 disabled:opacity-40">✕</button>
+          </div>
+        )}
       </div>
-      {/* "Is this Alice?" — an unnamed group close to a named person. Yes folds
-          it in; no is remembered on its faces, so it is not asked again. */}
-      {!person.name && person.suggest_id > 0 && person.suggest_name && (
-        <div className="flex items-center gap-1 text-[11px] text-amber-200/90 shrink-0"
-          title={`Similarity ${Number(person.suggest_score).toFixed(2)}`}>
-          <span className="truncate max-w-[110px]">{person.suggest_name}?</span>
-          <button disabled={busy}
-            onClick={() => call(`/faces/people/${person.id}/merge`, { into: person.suggest_id })}
-            className="px-1.5 rounded bg-emerald-800/60 hover:bg-emerald-700 text-emerald-100 disabled:opacity-40">yes</button>
-          <button disabled={busy}
-            onClick={() => call(`/faces/people/${person.id}/not/${person.suggest_id}`, null)}
-            className="px-1.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 disabled:opacity-40">no</button>
-        </div>
-      )}
-      {/* Folding a group into another is the correction for a split; taking one
-          apart is the correction for a merge. Both are one click. */}
-      {picking ? (
-        <select value="" disabled={busy} autoFocus
-          onChange={(e) => { if (e.target.value) { setPicking(false); call(`/faces/people/${person.id}/merge`, { into: +e.target.value }); } }}
-          onBlur={() => setPicking(false)}
-          title="This is the same person as…"
-          className="bg-neutral-900 border border-neutral-700 rounded text-[10px] text-neutral-300 max-w-[120px]">
-          <option value="">same person as…</option>
-          {targets.map((o) => (
-            <option key={o.id} value={o.id}>
-              {o.name || `#${o.id}`} · {o.photos} photo{o.photos === 1 ? "" : "s"}
-            </option>
-          ))}
-        </select>
-      ) : (
-        <button onClick={() => setPicking(true)} disabled={busy} title="This is the same person as…"
-          className="text-[10px] px-1.5 py-0.5 rounded border border-neutral-800 text-neutral-400 hover:text-neutral-200 disabled:opacity-40">
-          merge
-        </button>
-      )}
-      <button onClick={() => call(`/faces/people/${person.id}/detach`, null)}
-        disabled={busy} title="Not one person after all — take the group apart"
-        className="text-xs text-neutral-600 hover:text-red-400 disabled:opacity-40">✕</button>
     </div>
   );
 }
@@ -2943,7 +3008,12 @@ function PeoplePanel({ folder }) {
   const listed = useMemo(
     () => people.filter((p) => (showSingles || p.photos >= 2 || asked(p)) && (showUnclear || !unclear(p))),
     [people, showSingles, showUnclear]); // eslint-disable-line react-hooks/exhaustive-deps
-  const shown = listed.slice(0, limit);
+  // Named people are all shown — there are few, and they are who the panel is
+  // for. The page limit applies to the unnamed groups after them.
+  const named = useMemo(() => listed.filter((p) => p.name), [listed]);
+  const namedShown = named;
+  const unnamedShown = useMemo(() => listed.filter((p) => !p.name).slice(0, limit), [listed, limit]);
+  const moreUnnamed = listed.length - named.length - unnamedShown.length;
 
   return (
     <div className="space-y-4">
@@ -3088,17 +3158,23 @@ function PeoplePanel({ folder }) {
         </button>
       )}
 
-      <div className="grid gap-2"
-        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(560px, 100%), 1fr))" }}>
-        {shown.map((p) => (
-          <PersonRow key={p.id} person={p} people={people}
-            onChanged={load} onOpen={showPerson} open={openPerson?.id === p.id} />
+      {[["Named", namedShown, named.length], ["Not named yet", unnamedShown, listed.length - named.length]]
+        .filter(([, list]) => list.length > 0)
+        .map(([title, list, total]) => (
+          <section key={title} className="space-y-2">
+            <h3 className="text-xs uppercase tracking-wide text-neutral-500">{title} · {total.toLocaleString()}</h3>
+            <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(136px, 1fr))" }}>
+              {list.map((p) => (
+                <PersonTile key={p.id} person={p} people={people}
+                  onChanged={load} onOpen={showPerson} open={openPerson?.id === p.id} />
+              ))}
+            </div>
+          </section>
         ))}
-      </div>
-      {listed.length > shown.length && (
+      {moreUnnamed > 0 && (
         <button onClick={() => setLimit((n) => n + PAGE)}
           className="text-xs text-neutral-500 hover:text-neutral-300">
-          Show {Math.min(PAGE, listed.length - shown.length)} more of {listed.length - shown.length}
+          Show {Math.min(PAGE, moreUnnamed)} more of {moreUnnamed.toLocaleString()}
         </button>
       )}
 
