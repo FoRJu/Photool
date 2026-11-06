@@ -157,3 +157,72 @@ class TestThroughThePipeline:
         monkeypatch.setattr(render, "mask_reach", lambda frame, m: None)
         frame = LinearFrame(np.full((60, 90, 3), 0.05, np.float32))
         assert double.exposed(frame, second(reach="people")) is frame
+
+
+class TestAsEdited:
+    """A second that names one of its versions comes finished by that version's own edit."""
+
+    @pytest.fixture
+    def red(self, library):
+        Image.new("RGB", (120, 80), (200, 40, 40)).save(library / "a" / "red.jpg")
+        return library
+
+    @staticmethod
+    def colour(picture) -> float:
+        rgb = np.asarray(picture, np.float32)
+        return float((rgb[..., 0] - rgb[..., 1]).mean())
+
+    def test_it_keeps_its_version_and_a_clean_copy_of_its_edit(self):
+        s = second(version=2, edit={"exposure": 1.5, "bogus": 3, "second": {"path": "a/three.jpg"}})
+        assert s["version"] == 2 and s["edit"] == {"exposure": 1.5}
+        assert double.developed(s) and not double.developed(second())
+
+    @pytest.mark.parametrize("version", [-1, "2", True, float("nan")])
+    def test_a_bad_version_is_as_shot(self, version):
+        s = second(version=version, edit={"exposure": 1.0})
+        assert "version" not in s and "edit" not in s
+
+    def test_it_survives_the_sidecar(self):
+        edit = normalize({"second": second(version=1, edit={"mono": True, "contrast": 20}, mode="average")})
+        assert from_crs(to_crs(edit)) == edit
+
+    def test_a_black_and_white_copy_stays_black_and_white(self, red):
+        frame = LinearFrame(np.full((60, 90, 3), 0.02, np.float32))
+        shot = develop_frame(frame, {"second": second(path="a/red.jpg")})
+        edited = develop_frame(frame, {"second": second(path="a/red.jpg", version=1, edit={"mono": True})})
+        assert self.colour(shot) > 40 and abs(self.colour(edited)) < 3
+
+    def test_the_first_photo_edit_does_not_reach_it(self, red):
+        """A black-and-white first frame greys a second as shot, not one as edited."""
+        frame = LinearFrame(np.full((60, 90, 3), 0.02, np.float32))
+        shot = develop_frame(frame, {"mono": True, "second": second(path="a/red.jpg")})
+        edited = develop_frame(frame, {"mono": True, "second": second(path="a/red.jpg", version=0, edit={})})
+        assert abs(self.colour(shot)) < 3 and self.colour(edited) > 40
+
+    def test_with_nothing_else_in_the_edit_it_brightens_the_frame(self, library):
+        frame = LinearFrame(np.full((60, 90, 3), 0.02, np.float32))
+        assert np.asarray(develop_frame(frame, {"second": second(version=0)}), np.float32).mean() > \
+            np.asarray(develop_frame(frame, {}), np.float32).mean() + 20
+
+    def test_its_edit_changes_it(self, library):
+        frame = LinearFrame(np.full((60, 90, 3), 0.02, np.float32))
+        dark = develop_frame(frame, {"second": second(version=1, edit={"exposure": -3.0})})
+        light = develop_frame(frame, {"second": second(version=1, edit={})})
+        assert np.asarray(light, np.float32).mean() > np.asarray(dark, np.float32).mean() + 20
+
+    def test_a_file_gone_draws_the_frame_without_it(self, library):
+        (library / "a" / "two.jpg").unlink()
+        frame = LinearFrame(np.full((60, 90, 3), 0.05, np.float32))
+        assert np.array_equal(np.asarray(develop_frame(frame, {"exposure": 0.2, "second": second(version=0)})),
+                              np.asarray(develop_frame(frame, {"exposure": 0.2})))
+
+    def test_kept_once_finished(self, library, monkeypatch):
+        import adjust.render as render
+
+        runs = []
+        real = render.develop_frame
+        monkeypatch.setattr(render, "develop_frame", lambda f, s, *a, **k: runs.append(s) or real(f, s, *a, **k))
+        frame = LinearFrame(np.full((60, 90, 3), 0.05, np.float32))
+        for amount in (100, 50):
+            double.laid_on(frame, np.full((60, 90, 3), 0.2, np.float32), second(version=0, amount=amount))
+        assert len(runs) == 1

@@ -1260,15 +1260,22 @@ def develop_frame(
         from adjust.depth import blurred
 
         frame = blurred(frame, clean.pop("lens_blur"), clean.pop("blur_focus", 0), clean.pop("blur_sharp", 0))
+    finished_second = None
     if "second" in clean:
-        # After the blur, which reads the first photograph's distances and knows nothing of
-        # the second's, and before the light and tone, which shape the two as one picture.
-        from adjust.double import exposed
+        from adjust.double import developed, exposed
 
-        frame = exposed(frame, clean.pop("second"))
-    if not clean and not matched:
+        second = clean.pop("second")
+        if developed(second):
+            # As edited: laid on once this one is finished too, each with its own look.
+            finished_second = second
+        else:
+            # As shot: after the blur, which reads the first photograph's distances and
+            # knows nothing of the second's, and before the light and tone, which shape
+            # the two as one picture.
+            frame = exposed(frame, second)
+    if not clean and not matched and finished_second is None:
         return frame.encoded()
-    if not matched and not any(k not in GEOMETRY_KEYS for k in clean):
+    if not matched and finished_second is None and not any(k not in GEOMETRY_KEYS for k in clean):
         # Only framing: the picture is as the camera made it, turned and cropped.
         return apply_geometry(frame.encoded(), clean)
 
@@ -1298,6 +1305,14 @@ def develop_frame(
         from adjust.sharpen import sharpen
 
         enc = sharpen(enc, clean, frame.scale)
+
+    if finished_second is not None:
+        # After the sharpening, which the second has had by its own edit, and before the
+        # framing, so it is placed on the whole frame as a second as shot is; the grain
+        # and the vignette then lie over both.
+        from adjust.double import laid_on
+
+        enc = laid_on(frame, enc, finished_second)
 
     picture = apply_geometry(to_image(enc), clean)
     if clean.get("grain") or clean.get("vignette"):
