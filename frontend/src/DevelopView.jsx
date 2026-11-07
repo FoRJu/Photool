@@ -758,7 +758,7 @@ let lastReadout = "rgb";
 // Exported so it can be rendered on its own: the shape it takes is the whole
 // contract with histogramOf, and a mismatch between the two is a crash inside
 // render, which takes the page down with it rather than showing a wrong curve.
-export function Histogram({ original, edited, channels }) {
+export function Histogram({ original, edited, channels, className = "h-16" }) {
   const width = 256;
   const height = 64;
   const COLOURS = ["#ef4444", "#22c55e", "#3b82f6"];
@@ -772,7 +772,7 @@ export function Histogram({ original, edited, channels }) {
     // was drawn at 256 px in a wider box, so 255 sat three quarters of the way
     // across and the brightest peak read as about 200.
     <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" data-testid="histogram"
-      className="w-full h-16 bg-neutral-950 rounded border border-neutral-800">
+      className={`w-full ${className} bg-neutral-950 rounded border border-neutral-800`}>
       <defs>
         <linearGradient id="devHist" x1="0" y1="0" x2="1" y2="0">
           <stop offset="0%" stopColor="#3b82f6" />
@@ -3506,8 +3506,34 @@ function SecondPanel({ second, photos, filepath, onSet, onSwap, onPair }) {
   );
 }
 
+// A phone on its side is under 500 px tall: there the panel's pinned top (the
+// versions, the histogram, the readout) would leave room for two sliders, so it
+// folds to one line unless asked for.
+const SHORT_SCREEN = "(max-height: 500px)";
+const TOP_OPEN_KEY = "photool.develop.topOpen";
+
+function useShortScreen() {
+  const [short, setShort] = useState(() => !!window.matchMedia?.(SHORT_SCREEN).matches);
+  useEffect(() => {
+    const query = window.matchMedia?.(SHORT_SCREEN);
+    if (!query) return undefined;
+    const update = () => setShort(query.matches);
+    query.addEventListener?.("change", update);
+    return () => query.removeEventListener?.("change", update);
+  }, []);
+  return short;
+}
+
 export default function DevelopView({ filepath, startVersion = 0, photos, onClose, onNavigate, onOpenCopy, onSaved }) {
   const [settings, setSettings] = useState(() => ZERO);
+  const short = useShortScreen();
+  const [topOpen, setTopOpen] = useState(() => {
+    try { return localStorage.getItem(TOP_OPEN_KEY) === "1"; } catch { return false; }
+  });
+  const openTop = (open) => {
+    setTopOpen(open);
+    try { localStorage.setItem(TOP_OPEN_KEY, open ? "1" : "0"); } catch { /* this visit only */ }
+  };
   const [controlStyle, setControlStyle] = useState(() => {
     try { return localStorage.getItem(CONTROLS_KEY) === "slider" ? "slider" : "bar"; } catch { return "bar"; }
   });
@@ -5868,7 +5894,7 @@ Number(settings.mono) ? (
           onMade={(base, made) => { setPairing(false); onOpenCopy?.(base, made); }}
           onClose={() => setPairing(false)} />
       )}
-      <header className="flex items-center justify-between px-5 py-2 border-b border-neutral-800 shrink-0">
+      <header className={`flex items-center justify-between px-5 ${short ? "py-1" : "py-2"} border-b border-neutral-800 shrink-0`}>
         <div className="flex items-baseline gap-3 min-w-0">
           <span className="font-medium truncate">{current?.filename || filepath}</span>
           <span className="text-xs text-neutral-500 truncate">{current?.folder}</span>
@@ -6022,20 +6048,44 @@ Number(settings.mono) ? (
               title="Zoom (Z, or scroll on the picture); hold Space and drag, or drag with the middle button, to move about">
               {zoom.z > 1 ? `${Math.round(zoom.z * 100)}%` : "Fit"}
             </button>
-            <span className="text-neutral-600">hold \ for the original</span>
+            {!short && <span className="text-neutral-600">hold \ for the original</span>}
           </div>
         </div>
 
         <ControlStyle.Provider value={controlStyle}>
         {/* Nothing to edit until the frame's stored edit and its RAW are here: what was
             moved before then would be overwritten by what is read. */}
-        <aside className="w-80 2xl:w-96 shrink-0 border-l border-neutral-800 flex flex-col min-h-0"
+        <aside className={`w-80 2xl:w-96 shrink-0 border-l border-neutral-800 flex flex-col min-h-0 ${short && topOpen ? "overflow-y-auto" : ""}`}
           style={loading ? { pointerEvents: "none", opacity: 0.55 } : undefined} data-testid="develop-panel">
           {/* What is wanted on every photo stays in view: the versions, the
               histogram, Auto and Reset, Copy and Paste, and the tools that work
               on the picture itself. The sections scroll beneath. */}
-          <div className="shrink-0 max-h-[65%] overflow-y-auto p-4 pb-3 space-y-3 border-b border-neutral-800"
+          {short && !topOpen ? (
+            <div className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 border-b border-neutral-800" data-testid="panel-top-folded">
+              <button onClick={() => openTop(true)} className="flex-1 min-w-0" title="Show the histogram, versions, Copy and Paste">
+                <Histogram original={originalHist} edited={editedHist} channels={editedChannels} className="h-7" />
+              </button>
+              <button onClick={runAuto} disabled={busy}
+                className="text-xs px-2 py-1 rounded border border-neutral-700 text-amber-400 disabled:opacity-40">
+                {busy ? "…" : "Auto"}
+              </button>
+              <button onClick={undo} disabled={history.index < 1} title="Undo"
+                className="text-sm px-1.5 py-0.5 text-neutral-400 disabled:opacity-30">↶</button>
+              <button onClick={redo} disabled={history.index >= history.entries.length - 1} title="Redo"
+                className="text-sm px-1.5 py-0.5 text-neutral-400 disabled:opacity-30">↷</button>
+              <button onClick={() => openTop(true)} data-testid="panel-top-open"
+                className="text-xs px-2 py-1 rounded border border-neutral-700 text-neutral-300"
+                title="Show the histogram, versions, Copy and Paste">▾</button>
+            </div>
+          ) : (
+          <div className={`shrink-0 ${short ? "p-3 pb-2" : "max-h-[65%] p-4 pb-3 overflow-y-auto"} space-y-3 border-b border-neutral-800`}
             data-testid="panel-top">
+          {short && (
+            <button onClick={() => openTop(false)} data-testid="panel-top-close"
+              className="w-full text-[11px] py-0.5 rounded border border-neutral-800 text-neutral-400">
+              ▴ Fold to one line, more room for the sliders
+            </button>
+          )}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-600">
               <span title="Virtual copies: more than one edit of this same file — say colour and black-and-white, or a square and a 9:16. No second file is made; an export writes one picture per copy.">
@@ -6100,9 +6150,12 @@ Number(settings.mono) ? (
               <span className="text-[10px] text-neutral-500"
                 title="The grey line is the original's brightness, the white line the edit's; the red, green and blue the edit's channels.">grey original · white edit · RGB</span>
             </div>
-            <Histogram original={originalHist} edited={editedHist} channels={editedChannels} />
+            <Histogram original={originalHist} edited={editedHist} channels={editedChannels}
+              className={short ? "h-10" : "h-16"} />
             {/* The pixel under the cursor: where it is in the whole photograph and
                 its colour in the edited picture, always in this one place. */}
+            {/* A phone on its side has no pointer to read and no height to spare. */}
+            {!short && (<>
             <div className="flex items-center gap-2 mt-1 h-5 text-[10px] font-mono text-neutral-300" data-testid="pixel-readout">
               {(() => {
                 if (!probe) return <span className="text-neutral-600 font-sans">Point at the picture for its pixel values</span>;
@@ -6133,6 +6186,7 @@ Number(settings.mono) ? (
                 {READOUTS.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
               </select>
             </label>
+            </>)}
             <div className="flex justify-between mt-1 text-[10px] font-mono">
               <span className={clip.low > 0.005 ? "text-blue-400" : "text-neutral-600"}
                 title="Share of the picture that is pure black">▮ black {percent(clip.low)}</span>
@@ -6251,8 +6305,12 @@ Number(settings.mono) ? (
             )}
             {note && <p className="text-xs text-neutral-500">{note}</p>}
           </div>
+          )}
+          {short && !topOpen && note && <p className="shrink-0 px-3 pt-1 text-xs text-neutral-500">{note}</p>}
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-3" data-testid="panel-sections">
+          {/* Opened on a short screen, the top and the sections scroll as one: a box
+              scrolling inside a box is no use under a thumb. */}
+          <div className={`${short && topOpen ? "shrink-0" : "flex-1 overflow-y-auto"} ${short ? "p-3" : "p-4"} space-y-3`} data-testid="panel-sections">
           <HistoryPanel history={history} onJump={jumpTo} />
 
           <FoldGrip.Provider value={grip}>
