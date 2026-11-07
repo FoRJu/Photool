@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import YearReview, { YearsStrip } from "./YearReview.jsx";
 import { recall, remember } from "./remembered.js";
 import ClockPanel from "./ClockPanel.jsx";
-import { Timeline } from "./Explore.jsx";
+import { Timeline, Scrubber } from "./Explore.jsx";
 
 // ── The Library's front page ─────────────────────────────────────────
 // Folders are filed by date (2026/2026-07-04), which says when and nothing
@@ -897,6 +897,38 @@ export default function FolderOverview({ folders, onOpen, onCards, onPlay, retur
     return [...groups.values()];
   }, [shown, demotions]);
 
+  // The scrubber down the side: any year one tap away, as on the timeline. It
+  // shows once the cards reach the top of the screen, so it never sits over the
+  // controls above them, and lights the year being looked at.
+  const cardsRef = useRef(null);
+  const [atYear, setAtYear] = useState(null);
+  const [cardsReached, setCardsReached] = useState(false);
+  const yearList = useMemo(() => years.map((g) => g.year), [years]);
+  const goYear = useCallback((year) => {
+    setAtYear(year);
+    document.getElementById(`fo-${year}`)?.scrollIntoView({ block: "start" });
+  }, []);
+  useEffect(() => {
+    if (view !== "cards" || yearList.length < 2) { setCardsReached(false); return undefined; }
+    let frame = 0;
+    const look = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        let seen = yearList[0];
+        for (const y of yearList) {
+          const el = document.getElementById(`fo-${y}`);
+          if (el && el.getBoundingClientRect().top <= 120) seen = y;
+        }
+        setAtYear(seen);
+        const top = cardsRef.current?.getBoundingClientRect().top;
+        setCardsReached(top !== undefined && top < 160);
+      });
+    };
+    look();
+    window.addEventListener("scroll", look, { passive: true });
+    return () => { window.removeEventListener("scroll", look); cancelAnimationFrame(frame); };
+  }, [yearList, view]);
+
   const toggle = useCallback((folder) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -992,8 +1024,9 @@ export default function FolderOverview({ folders, onOpen, onCards, onPlay, retur
       ) : view === "map" ? (
         <FolderMap entries={shown} home={home} onOpen={onOpen} onEdit={setEditing} />
       ) : (
-        years.map(({ year, entries: group }) => (
-          <section key={year} className="space-y-2">
+        <div ref={cardsRef} className={`space-y-4 ${cardsReached ? "pr-10 sm:pr-12" : ""}`} data-testid="folder-years">
+        {years.map(({ year, entries: group }) => (
+          <section key={year} id={`fo-${year}`} className="space-y-2 scroll-mt-2">
             <h3 className="sticky top-0 z-10 bg-neutral-950/90 backdrop-blur py-1 text-sm font-medium text-neutral-400 flex items-baseline gap-2">
               <span>{year} <span className="text-neutral-600 font-normal">· {group.length} folder{group.length === 1 ? "" : "s"}</span></span>
               {selecting && (
@@ -1011,7 +1044,9 @@ export default function FolderOverview({ folders, onOpen, onCards, onPlay, retur
               ))}
             </div>
           </section>
-        ))
+        ))}
+        {cardsReached && <Scrubber years={yearList} current={atYear} onGo={goYear} />}
+        </div>
       )}
 
       {selecting && view === "cards" && (

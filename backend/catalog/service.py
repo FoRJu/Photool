@@ -9,6 +9,7 @@ the DB and XMP sidecars stay in sync.
 import logging
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -53,6 +54,10 @@ class CatalogService:
         # What was picked for one person lately: see _picked.
         self._picks: dict = {}
         self._picks_lock = threading.Lock()
+        self._redoer: Optional[threading.Thread] = None
+        # The library as one round of redoing picks reads it, so the picks made
+        # again together read it once (see _redo_picks).
+        self._round = threading.local()
 
     # ── Indexing ─────────────────────────────────────────────────
 
@@ -1256,30 +1261,115 @@ class CatalogService:
         picked for one person leaves out what they find less important."""
         from catalog import search
 
+        shared = getattr(self._round, "photos", None)
+        if shared is not None and owner in shared:
+            return shared[owner]
         records, tags, edited, basket, mono, denoised = self.db.search_snapshot(owner)
         photos = search.gather(records, tags, edited, basket, mono, denoised)
         demoted = self.demoted(owner)
-        return [p for p in photos if not demoted(p)]
+        photos = [p for p in photos if not demoted(p)]
+        if shared is not None:
+            shared[owner] = photos
+        return photos
 
-    # On this day and the years are read from the whole library, most of a
-    # second each, and the Library's front page asks for both every time it is
-    # shown — over Wi-Fi, after every folder. Neither has to be up to the second:
-    # an answer is kept this long, and is asked again as soon as what this person
-    # demoted changes.
-    PICKS_SECONDS = 300
+    # The timeline, the years, On this day and the shelves are read from the
+    # whole library — three or four seconds on a large one — and the Library's
+    # pages ask for them every time they are shown. So a pick is kept until the
+    # library changes in a way it reads (CatalogDB.change_count: an import, a
+    # date, a rating, an edit). Then the answer already made is still given at
+    # once, and when the library has been still a little while every pick asked
+    # for lately is made again behind it, ready before it is next asked for. A
+    # change to what this person demoted is theirs to see straight away: that
+    # pick is made again there and then.
+    PICKS_QUIET_SECONDS = 15
+    PICKS_POLL_SECONDS = 5
+    PICKS_KEEP_SECONDS = 6 * 3600   # a pick nobody asked for in this long is let go
 
     def _picked(self, kind: str, owner: str, arg, work):
-        key = (kind, owner, arg, frozenset(self.db.demoted_shoots(owner)))
+        key = (kind, owner, arg)
+        demoted = frozenset(self.db.demoted_shoots(owner))
+        count = self.db.change_count()
         now = time.monotonic()
         with self._picks_lock:
             hit = self._picks.get(key)
-            if hit is not None and now - hit[0] < self.PICKS_SECONDS:
-                return hit[1]
+            if hit is not None and hit["demoted"] == demoted:
+                hit["used"] = now
+                hit["work"] = work
+                stale = hit["count"] != count
+                value = hit["value"]
+            else:
+                hit = None
+        if hit is not None:
+            if stale:
+                self._start_redoer()
+            return value
         value = work()
         with self._picks_lock:
-            self._picks = {k: v for k, v in self._picks.items() if now - v[0] < self.PICKS_SECONDS}
-            self._picks[key] = (now, value)
+            self._picks = {k: v for k, v in self._picks.items() if now - v["used"] < self.PICKS_KEEP_SECONDS}
+            self._picks[key] = {"value": value, "count": count, "demoted": demoted, "work": work, "used": now}
+        self._start_redoer()
         return value
+
+    def _start_redoer(self) -> None:
+        with self._picks_lock:
+            if self._redoer is not None and self._redoer.is_alive():
+                return
+            self._redoer = threading.Thread(target=_redo_picks, args=(weakref.ref(self),),
+                                            name="picks", daemon=True)
+            thread = self._redoer
+        thread.start()
+
+    def redo_stale_picks(self) -> int:
+        """Make again every kept pick the library has changed under; how many."""
+        count = self.db.change_count()
+        with self._picks_lock:
+            stale = [(k, v["work"], v["demoted"]) for k, v in self._picks.items() if v["count"] != count]
+        if not stale:
+            return 0
+        self._round.photos = {}
+        try:
+            for key, work, demoted in stale:
+                try:
+                    value = work()
+                except Exception:
+                    logger.exception("Could not make %s again", key[0])
+                    value = None
+                with self._picks_lock:
+                    hit = self._picks.get(key)
+                    if hit is None or hit["demoted"] != demoted:
+                        continue
+                    if value is not None:
+                        hit["value"] = value
+                    # A pick that failed is tried again at the next change, not
+                    # over and over.
+                    hit["count"] = count
+        finally:
+            self._round.photos = None
+        return len(stale)
+
+    def warm_picks(self, owner: str = "local") -> None:
+        """Make the Library's common picks now, in the background, so the first
+        visit after a start does not wait for them."""
+        from datetime import date
+
+        try:
+            with self.db._connect() as conn:
+                if conn.execute("SELECT 1 FROM photos LIMIT 1").fetchone() is None:
+                    return          # nothing to make ahead
+        except Exception:
+            return
+
+        def work():
+            try:
+                self._round.photos = {}
+                self.timeline(owner)
+                self.photo_years(owner)
+                self.on_this_day(date.today(), owner)
+            except Exception:
+                logger.exception("Could not make the Library's picks ahead")
+            finally:
+                self._round.photos = None
+        threading.Thread(target=work, name="picks-warm", daemon=True).start()
 
     def forget_picks(self) -> None:
         """Dates changed (catalog/clock.py): what was picked by day is picked again."""
@@ -1476,3 +1566,28 @@ class CatalogService:
             total += result.get("indexed", 0)
 
         return {"total_indexed": total}
+
+
+def _redo_picks(ref) -> None:
+    """Watch one catalog for changes and make its kept picks again once the
+    library has been still for ``PICKS_QUIET_SECONDS``. Holds the catalog only
+    weakly, so it ends with it."""
+    from background import paused
+
+    last, still_since = None, time.monotonic()
+    while True:
+        service = ref()
+        if service is None:
+            return
+        poll, quiet = service.PICKS_POLL_SECONDS, service.PICKS_QUIET_SECONDS
+        try:
+            count = service.db.change_count()
+            now = time.monotonic()
+            if count != last:
+                last, still_since = count, now
+            elif now - still_since >= quiet and not paused():
+                service.redo_stale_picks()
+        except Exception:
+            logger.exception("Picks could not be made again")
+        del service
+        time.sleep(poll)

@@ -600,6 +600,36 @@ _MIGRATIONS = [
 ]
 
 
+# How often the library changed in a way the whole-library picks read (the
+# timeline, the years, On this day, the shelves: catalog/service.py _picked).
+# Kept by triggers, so every writer — an import, a rating, a clock fix, a script
+# — counts without having to remember to, and a pick is kept until it moves.
+_PICKED_PHOTO_COLUMNS = ("filepath", "filename", "folder", "extension", "base_name",
+                         "rating", "flag", "color_label", "camera", "capture_date", "local_date")
+_BUMP = "UPDATE library_changes SET n = n + 1 WHERE id = 1"
+
+
+def _change_triggers() -> list[str]:
+    out = [
+        "CREATE TABLE IF NOT EXISTS library_changes (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL DEFAULT 0)",
+        "INSERT OR IGNORE INTO library_changes (id, n) VALUES (1, 0)",
+    ]
+    for table in ("photos", "photo_tags", "photo_edits", "photo_versions", "export_basket",
+                  "demoted_shoots", "photo_clip", "collection_hides"):
+        for event in ("INSERT", "DELETE"):
+            out.append(f"CREATE TRIGGER IF NOT EXISTS changes_{table}_{event.lower()} "
+                       f"AFTER {event} ON {table} BEGIN {_BUMP}; END")
+    changed = " OR ".join(f"OLD.{c} IS NOT NEW.{c}" for c in _PICKED_PHOTO_COLUMNS)
+    out.append(f"CREATE TRIGGER IF NOT EXISTS changes_photos_update AFTER UPDATE ON photos "
+               f"WHEN {changed} BEGIN {_BUMP}; END")
+    for table in ("photo_edits", "photo_versions"):
+        out.append(f"CREATE TRIGGER IF NOT EXISTS changes_{table}_update AFTER UPDATE ON {table} "
+                   f"WHEN OLD.settings IS NOT NEW.settings BEGIN {_BUMP}; END")
+    return out
+
+
+_MIGRATIONS += _change_triggers()
+
 # The measured columns, in insert order, with the value to use when a
 # measurement is absent. The writer fills this in, so adding a measurement means
 # adding it here and to the table above — nothing else.
@@ -2454,6 +2484,16 @@ class CatalogDB:
                 (int(cluster_id),),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def change_count(self) -> int:
+        """How many times the library changed in a way the picks read (see
+        ``_change_triggers``); 0 on a catalog that could not be set up."""
+        try:
+            with self._connect() as conn:
+                row = conn.execute("SELECT n FROM library_changes WHERE id = 1").fetchone()
+        except sqlite3.OperationalError:
+            return 0
+        return int(row[0]) if row else 0
 
     def demoted_shoots(self, owner: str = "local") -> set[tuple[str, str]]:
         """``{(folder, camera)}`` one owner has demoted; camera '*' is the whole folder."""

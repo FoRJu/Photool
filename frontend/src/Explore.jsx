@@ -77,23 +77,32 @@ function useJson(url, keep = null) {
   return [data, failed];
 }
 
-function Strip({ photos, onPick, label = null, height = "h-24 sm:h-28" }) {
+function Strip({ photos, onPick, onFolder = null, label = null, height = "h-24 sm:h-28" }) {
   return (
     <div className="flex gap-1.5 overflow-x-auto pb-1">
       {photos.map((p, i) => (
-        <button key={`${p.filepath}#${i}`} onClick={() => onPick(i)}
-          className="relative shrink-0 rounded overflow-hidden border border-neutral-800 hover:border-neutral-500">
-          <img src={photoThumb(p)} alt="" loading="lazy" className={`${height} w-auto object-cover bg-neutral-900`} />
-          {label && (
-            <span className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent text-[10px] text-neutral-200 px-1.5 pb-1 pt-3 text-left">
-              {label(p)}
-            </span>
-          )}
+        <div key={`${p.filepath}#${i}`} className="relative shrink-0 group">
+          <button onClick={() => onPick(i)} title="Play from here"
+            className="block rounded overflow-hidden border border-neutral-800 hover:border-neutral-500">
+            <img src={photoThumb(p)} alt="" loading="lazy" className={`${height} w-auto object-cover bg-neutral-900`} />
+            {label && (
+              <span className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent text-[10px] text-neutral-200 px-1.5 pb-1 pt-3 text-left">
+                {label(p)}
+              </span>
+            )}
+          </button>
           {p.cover > 0 && (
-            <span className="absolute top-1 right-1 px-1 rounded bg-amber-500/90 text-black text-[9px] leading-tight"
+            <span className="absolute top-1 right-1 px-1 rounded bg-amber-500/90 text-black text-[9px] leading-tight pointer-events-none"
               title="A virtual copy, chosen as the version shown">★</span>
           )}
-        </button>
+          {onFolder && p.folder && (
+            // Always there on a phone (no hover); on a computer it shows on hover.
+            <button onClick={() => onFolder(p.folder)} title={`Open its folder: ${p.folder}`}
+              data-testid="strip-open-folder"
+              className="absolute top-1 left-1 w-6 h-6 flex items-center justify-center rounded bg-black/70 text-[12px] text-neutral-100
+                hover:bg-sky-600 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100">📁</button>
+          )}
+        </div>
       ))}
     </div>
   );
@@ -130,7 +139,7 @@ export function Rediscover({ onPlay, onOpen }) {
           title="Deal another set">↻ Shuffle</button>
       </div>
       {data.photos.length > 0 && (
-        <Strip photos={data.photos} onPick={(i) => onPlay(data.photos, i, "Rediscover")}
+        <Strip photos={data.photos} onPick={(i) => onPlay(data.photos, i, "Rediscover")} onFolder={onOpen}
           label={(p) => agoText(p.date)} />
       )}
       {day && (
@@ -306,7 +315,7 @@ function CollectionPage({ entry, onClose, onOpenFolder, onSearch }) {
 
 const ZOOM_KEY = "photool.timeline.zoom";
 
-function Scrubber({ years, current, onGo }) {
+export function Scrubber({ years, current, onGo }) {
   const box = useRef(null);
   const dragging = useRef(false);
   const at = (clientY) => {
@@ -330,7 +339,7 @@ function Scrubber({ years, current, onGo }) {
         return (
           <div key={y} className={`text-center leading-none ${y === current ? "text-amber-300 font-semibold" : "text-neutral-500"}`}
             style={{ fontSize: labelled ? "10px" : "6px" }}>
-            {labelled ? (y === current || !dense ? y : `'${String(y).slice(2)}`) : "·"}
+            {labelled ? (y === current || !dense || !/^\d{4}$/.test(String(y)) ? y : `'${String(y).slice(2)}`) : "·"}
           </div>
         );
       })}
@@ -442,7 +451,7 @@ export function Timeline({ onOpen, onPlay, titleOf = (f) => f }) {
           </h3>
           {zoom === "years" ? (
             <div className="space-y-2">
-              <Strip photos={y.photos} onPick={(i) => onPlay(y.photos, i, String(y.year))}
+              <Strip photos={y.photos} onPick={(i) => onPlay(y.photos, i, String(y.year))} onFolder={onOpen}
                 label={(p) => dayText(p.date, { day: "numeric", month: "short" })} />
               <MonthBar year={y} onMonth={openMonth} />
             </div>
@@ -458,15 +467,17 @@ export function Timeline({ onOpen, onPlay, titleOf = (f) => f }) {
                       <button onClick={() => onPlay(m.photos, 0, title)} className="text-xs text-sky-300 hover:text-sky-200">▶ Play</button>
                     )}
                   </div>
-                  <Strip photos={m.photos} onPick={(i) => onPlay(m.photos, i, title)} height="h-20 sm:h-24" />
+                  <Strip photos={m.photos} onPick={(i) => onPlay(m.photos, i, title)} onFolder={onOpen} height="h-20 sm:h-24" />
                   {m.shoots.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[10px] uppercase tracking-wide text-neutral-600 mr-0.5">Folders</span>
                       {m.shoots.map((s) => (
                         <button key={s.folder} onClick={() => onOpen(s.folder)} title={`Open ${s.folder}`}
                           className="flex items-center gap-2 pr-2 rounded border border-neutral-800 hover:border-neutral-500 bg-neutral-900/50 max-w-[16rem]">
                           <img src={photoThumb(s.cover)} alt="" loading="lazy" className="w-10 h-10 object-cover rounded-l" />
                           <span className="text-xs text-neutral-300 truncate">{titleOf(s.folder)}</span>
                           <span className="text-[10px] text-neutral-600 shrink-0">{s.total}</span>
+                          <span className="text-xs text-sky-400 shrink-0">›</span>
                         </button>
                       ))}
                     </div>

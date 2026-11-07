@@ -155,6 +155,9 @@ async def lifespan(app: FastAPI):
         config.library_root,
         burst_max_gap_seconds=config.burst_max_gap_seconds,
     )
+    # The Library's timeline and years read the whole catalog: made now, so the
+    # first visit does not wait, and kept until the library changes.
+    app.state.catalog.warm_picks()
 
     # A photograph already edited keeps the camera look it was finished on until the
     # person updates it (export.engine).
