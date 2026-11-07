@@ -157,7 +157,9 @@ async def lifespan(app: FastAPI):
     )
     # The Library's timeline and years read the whole catalog: made now, so the
     # first visit does not wait, and kept until the library changes.
-    app.state.catalog.warm_picks()
+    from api.routes import timeline_rows
+
+    app.state.catalog.warm_picks(also=[timeline_rows])
 
     # A photograph already edited keeps the camera look it was finished on until the
     # person updates it (export.engine).

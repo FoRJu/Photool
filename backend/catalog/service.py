@@ -1347,9 +1347,10 @@ class CatalogService:
             self._round.photos = None
         return len(stale)
 
-    def warm_picks(self, owner: str = "local") -> None:
+    def warm_picks(self, owner: str = "local", also=()) -> None:
         """Make the Library's common picks now, in the background, so the first
-        visit after a start does not wait for them."""
+        visit after a start does not wait for them. ``also``: more to make in the
+        same round, each a call taking this catalog and the owner."""
         from datetime import date
 
         try:
@@ -1362,7 +1363,8 @@ class CatalogService:
         def work():
             try:
                 self._round.photos = {}
-                self.timeline(owner)
+                for make in also:
+                    make(self, owner)
                 self.photo_years(owner)
                 self.on_this_day(date.today(), owner)
             except Exception:
