@@ -1024,11 +1024,15 @@ def _year_rows(catalog, photos: list) -> list:
     return rows
 
 
-def _slim_rows(catalog, photos: list) -> list:
+def _slim_rows(catalog, photos: list, edits: Optional[dict] = None, versions: Optional[dict] = None) -> list:
     """Search Photos as little as a thumbnail, a slideshow and a click need: the
-    timeline and the shelves send thousands of them."""
-    edits = catalog.photo_edits() if any(p.edited for p in photos) else {}
-    versions = catalog.version_info([p.record.filepath for p in photos]) if photos else {}
+    timeline and the shelves send thousands of them. ``edits`` and ``versions``
+    when one caller makes many of these at once, so the library's edits are
+    read once and not once a call."""
+    if edits is None:
+        edits = catalog.photo_edits() if any(p.edited for p in photos) else {}
+    if versions is None:
+        versions = catalog.version_info([p.record.filepath for p in photos]) if photos else {}
     rows = []
     for photo in photos:
         r = photo.record
@@ -1091,27 +1095,39 @@ async def library_collection_hide(key: str, req: CollectionHideRequest, request:
     return {"ok": True}
 
 
+def timeline_rows(catalog, owner: str) -> list:
+    """The timeline as the page reads it, kept with the library's other picks:
+    making the rows reads every edit in the library, so they are kept too."""
+    from catalog import explore
+
+    def build():
+        years = explore.timeline(catalog._photos_for(owner))
+        every = [p for y in years for p in y["photos"]]
+        for y in years:
+            for m in y["months"]:
+                every += m["photos"] + [s["cover"] for s in m["shoots"]]
+        edits = catalog.photo_edits() if any(p.edited for p in every) else {}
+        versions = catalog.version_info({p.record.filepath for p in every})
+
+        def slim(photos):
+            return _slim_rows(catalog, photos, edits, versions)
+
+        out = []
+        for y in years:
+            months = [{**m, "photos": slim(m["photos"]),
+                       "shoots": [{"folder": s["folder"], "total": s["total"], "cover": slim([s["cover"]])[0]}
+                                  for s in m["shoots"]]} for m in y["months"]]
+            out.append({**y, "photos": slim(y["photos"]), "months": months})
+        return out
+    return catalog._picked("timeline_rows", owner, None, build)
+
+
 @router.get("/library/timeline")
 async def library_timeline(request: Request):
     """Every year and month with photographs, the most recent first: each year
     its best frames, each month its best few and its biggest shoots."""
     catalog = _get_catalog(request)
-    years = await _run_blocking(catalog.timeline, owner_of(request)[0])
-
-    def rows():
-        out = []
-        for y in years:
-            months = []
-            for m in y["months"]:
-                months.append({
-                    **m,
-                    "photos": _slim_rows(catalog, m["photos"]),
-                    "shoots": [{"folder": s["folder"], "total": s["total"],
-                                "cover": _slim_rows(catalog, [s["cover"]])[0]} for s in m["shoots"]],
-                })
-            out.append({**y, "photos": _slim_rows(catalog, y["photos"]), "months": months})
-        return out
-    return {"years": await _run_blocking(rows)}
+    return {"years": await _run_blocking(timeline_rows, catalog, owner_of(request)[0])}
 
 
 @router.get("/library/rediscover")
