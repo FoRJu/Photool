@@ -2,6 +2,7 @@ import { Component, Fragment, useState, useEffect, useCallback, useRef, useMemo 
 
 import DevelopView from "./DevelopView.jsx";
 import DoubleExposureDialog from "./DoubleExposureDialog.jsx";
+import SameMomentDialog, { shiftLabel } from "./SameMomentDialog.jsx";
 import { enterFullscreen } from "./fullscreen.js";
 import FolderOverview, { FolderAbout } from "./FolderOverview.jsx";
 import ExploreTab from "./ExploreTab.jsx";
@@ -1210,7 +1211,7 @@ function ReferenceBadge({ filepath }) {
 }
 
 function SelectionBar({ photos, selected, tags, busy, message, selecting, onEdit, onBasket, onCollage, onSelectAll, onClear,
-  copied, onPaste, onUndoPaste, onMatch, onDouble }) {
+  copied, onPaste, onUndoPaste, onMatch, onDouble, onSameMoment }) {
   const pasteMode = usePasteAs();
   const reference = useMatchReference();
   const [tagDraft, setTagDraft] = useState("");
@@ -1295,6 +1296,12 @@ function SelectionBar({ photos, selected, tags, busy, message, selecting, onEdit
           title={reference ? `Match the selected photos to ${reference.name}: its look, its light or both. You'll see examples first.`
             : "Set a reference first: select one photo and choose Use as reference"}
           className={`${btn} text-amber-200`}>≈ Match{reference ? ` to ${reference.name}` : "…"}</button>
+        {onSameMoment && (
+          <button disabled={off || n !== 2} onClick={onSameMoment} data-testid="same-moment"
+            title={n === 2 ? "These two were taken at the same moment on two cameras: line their clocks up"
+              : "Select 2 photos taken at the same moment on two cameras to line their clocks up"}
+            className={`${btn} text-sky-200`}>⏱ Same moment</button>
+        )}
         {onDouble && (
           <button disabled={off || n !== 2 || picked.some((p) => isVideo(p))} onClick={onDouble} data-testid="double-exposure"
             title={n === 2 ? "A new copy of the photo you selected first, with the other laid over it. Both photos stay as they are."
@@ -4224,6 +4231,7 @@ function PhotoolApp({ access }) {
   const [collageOf, setCollageOf] = useState(null);
   // The two photos being made into a double exposure, in the order they were picked, or null.
   const [doubleOf, setDoubleOf] = useState(null);
+  const [sameMomentOf, setSameMomentOf] = useState(null);     // two photos whose clocks are lined up
   const [picking, setPicking] = useState(false);
   const [pickBusy, setPickBusy] = useState(false);
   const [pickMessage, setPickMessage] = useState("");
@@ -4644,6 +4652,12 @@ function PhotoolApp({ access }) {
             capture_date: prev.capture_date || "", dimensions: prev.dimensions || "",
           };
         });
+        // In the catalog's order (when each was taken) from the first draw, so
+        // the grid does not reshuffle once indexing is done; files the catalog
+        // has not seen yet follow, in name order.
+        const rank = new Map((catalogData.photos || []).map((p, i) => [p.filepath, i]));
+        rawFiles.sort((a, b) => (rank.get(a.filepath) ?? Infinity) - (rank.get(b.filepath) ?? Infinity)
+          || (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0));
 
         // Apply pair_mode client-side for instant display
         basePhotosRef.current = _applyPendingEdits(rawFiles, pendingEditsRef.current);
@@ -5956,6 +5970,23 @@ function PhotoolApp({ access }) {
               const rows = [...picked].map((f) => photos.find((p) => p.filepath === f)).filter(Boolean);
               setPickMessage("");
               if (rows.length === 2) setDoubleOf(rows);
+            }}
+            onSameMoment={() => {
+              const rows = [...picked].map((f) => photos.find((p) => p.filepath === f)).filter(Boolean);
+              setPickMessage("");
+              if (rows.length === 2) setSameMomentOf(rows);
+            }} />
+        )}
+        {sameMomentOf && (
+          <SameMomentDialog first={sameMomentOf[0]} other={sameMomentOf[1]}
+            thumb={(p) => thumbUrl(p.folder || selectedFolder, p.filename, "grid", editKey(p))}
+            onClose={() => setSameMomentOf(null)}
+            onDone={(done) => {
+              setSameMomentOf(null);
+              setPickMessage(done.moved_by
+                ? `${done.label}'s clock moved ${shiftLabel(done.moved_by)} (now ${shiftLabel(done.shift_seconds)} in all). Undo it in Camera clocks.`
+                : `${done.label}'s clock already agreed.`);
+              if (selectedFolder) fetchPhotos(selectedFolder, filterRef.current, true);
             }} />
         )}
         {matching && matchRef && (

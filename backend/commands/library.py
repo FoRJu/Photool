@@ -41,7 +41,9 @@ class FolderFilterParams(Filters, FolderParams):
 class PhotosParams(FolderFilterParams):
     sort: Literal[
         "filename", "rating", "flag", "capture_date", "focal_length", "iso", "file_size", "base_name"
-    ] = "filename"
+    ] = Field("capture_date", description=(
+        "capture_date is when it was taken, camera clocks put right, to the fraction of a second; "
+        "undated frames last"))
     desc: bool = False
     limit: int = Field(200, ge=1, le=2000)
     offset: int = Field(0, ge=0)

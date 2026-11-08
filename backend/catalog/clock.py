@@ -131,16 +131,17 @@ def set_home_zone(db, name: str) -> None:
 
 def rules(db) -> list[dict]:
     with db._connect() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM camera_clocks ORDER BY camera, date_from, id")]
+        return [dict(r) for r in conn.execute("SELECT * FROM camera_clocks ORDER BY camera, body, date_from, id")]
 
 
 def add_rule(db, camera: str, date_from: str = "", date_to: str = "",
-             clock_zone: str = "", where_zone: str = "") -> int:
+             clock_zone: str = "", where_zone: str = "", body: str = "", shift_seconds: int = 0) -> int:
     now = datetime.now().isoformat(timespec="seconds")
     with db._connect() as conn:
         cur = conn.execute(
-            "INSERT INTO camera_clocks (camera, date_from, date_to, clock_zone, where_zone, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)", (camera, date_from, date_to, clock_zone, where_zone, now))
+            "INSERT INTO camera_clocks (camera, body, date_from, date_to, clock_zone, where_zone, "
+            "shift_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (camera, body, date_from, date_to, clock_zone, where_zone, int(shift_seconds), now))
         return int(cur.lastrowid)
 
 
@@ -149,19 +150,55 @@ def remove_rule(db, rule_id: int) -> bool:
         return conn.execute("DELETE FROM camera_clocks WHERE id = ?", (int(rule_id),)).rowcount > 0
 
 
-def _rule_for(found: list[dict], camera: str, day: str) -> Optional[dict]:
-    """The latest rule for this camera that covers this clock day."""
+def _best(found: list[dict], camera: str, body: str, day: str, wants) -> Optional[dict]:
+    """The rule that speaks for this body on this clock day about one thing
+    (``wants`` says whether a rule says anything about it): one for this body
+    over one for every body of the camera, then the latest."""
     best = None
     for r in found:
-        if r["camera"] != camera:
+        if r["camera"] != camera or not wants(r):
+            continue
+        if r.get("body") and r["body"] != body:
             continue
         if r["date_from"] and day < r["date_from"]:
             continue
         if r["date_to"] and day > r["date_to"]:
             continue
-        if best is None or r["id"] > best["id"]:
-            best = r
-    return best
+        rank = (bool(r.get("body")), r["id"])
+        if best is None or rank > best[0]:
+            best = (rank, r)
+    return best[1] if best else None
+
+
+def resolve(found: list[dict], camera: str, body: str, day: str) -> dict:
+    """What the rules say about this body's clock on this clock day: the zone
+    it was on, the zone it was in, and how many seconds to move it. A zone rule
+    and a shift rule speak separately, so a trip's zone for the camera and one
+    body's few minutes off both hold."""
+    zoned = _best(found, camera, body, day, lambda r: r["clock_zone"] or r["where_zone"])
+    shifted = _best(found, camera, body, day, lambda r: r.get("shift_seconds"))
+    return {"clock_zone": (zoned and zoned["clock_zone"]) or "",
+            "where_zone": (zoned and zoned["where_zone"]) or "",
+            "shift_seconds": int((shifted and shifted["shift_seconds"]) or 0)}
+
+
+def clean_serial(value) -> str:
+    """A body's serial as the file writes it, without the padding some write
+    around it: a Ricoh's ``(00000000)01234567`` is ``01234567``."""
+    text = re.sub(r"\(0*\)", "", str(value or "")).strip()
+    return "" if set(text) <= {"0"} else text
+
+
+def subsec(value) -> float:
+    """``SubSecTimeOriginal`` (the digits after the second: ``22`` is .22) as a
+    fraction of a second; 0 when there is none."""
+    digits = re.sub(r"\D", "", str(value if value is not None else ""))
+    return float(f"0.{digits}") if digits else 0.0
+
+
+def body_label(camera: str, body: str) -> str:
+    """How a body is named on screen: its camera and the end of its serial."""
+    return f"{camera} ·{body[-4:]}" if body else camera
 
 
 # ── Where a folder was ───────────────────────────────────────────────
@@ -187,23 +224,30 @@ def folder_zones(db, gazetteer) -> dict[str, str]:
 
 # ── The time ─────────────────────────────────────────────────────────
 
-def local_time(raw: str, offset: str = "", clock_zone: str = "", where_zone: str = "") -> str:
+def local_time(raw: str, offset: str = "", clock_zone: str = "", where_zone: str = "",
+               shift_seconds: int = 0) -> str:
     """What the clock read, ``raw`` (``YYYY:MM:DD HH:MM:SS``), as the time where
     it was taken; ``""`` when that is the same, or cannot be known.
 
     The clock was on ``clock_zone`` when one is named, else on ``offset`` (what
-    the file said); with neither it is taken to be on local time already."""
+    the file said); with neither it is taken to be on local time already.
+    ``shift_seconds`` first puts the clock itself right: a clock 3 minutes fast
+    is moved by -180, whether or not its zone is known."""
     try:
         read = datetime.strptime((raw or "")[:19], _RAW)
     except ValueError:
         return ""
+    if read.year < 1900:
+        return ""
+    read += timedelta(seconds=int(shift_seconds or 0))
     clock = zone(clock_zone) or offset_zone(offset)
     where = zone(where_zone)
     if clock is None or where is None:
-        return ""
-    # A named zone needs the clock reading placed in it (its summer time
-    # included); a fixed offset is the same either way.
-    local = read.replace(tzinfo=clock).astimezone(where).replace(tzinfo=None)
+        local = read
+    else:
+        # A named zone needs the clock reading placed in it (its summer time
+        # included); a fixed offset is the same either way.
+        local = read.replace(tzinfo=clock).astimezone(where).replace(tzinfo=None)
     out = local.strftime(_RAW)
     return "" if out == raw[:19] else out
 
@@ -230,7 +274,8 @@ def recompute(db, gazetteer=None, folder: Optional[str] = None) -> int:
         taken_on = {r["folder"]: r["taken_on"] for r in conn.execute(
             "SELECT folder, taken_on FROM folder_notes WHERE taken_on != ''")}
     sql = ("SELECT p.filepath, p.folder, p.camera, p.base_name, p.capture_date, p.local_date, "
-           "c.clock_offset FROM photos p LEFT JOIN photo_clock c ON c.filepath = p.filepath")
+           "c.clock_offset, COALESCE(c.body, '') AS body "
+           "FROM photos p LEFT JOIN photo_clock c ON c.filepath = p.filepath")
     args: tuple = ()
     if folder is not None:
         sql += " WHERE p.folder = ?"
@@ -242,12 +287,15 @@ def recompute(db, gazetteer=None, folder: Optional[str] = None) -> int:
     # raw twin's camera and zone, as the grid does.
     twin_camera: dict[tuple, str] = {}
     twin_offset: dict[tuple, str] = {}
+    twin_body: dict[tuple, str] = {}
     for r in rows:
         key = (r["folder"], r["base_name"])
         if (r["camera"] or "").strip() and key not in twin_camera:
             twin_camera[key] = r["camera"].strip()
         if r["clock_offset"] and key not in twin_offset:
             twin_offset[key] = r["clock_offset"]
+        if r["body"] and key not in twin_body:
+            twin_body[key] = r["body"]
 
     # The undated, in file order, a pair as one.
     undated: dict[str, list[str]] = {}
@@ -269,10 +317,12 @@ def recompute(db, gazetteer=None, folder: Optional[str] = None) -> int:
             continue
         camera = (r["camera"] or "").strip() or twin_camera.get(key, "")
         raw = r["capture_date"] or ""
-        rule = _rule_for(found, camera, raw[:10].replace(":", "-")) if camera else None
-        where = (rule and rule["where_zone"]) or places.get(r["folder"]) or home
+        body = r["body"] or twin_body.get(key, "")
+        said = (resolve(found, camera, body, raw[:10].replace(":", "-")) if camera
+                else {"clock_zone": "", "where_zone": "", "shift_seconds": 0})
+        where = said["where_zone"] or places.get(r["folder"]) or home
         new = local_time(raw, r["clock_offset"] or twin_offset.get(key, ""),
-                         (rule and rule["clock_zone"]) or "", where)
+                         said["clock_zone"], where, said["shift_seconds"])
         if new != (r["local_date"] or ""):
             changes.append((new, r["filepath"]))
     if changes:
@@ -313,14 +363,89 @@ def cameras(db) -> list[dict]:
             "MIN(substr(p.capture_date, 1, 10)) AS first, MAX(substr(p.capture_date, 1, 10)) AS last "
             "FROM photos p LEFT JOIN photo_clock c ON c.filepath = p.filepath "
             "WHERE p.camera != '' GROUP BY p.camera, clock_offset ORDER BY p.camera").fetchall()
+        bodies = conn.execute(
+            "SELECT p.camera, c.body, COUNT(*) AS n, "
+            "MIN(substr(p.capture_date, 1, 10)) AS first, MAX(substr(p.capture_date, 1, 10)) AS last "
+            "FROM photos p JOIN photo_clock c ON c.filepath = p.filepath "
+            "WHERE p.camera != '' AND COALESCE(c.body, '') != '' "
+            "GROUP BY p.camera, c.body ORDER BY p.camera, n DESC").fetchall()
     out: dict[str, dict] = {}
     for r in rows:
-        cam = out.setdefault(r["camera"], {"camera": r["camera"], "photos": 0, "recorded": []})
+        cam = out.setdefault(r["camera"], {"camera": r["camera"], "photos": 0, "recorded": [], "bodies": []})
         cam["photos"] += r["n"]
         cam["recorded"].append({"offset": r["clock_offset"], "photos": r["n"],
                                 "first": (r["first"] or "").replace(":", "-"),
                                 "last": (r["last"] or "").replace(":", "-")})
+    for r in bodies:
+        if r["camera"] in out:
+            out[r["camera"]]["bodies"].append({
+                "body": r["body"], "label": body_label(r["camera"], r["body"]), "photos": r["n"],
+                "first": (r["first"] or "").replace(":", "-"), "last": (r["last"] or "").replace(":", "-")})
     return sorted(out.values(), key=lambda c: -c["photos"])
+
+
+# ── Two cameras at one moment ────────────────────────────────────────
+
+def _frame(db, filepath: str) -> Optional[dict]:
+    """A photograph's camera, body and times, a pair's halves standing in for
+    each other where one says nothing."""
+    with db._connect() as conn:
+        row = conn.execute("SELECT folder, base_name FROM photos WHERE filepath = ?", (filepath,)).fetchone()
+        if row is None:
+            return None
+        twins = conn.execute(
+            "SELECT p.filepath, p.camera, p.capture_date, p.local_date, COALESCE(c.body, '') AS body "
+            "FROM photos p LEFT JOIN photo_clock c ON c.filepath = p.filepath "
+            "WHERE p.folder = ? AND p.base_name = ?", (row["folder"], row["base_name"])).fetchall()
+    this = next(t for t in twins if t["filepath"] == filepath)
+    return {
+        "filepath": filepath,
+        "camera": (this["camera"] or "").strip() or next((t["camera"].strip() for t in twins if (t["camera"] or "").strip()), ""),
+        "body": this["body"] or next((t["body"] for t in twins if t["body"]), ""),
+        "clock": this["capture_date"] or "",
+        "local": this["local_date"] or this["capture_date"] or "",
+    }
+
+
+def align(db, reference: str, other: str, span: str = "day") -> dict:
+    """Two photographs taken at the same moment on two cameras: move the second
+    one's clock so it reads the first's time. The shift is for that body alone
+    (every body of the camera when its files name none), over ``span``: the
+    second photograph's clock day (``"day"``), that day on (``"onward"``) or
+    every day (``"always"``). A shift rule already there for exactly those days
+    is replaced, not stacked.
+
+    Raises ValueError when the two cannot be lined up."""
+    ref, oth = _frame(db, reference), _frame(db, other)
+    if ref is None or oth is None:
+        raise ValueError("One of the photos is not in the catalog")
+    if not oth["camera"]:
+        raise ValueError("The photo to move says nothing about its camera")
+    if (ref["camera"], ref["body"]) == (oth["camera"], oth["body"]):
+        raise ValueError("Both photos are from the same camera" + ("" if ref["body"] else
+                         ", and its files name no body to tell two apart"))
+    try:
+        ref_at = datetime.strptime(ref["local"][:19], _RAW)
+        oth_at = datetime.strptime(oth["local"][:19], _RAW)
+    except ValueError:
+        raise ValueError("Both photos need the time they were taken") from None
+    day = oth["clock"][:10].replace(":", "-")
+    if span not in ("day", "onward", "always"):
+        raise ValueError(f"Not a span of days: {span}")
+    date_from = "" if span == "always" else day
+    date_to = day if span == "day" else ""
+    found = rules(db)
+    before = resolve(found, oth["camera"], oth["body"], day)["shift_seconds"]
+    shift = before + int(round((ref_at - oth_at).total_seconds()))
+    with db._connect() as conn:
+        conn.execute(
+            "DELETE FROM camera_clocks WHERE camera = ? AND body = ? AND date_from = ? AND date_to = ? "
+            "AND clock_zone = '' AND where_zone = '' AND shift_seconds != 0",
+            (oth["camera"], oth["body"], date_from, date_to))
+    rule_id = add_rule(db, oth["camera"], date_from, date_to, body=oth["body"], shift_seconds=shift) if shift else None
+    return {"rule": rule_id, "camera": oth["camera"], "body": oth["body"],
+            "label": body_label(oth["camera"], oth["body"]), "shift_seconds": shift,
+            "moved_by": shift - before}
 
 
 # The town list, for folder places and home (set at startup: configure).
@@ -350,7 +475,14 @@ def refresh(db, folder: Optional[str] = None) -> int:
 
 # ── Reading what each file says ──────────────────────────────────────
 
-_TAGS = ["OffsetTimeOriginal", "OffsetTime", "TimeZone", "XMP:CreateDate"]
+_TAGS = ["OffsetTimeOriginal", "OffsetTime", "TimeZone", "XMP:CreateDate",
+         "SerialNumber", "InternalSerialNumber", "SubSecTimeOriginal"]
+
+
+def read_entry(entry: dict) -> tuple[str, str, float]:
+    """An exiftool entry's clock zone, body and fraction of a second."""
+    body = clean_serial(entry.get("SerialNumber")) or clean_serial(entry.get("InternalSerialNumber"))
+    return recorded_offset(entry), body, subsec(entry.get("SubSecTimeOriginal"))
 
 _lock = threading.Lock()
 _stop = threading.Event()
@@ -367,7 +499,7 @@ def pending(db, folder=None) -> list[dict]:
     """Photographs whose file has not been read for its clock as it is now."""
     sql = ("SELECT p.filepath, p.folder, p.file_size FROM photos p "
            "LEFT JOIN photo_clock c ON c.filepath = p.filepath "
-           "WHERE c.filepath IS NULL OR c.source_size != p.file_size")
+           "WHERE (c.filepath IS NULL OR c.source_size != p.file_size OR c.body IS NULL)")
     args: tuple = ()
     if folder is not None:
         sql += " AND p.folder = ?"
@@ -378,14 +510,18 @@ def pending(db, folder=None) -> list[dict]:
 
 
 def record(db, rows: list[tuple]) -> None:
-    """Store ``(filepath, size, offset)`` reads."""
+    """Store ``(filepath, size, offset[, body, subsec])`` reads."""
     now = datetime.now().isoformat(timespec="seconds")
     with db._connect() as conn:
         conn.executemany(
-            "INSERT INTO photo_clock (filepath, clock_offset, source_size, read_at) VALUES (?, ?, ?, ?) "
+            "INSERT INTO photo_clock (filepath, clock_offset, source_size, read_at, body, subsec) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(filepath) DO UPDATE SET clock_offset = excluded.clock_offset, "
-            "source_size = excluded.source_size, read_at = excluded.read_at",
-            [(fp, offset, int(size or 0), now) for fp, size, offset in rows])
+            "source_size = excluded.source_size, read_at = excluded.read_at, "
+            "body = excluded.body, subsec = excluded.subsec",
+            [(row[0], row[2], int(row[1] or 0), now,
+              row[3] if len(row) > 3 else "", float(row[4]) if len(row) > 4 else 0.0)
+             for row in rows])
 
 
 def run(library_root, db, stop_event: Optional[threading.Event] = None) -> dict:
@@ -413,7 +549,7 @@ def run(library_root, db, stop_event: Optional[threading.Event] = None) -> dict:
             paths = {root / r["filepath"]: r for r in group}
             present = [p for p in paths if p.is_file()]
             found = _batch_extract_exif(present, _TAGS, fast=True) if present else {}
-            record(db, [(paths[p]["filepath"], paths[p]["file_size"], recorded_offset(found.get(str(p), {})))
+            record(db, [(paths[p]["filepath"], paths[p]["file_size"], *read_entry(found.get(str(p), {})))
                         for p in present])
             recompute(db, gazetteer, name)
             _job["done"] += len(group)

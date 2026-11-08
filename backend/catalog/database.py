@@ -324,6 +324,18 @@ _MIGRATIONS = [
         where_zone TEXT NOT NULL DEFAULT '',
         created_at TEXT DEFAULT ''
     )""",
+    # Which body took a file (its serial number; "" when the file says none),
+    # and the fraction of a second its clock read (SubSecTimeOriginal; 0 when it
+    # says none): two R6 Mark IIs are two clocks, and a burst shares a second.
+    # body is NULL until the file has been read for it, so a library read before
+    # this was known is read once more.
+    "ALTER TABLE photo_clock ADD COLUMN body TEXT",
+    "ALTER TABLE photo_clock ADD COLUMN subsec REAL NOT NULL DEFAULT 0",
+    # A rule may be for one body of a camera ("" for every body), and may move
+    # its clock by some seconds: a clock that runs fast or was set a few minutes
+    # off, so two cameras at one event line up.
+    "ALTER TABLE camera_clocks ADD COLUMN body TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE camera_clocks ADD COLUMN shift_seconds INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE photos ADD COLUMN base_name TEXT NOT NULL DEFAULT ''",
     "CREATE INDEX IF NOT EXISTS idx_photos_base_name ON photos(base_name)",
     # A video's length in seconds (config.VIDEO_EXTENSIONS); 0 for a photograph.
@@ -1247,7 +1259,20 @@ class CatalogDB:
 
         where = " AND ".join(conditions)
 
-        order = LOCAL_DATE if sort_by == "capture_date" else sort_by
+        if sort_by == "capture_date":
+            # When it was taken, where it was taken (camera clocks put right),
+            # to the fraction of a second the camera wrote, so a burst keeps its
+            # order and two cameras at one event interleave. The name breaks a
+            # tie, which keeps a RAW beside its JPEG. A pair goes by whichever
+            # half wrote the fraction. Undated frames go last either way, in
+            # name order.
+            order = (f"({LOCAL_DATE} = '' OR {LOCAL_DATE} < '1900') ASC, "
+                     f"{LOCAL_DATE} {direction}, "
+                     "COALESCE((SELECT MAX(c.subsec) FROM photos t JOIN photo_clock c ON c.filepath = t.filepath "
+                     "WHERE t.folder = photos.folder AND t.base_name = photos.base_name), 0) "
+                     f"{direction}, filename")
+        else:
+            order = sort_by
         with self._connect() as conn:
             rows = conn.execute(
                 f"SELECT * FROM photos WHERE {where} ORDER BY {order} {direction}",
