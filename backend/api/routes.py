@@ -864,7 +864,7 @@ async def catalog_photos(
     pair_mode: str = Query("all", pattern="^(all|raw|jpg|paired|raw_only|jpg_only)$"),
     camera: Optional[str] = Query(None, max_length=200),
     hide_camera: list[str] = Query([]),
-    sort: str = Query("filename"),
+    sort: str = Query("capture_date"),
     desc: bool = Query(False),
 ):
     catalog = _get_catalog(request)
@@ -1243,6 +1243,8 @@ class ClockRuleRequest(BaseModel):
     date_to: str = Field("", pattern=r"^(\d{4}-\d\d-\d\d)?$")
     clock_zone: str = ""     # the zone its clock was on; "" for what the files say
     where_zone: str = ""     # the zone it was in; "" for the folder's place, or home
+    body: str = ""           # one body's serial; "" for every body of the camera
+    shift_seconds: int = Field(0, ge=-366 * 86400, le=366 * 86400)  # how far to move its clock
 
 
 @router.post("/library/clocks/rules")
@@ -1258,13 +1260,38 @@ async def add_clock_rule(req: ClockRuleRequest, request: Request):
     for name in (req.clock_zone, req.where_zone):
         if name and clock.zone(name) is None:
             raise HTTPException(status_code=400, detail=f"Not a time zone: {name}")
-    if not (req.clock_zone or req.where_zone):
-        raise HTTPException(status_code=400, detail="Say which zone the clock was on, or where it was")
+    if not (req.clock_zone or req.where_zone or req.shift_seconds):
+        raise HTTPException(status_code=400,
+                            detail="Say which zone the clock was on, where it was, or how far it was off")
     await _run_blocking(clock.add_rule, catalog.db, req.camera.strip(), req.date_from, req.date_to,
-                        req.clock_zone, req.where_zone)
+                        req.clock_zone, req.where_zone, req.body.strip(), req.shift_seconds)
     await _run_blocking(clock.refresh, catalog.db)
     catalog.forget_picks()
     return await _run_blocking(_clocks_state, catalog)
+
+
+class ClockAlignRequest(BaseModel):
+    reference: str           # the photo whose clock was right
+    other: str               # a photo taken at the same moment on the camera to move
+    span: str = Field("day", pattern="^(day|onward|always)$")   # that day, from then on, every day
+
+
+@router.post("/library/clocks/align")
+async def align_clocks(req: ClockAlignRequest, request: Request):
+    """Two photos taken at the same moment on two cameras: move the second
+    camera's clock (that body's alone) to read the first's time: on the second
+    photo's day, from then on, or always."""
+    from catalog import clock
+
+    catalog = _get_catalog(request)
+    _require_writable(catalog)
+    try:
+        done = await _run_blocking(clock.align, catalog.db, req.reference, req.other, req.span)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    await _run_blocking(clock.refresh, catalog.db)
+    catalog.forget_picks()
+    return {"aligned": done, **(await _run_blocking(_clocks_state, catalog))}
 
 
 @router.delete("/library/clocks/rules/{rule_id}")

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { shiftLabel } from "./SameMomentDialog.jsx";
 
 // ── Camera clocks ────────────────────────────────────────────────────
 //
@@ -7,6 +8,9 @@ import { useState, useEffect, useCallback } from "react";
 // its clock's zone is put right from home or the folder's place; for the rest,
 // and for a camera that was somewhere else than its folder says (a DJI in
 // China while the Ricoh was at home), a rule says so for some days.
+// A rule can also move a clock by some seconds, for one body of a camera (two
+// R6 Mark IIs are two clocks, told apart by serial) or every body: the grid's
+// "Same moment" works the shift out from two photos of one instant.
 // Nothing is written to the files and nothing moves on disk.
 
 const API = "/api";
@@ -29,12 +33,25 @@ function ZoneInput({ value, onChange, placeholder, id }) {
   );
 }
 
-function RuleForm({ camera, zonesId, onAdd, busy }) {
+// "-0:03:12", "+1:00:00", "-192", "90" as seconds; null when it is none of these.
+export function parseShift(text) {
+  const m = /^\s*([-+−]?)\s*(\d+(?::\d{1,2}){0,2})\s*$/.exec(text || "");
+  if (!m) return null;
+  const parts = m[2].split(":").map(Number);
+  if (parts.slice(1).some((v) => v > 59)) return null;
+  const s = parts.reduce((acc, v) => acc * 60 + v, 0);
+  return m[1] === "-" || m[1] === "−" ? -s : s;
+}
+
+function RuleForm({ camera, bodies, zonesId, onAdd, busy }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [clockZone, setClockZone] = useState("");
   const [whereZone, setWhereZone] = useState("");
-  const ready = clockZone.trim() || whereZone.trim();
+  const [body, setBody] = useState("");
+  const [shiftText, setShiftText] = useState("");
+  const shift = shiftText.trim() ? parseShift(shiftText) : 0;
+  const ready = (clockZone.trim() || whereZone.trim() || shift) && shift !== null;
   return (
     <div className="mt-2 rounded border border-neutral-800 p-2 space-y-2 text-xs" data-testid="clock-rule-form">
       <div className="flex items-center gap-2 flex-wrap">
@@ -46,6 +63,16 @@ function RuleForm({ camera, zonesId, onAdd, busy }) {
           className="bg-neutral-950 border border-neutral-700 rounded px-1.5 py-0.5 text-neutral-200" />
         <span className="text-neutral-600">(as its clock said; empty for always)</span>
       </div>
+      {bodies.length > 0 && (
+        <div className="flex items-center gap-2">
+          <span className="text-neutral-500 w-24 shrink-0">Body</span>
+          <select value={body} onChange={(e) => setBody(e.target.value)} data-testid="clock-rule-body"
+            className="bg-neutral-950 border border-neutral-700 rounded px-1.5 py-0.5 text-neutral-200">
+            <option value="">Every {camera}</option>
+            {bodies.map((b) => <option key={b.body} value={b.body}>{b.label} ({b.photos.toLocaleString()})</option>)}
+          </select>
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <span className="text-neutral-500 w-24 shrink-0">It was in</span>
         <ZoneInput id={zonesId} value={whereZone} onChange={setWhereZone}
@@ -56,9 +83,17 @@ function RuleForm({ camera, zonesId, onAdd, busy }) {
         <ZoneInput id={zonesId} value={clockZone} onChange={setClockZone}
           placeholder="UTC, America/Los_Angeles — empty for what its files say" />
       </div>
+      <div className="flex items-center gap-2">
+        <span className="text-neutral-500 w-24 shrink-0">Move its clock</span>
+        <input value={shiftText} onChange={(e) => setShiftText(e.target.value)} spellCheck={false}
+          data-testid="clock-rule-shift" placeholder="-0:03:12 for a clock 3 min 12 s fast"
+          className={`w-full min-w-0 bg-neutral-950 border rounded px-2 py-1 text-base sm:text-sm text-neutral-200 placeholder:text-neutral-600 ${shift === null ? "border-red-700" : "border-neutral-700"}`} />
+        {shift ? <span className="text-neutral-400 shrink-0">{shiftLabel(shift)}</span> : null}
+      </div>
       <div className="flex justify-end">
         <button disabled={!ready || busy}
-          onClick={() => onAdd({ camera, date_from: from, date_to: to, clock_zone: clockZone.trim(), where_zone: whereZone.trim() })}
+          onClick={() => onAdd({ camera, body, date_from: from, date_to: to, clock_zone: clockZone.trim(),
+            where_zone: whereZone.trim(), shift_seconds: shift || 0 })}
           className="px-2.5 py-1 rounded bg-sky-800/60 text-sky-100 hover:bg-sky-700/60 disabled:opacity-40">Add rule</button>
       </div>
     </div>
@@ -205,6 +240,16 @@ export default function ClockPanel({ onClose, onChanged, onOpenFolder }) {
                 <button onClick={() => setAdding(adding === cam.camera ? null : cam.camera)}
                   className="ml-auto text-xs text-sky-300 hover:text-sky-200">{adding === cam.camera ? "Cancel" : "+ Rule"}</button>
               </div>
+              {cam.bodies?.length > 1 && (
+                <div className="mt-1 flex flex-wrap gap-1.5 text-xs" data-testid="clock-bodies">
+                  {cam.bodies.map((b) => (
+                    <span key={b.body} className="rounded px-1.5 py-0.5 bg-neutral-800 text-neutral-300"
+                      title={`Serial ${b.body}, ${b.first} to ${b.last}`}>
+                      ·{b.body.slice(-4)} · {b.photos.toLocaleString()}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
                 {cam.recorded.map((r) => (
                   <span key={r.offset} className={`rounded px-1.5 py-0.5 ${r.offset ? "bg-neutral-800 text-neutral-300" : "text-neutral-600"}`}
@@ -215,7 +260,9 @@ export default function ClockPanel({ onClose, onChanged, onOpenFolder }) {
               </div>
               {rulesFor(cam.camera).map((r) => (
                 <div key={r.id} className="mt-1.5 flex items-center gap-2 text-xs text-neutral-300" data-testid="clock-rule">
-                  <span className="text-neutral-500">{r.date_from || "always"}{r.date_to ? ` → ${r.date_to}` : r.date_from ? " on" : ""}</span>
+                  <span className="text-neutral-500">{r.date_from || "always"}{r.date_to && r.date_to !== r.date_from ? ` → ${r.date_to}` : r.date_to ? "" : r.date_from ? " on" : ""}</span>
+                  {r.body && <span className="text-neutral-400" title={`Serial ${r.body}`}>·{r.body.slice(-4)}</span>}
+                  {r.shift_seconds ? <span>clock moved <span className="text-neutral-100">{shiftLabel(r.shift_seconds)}</span></span> : null}
                   {r.where_zone && <span>was in <span className="text-neutral-100">{r.where_zone}</span></span>}
                   {r.clock_zone && <span>clock on <span className="text-neutral-100">{r.clock_zone}</span></span>}
                   <button disabled={busy} onClick={() => send("DELETE", `/library/clocks/rules/${r.id}`)}
@@ -223,7 +270,7 @@ export default function ClockPanel({ onClose, onChanged, onOpenFolder }) {
                 </div>
               ))}
               {adding === cam.camera && (
-                <RuleForm camera={cam.camera} zonesId="clock-zones" busy={busy}
+                <RuleForm camera={cam.camera} bodies={cam.bodies || []} zonesId="clock-zones" busy={busy}
                   onAdd={async (rule) => { if (await send("POST", "/library/clocks/rules", rule)) setAdding(null); }} />
               )}
             </div>

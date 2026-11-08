@@ -239,3 +239,142 @@ def test_a_taken_on_that_is_not_a_day_is_not_kept(db):
     assert _clean_note({"taken_on": "2020-13-40"})["taken_on"] == ""
     assert _clean_note({"taken_on": "1850-01-01"})["taken_on"] == ""
     assert _clean_note({"taken_on": "2020-06-15"})["taken_on"] == "2020-06-15"
+
+
+# ── Bodies, shifts and the order of a folder ─────────────────────────
+
+def test_what_a_file_says_about_its_body_and_its_fraction_of_a_second():
+    assert clock.read_entry({"SerialNumber": 111122223333, "InternalSerialNumber": "AB0000001",
+                             "SubSecTimeOriginal": 22, "OffsetTimeOriginal": "-07:00"}) == ("-07:00", "111122223333", 0.22)
+    # A Ricoh pads its serial; it writes no fraction of a second.
+    assert clock.read_entry({"SerialNumber": "(00000000)01234567"}) == ("", "01234567", 0.0)
+    assert clock.read_entry({"SerialNumber": "0000000", "InternalSerialNumber": "AB12"})[1] == "AB12"
+    assert clock.subsec("05") == 0.05 and clock.subsec(5) == 0.5 and clock.subsec(None) == 0.0
+
+
+def test_a_shift_puts_a_clock_right_with_or_without_a_zone():
+    assert clock.local_time("2024:05:18 12:00:00", "", shift_seconds=-192) == "2024:05:18 11:56:48"
+    # The shift comes first, then the zone: a clock on +10 and two minutes slow.
+    assert clock.local_time("2025:03:08 02:55:10", "+10:00", where_zone=HOME,
+                            shift_seconds=120) == "2025:03:07 08:57:10"
+    assert clock.local_time("0000:00:00 00:00:00", "", shift_seconds=60) == ""
+
+
+SHOOT = "2024/2024-05-18"
+A, B = "111122223333", "111122224444"       # two R6 Mark IIs
+
+
+def _two_bodies(db):
+    for name, when in [("IMG_9998.CR3", "2024:05:18 11:00:00"), ("IMG_9999.CR3", "2024:05:18 11:00:00"),
+                       ("IMG_0001.CR3", "2024:05:18 11:00:00")]:
+        db.upsert_photo(_rec(SHOOT, name, "Canon EOS R6m2", when))
+    # The second body's clock is 3 minutes 12 seconds fast.
+    db.upsert_photo(_rec(SHOOT, "BODY0001.CR3", "Canon EOS R6m2", "2024:05:18 11:03:12"))
+    db.upsert_photo(_rec(SHOOT, "BODY0001.JPG", "", "2024:05:18 11:03:12"))
+    db.upsert_photo(_rec(SHOOT, "R0000142.DNG", "GR II", "2024:05:18 10:59:59"))
+    db.upsert_photo(_rec(SHOOT, "R0000143.DNG", "GR II", ""))
+    clock.record(db, [
+        # A burst across the counter's wrap, within one second.
+        (f"{SHOOT}/IMG_9998.CR3", 100, "", A, 0.10), (f"{SHOOT}/IMG_9999.CR3", 100, "", A, 0.18),
+        (f"{SHOOT}/IMG_0001.CR3", 100, "", A, 0.27),
+        (f"{SHOOT}/BODY0001.CR3", 100, "", B, 0.50), (f"{SHOOT}/BODY0001.JPG", 100, "", "", 0.0),
+        (f"{SHOOT}/R0000142.DNG", 100, "", "01234567", 0.0), (f"{SHOOT}/R0000143.DNG", 100, "", "01234567", 0.0),
+    ])
+
+
+def _order(db, **kw):
+    return [r.filename for r in db.get_photos_in_folder(SHOOT, sort_by="capture_date", **kw)]
+
+
+def test_a_folder_in_the_order_it_was_taken(db):
+    _two_bodies(db)
+    clock.recompute(db)
+    # The burst keeps its order across the wrap; the undated frame goes last.
+    assert _order(db) == ["R0000142.DNG", "IMG_9998.CR3", "IMG_9999.CR3", "IMG_0001.CR3",
+                          "BODY0001.CR3", "BODY0001.JPG", "R0000143.DNG"]
+    assert _order(db, sort_desc=True)[:4] == ["BODY0001.JPG", "BODY0001.CR3", "IMG_0001.CR3", "IMG_9999.CR3"]
+    assert _order(db, sort_desc=True)[-1] == "R0000143.DNG"
+
+
+def test_one_body_of_two_is_moved_alone(db):
+    _two_bodies(db)
+    clock.add_rule(db, "Canon EOS R6m2", body=B, shift_seconds=-192)
+    clock.recompute(db)
+    dates = {r.filename: r.capture_date for r in db.get_photos_in_folder(SHOOT)}
+    # Its JPEG, which names no body, goes with its raw twin.
+    assert dates["BODY0001.CR3"] == dates["BODY0001.JPG"] == "2024:05:18 11:00:00"
+    assert dates["IMG_0001.CR3"] == "2024:05:18 11:00:00"
+    # Now within the same second as the first body's burst, ordered by its fraction.
+    assert _order(db)[1:6] == ["IMG_9998.CR3", "IMG_9999.CR3", "IMG_0001.CR3", "BODY0001.CR3", "BODY0001.JPG"]
+    assert db.get_photo(f"{SHOOT}/BODY0001.CR3").camera_date == "2024:05:18 11:03:12"
+
+
+def test_a_body_rule_wins_and_a_zone_rule_still_holds(db):
+    found = [
+        {"id": 1, "camera": "C", "body": "", "date_from": "", "date_to": "", "clock_zone": "UTC",
+         "where_zone": "", "shift_seconds": 0},
+        {"id": 2, "camera": "C", "body": "", "date_from": "", "date_to": "", "clock_zone": "",
+         "where_zone": "", "shift_seconds": 30},
+        {"id": 3, "camera": "C", "body": "X", "date_from": "2024-05-18", "date_to": "2024-05-18",
+         "clock_zone": "", "where_zone": "", "shift_seconds": -5},
+    ]
+    assert clock.resolve(found, "C", "X", "2024-05-18") == {"clock_zone": "UTC", "where_zone": "", "shift_seconds": -5}
+    assert clock.resolve(found, "C", "X", "2026-11-08")["shift_seconds"] == 30
+    assert clock.resolve(found, "C", "Y", "2024-05-18")["shift_seconds"] == 30
+
+
+def test_two_photos_of_one_moment_line_two_clocks_up(db):
+    _two_bodies(db)
+    clock.recompute(db)
+    done = clock.align(db, f"{SHOOT}/IMG_0001.CR3", f"{SHOOT}/BODY0001.JPG")
+    assert (done["body"], done["shift_seconds"], done["moved_by"]) == (B, -192, -192)
+    clock.recompute(db)
+    assert db.get_photo(f"{SHOOT}/BODY0001.CR3").capture_date == "2024:05:18 11:00:00"
+    # Done again from the moved times, it is already right: replaced, not stacked.
+    again = clock.align(db, f"{SHOOT}/IMG_0001.CR3", f"{SHOOT}/BODY0001.CR3")
+    assert (again["shift_seconds"], again["moved_by"]) == (-192, 0)
+    shifts = [r for r in clock.rules(db) if r["shift_seconds"]]
+    assert [(r["body"], r["date_from"], r["date_to"]) for r in shifts] == [(B, "2024-05-18", "2024-05-18")]
+    # The Ricoh lined up with the first body: one second slow.
+    clock.align(db, f"{SHOOT}/IMG_9998.CR3", f"{SHOOT}/R0000142.DNG", "always")
+    clock.recompute(db)
+    assert db.get_photo(f"{SHOOT}/R0000142.DNG").capture_date == "2024:05:18 11:00:00"
+    with pytest.raises(ValueError, match="same camera"):
+        clock.align(db, f"{SHOOT}/IMG_9998.CR3", f"{SHOOT}/IMG_0001.CR3")
+
+
+def test_bodies_are_listed_and_a_library_read_before_is_read_again(db):
+    _two_bodies(db)
+    r6 = next(c for c in clock.cameras(db) if c["camera"] == "Canon EOS R6m2")
+    assert [(b["body"], b["photos"]) for b in r6["bodies"]] == [(A, 3), (B, 1)]
+    assert r6["bodies"][1]["label"] == "Canon EOS R6m2 ·4444"
+    assert clock.pending(db) == []
+    with db._connect() as conn:
+        conn.execute("UPDATE photo_clock SET body = NULL WHERE filepath = ?", (f"{SHOOT}/R0000142.DNG",))
+    assert [r["filepath"] for r in clock.pending(db)] == [f"{SHOOT}/R0000142.DNG"]
+
+
+def test_aligning_through_the_api(client):
+    import main
+
+    _two_bodies(main.app.state.catalog.db)
+    out = client.post("/api/library/clocks/align", json={
+        "reference": f"{SHOOT}/IMG_0001.CR3", "other": f"{SHOOT}/BODY0001.CR3"}).json()
+    assert out["aligned"]["shift_seconds"] == -192
+    assert any(r["body"] == B and r["shift_seconds"] == -192 for r in out["rules"])
+    names = [p["filename"] for p in client.get(f"/api/catalog/photos/{SHOOT}").json()["photos"]]
+    assert names[-1] == "R0000143.DNG" and names.index("BODY0001.CR3") == names.index("IMG_0001.CR3") + 1
+    bad = client.post("/api/library/clocks/align", json={
+        "reference": f"{SHOOT}/IMG_9998.CR3", "other": f"{SHOOT}/IMG_0001.CR3"})
+    assert bad.status_code == 400
+    assert client.post("/api/library/clocks/rules", json={
+        "camera": "Canon EOS R6m2", "body": B, "shift_seconds": 60}).status_code == 200
+
+
+def test_a_shift_from_that_day_on(db):
+    _two_bodies(db)
+    clock.align(db, f"{SHOOT}/IMG_0001.CR3", f"{SHOOT}/BODY0001.CR3", "onward")
+    rule = next(r for r in clock.rules(db) if r["shift_seconds"])
+    assert (rule["date_from"], rule["date_to"]) == ("2024-05-18", "")
+    with pytest.raises(ValueError):
+        clock.align(db, f"{SHOOT}/IMG_0001.CR3", f"{SHOOT}/BODY0001.CR3", "week")
