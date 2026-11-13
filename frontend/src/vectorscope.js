@@ -43,7 +43,7 @@ export function cellOf(cb, cr, size, gain = 1) {
 // Count an RGBA buffer (as getImageData gives) into a size x size grid.
 // Transparent pixels are skipped; at a gain above 1 what leaves the square is
 // dropped, not piled on the edge.
-export function scopeOf(data, size = 128, gain = 1) {
+export function scopeOf(data, size = 129, gain = 1) {
   const counts = new Uint32Array(size * size);
   let peak = 0;
   for (let i = 0; i + 3 < data.length; i += 4) {

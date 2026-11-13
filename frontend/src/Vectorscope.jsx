@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { chromaOf, scopeOf, SKIN_ANGLE, TARGETS } from "./vectorscope.js";
 
 // Draw the bitmap 256 px wide, read it and count it, as histogramOf does.
-export function scopeOfBitmap(bitmap, gain = 1, size = 128) {
+export function scopeOfBitmap(bitmap, gain = 1, size = 129) {
   const width = 256;
   const height = Math.max(1, Math.round((bitmap.height / bitmap.width) * width));
   const canvas = document.createElement("canvas");
@@ -45,7 +45,7 @@ function cellColours(size, gain) {
 
 export default function Vectorscope({ scope, gain = 1, probe, className = "" }) {
   const canvasRef = useRef(null);
-  const size = scope?.size || 128;
+  const size = scope?.size || 129;
   const colours = useMemo(() => cellColours(size, gain), [size, gain]);
 
   useEffect(() => {

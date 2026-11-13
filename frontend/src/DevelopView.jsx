@@ -6188,7 +6188,7 @@ Number(settings.mono) ? (
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between gap-2 mb-2">
               {short ? (
                 <span className="text-xs uppercase tracking-wide text-neutral-500">Histogram</span>
               ) : (
@@ -6208,12 +6208,14 @@ Number(settings.mono) ? (
                   )}
                 </div>
               )}
+              {/* Beside the buttons the legend has room for two lines in the
+                  narrow panel: the unbreakable spaces keep each part whole. */}
               {showScope ? (
-                <span className="text-[10px] text-neutral-500"
-                  title="Each pixel placed by its colour: a neutral grey in the centre, more saturated further out. The boxes are 75% red, magenta, blue, cyan, green and yellow.">neutral in the centre · line: skin</span>
+                <span className="text-[10px] leading-tight text-right text-neutral-500"
+                  title="Each pixel placed by its colour: a neutral grey in the centre, more saturated further out. The boxes are 75% red, magenta, blue, cyan, green and yellow. The line is where skin falls.">{"centre: neutral · line: skin"}</span>
               ) : (
-                <span className="text-[10px] text-neutral-500"
-                  title="The grey line is the original's brightness, the white line the edit's; the red, green and blue the edit's channels.">grey original · white edit · RGB</span>
+                <span className="text-[10px] leading-tight text-right text-neutral-500"
+                  title="The grey line is the original's brightness, the white line the edit's; the red, green and blue the edit's channels.">{"grey original · white edit · RGB"}</span>
               )}
             </div>
             {showScope ? (
