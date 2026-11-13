@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 PASTE_AS = ("copied", "keep_light", "match_exposure", "match_look")
 # What a frame keeps of its own under keep_light.
-LIGHT_KEYS = ("exposure", "temperature", "tint")
+LIGHT_KEYS = ("exposure", "temperature", "tint", "wb_kelvin", "wb_tint")
 
 # The capture settings are believed only when the picture agrees with them to
 # within this many stops. Where the light was the same and only the meter moved,
@@ -203,6 +203,29 @@ def to_sliders(copied: dict, exposure: float, wb: np.ndarray) -> dict:
     return out
 
 
+def relative_white(copied: dict, copied_as_shot, target_as_shot) -> dict:
+    """The absolute white balance (wb_kelvin, wb_tint) for a frame shot at
+    ``target_as_shot`` that moves it as far from its own as shot as ``copied`` moved
+    the copied frame from ``copied_as_shot``: in mireds, and in tint. Empty when
+    ``copied`` has none. Both as shots are (kelvin, tint).
+
+    Matching the light compares the frames' as-shot renderings with each other, so
+    putting the copied frame's absolute Kelvin on top would correct twice.
+    """
+    from adjust.develop import SLIDER_RANGES
+
+    if "wb_kelvin" not in copied:
+        return {}
+    k0, t0 = copied_as_shot
+    k1, t1 = target_as_shot
+    mireds = 1.0e6 / float(copied["wb_kelvin"]) - 1.0e6 / float(k0)
+    low, high = SLIDER_RANGES["wb_kelvin"]
+    kelvin = 1.0e6 / max(1.0e6 / high, min(1.0e6 / low, 1.0e6 / float(k1) + mireds))
+    tint = float(t1) + float(copied.get("wb_tint", 0)) - float(t0)
+    tlow, thigh = SLIDER_RANGES["wb_tint"]
+    return {"wb_kelvin": int(round(kelvin)), "wb_tint": int(round(max(tlow, min(thigh, tint))))}
+
+
 def adjuster(library_root: Path, source: Optional[str], copied: dict, paste_as: str,
              prefer_raw: bool = True, faces_of: Optional[Callable] = None,
              look_amount: float = MATCH_AMOUNT) -> Optional[Callable]:
@@ -253,6 +276,18 @@ def adjuster(library_root: Path, source: Optional[str], copied: dict, paste_as: 
         def match_light(path: str, edit: dict, own: dict):
             if path == source:
                 return edit, None
+            edit = dict(edit)
+            if "wb_kelvin" in copied:
+                try:
+                    from adjust import whitebalance
+
+                    edit.update(relative_white(copied, whitebalance.as_shot(whitebalance.of_source(reference)),
+                                               whitebalance.as_shot(whitebalance.of_source(file_of(path)))))
+                except Exception as e:
+                    logger.warning(f"White balance not moved for {path}: {e}")
+            return match_rest(path, edit, own)
+
+        def match_rest(path: str, edit: dict, own: dict):
             try:
                 h = hero_once()
                 target = file_of(path)

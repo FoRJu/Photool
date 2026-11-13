@@ -1972,6 +1972,7 @@ def frame_of(source: Path, rgb):
     """A ``LinearFrame`` of ``rgb``, a decode of ``source`` at whatever size, that
     knows how much smaller than the whole photograph it is (for sharpening) and
     how the camera corrects its lens (for lens_profile, found when first asked)."""
+    from adjust import whitebalance
     from adjust.render import LinearFrame
 
     frame = LinearFrame(rgb)
@@ -1979,6 +1980,7 @@ def frame_of(source: Path, rgb):
     if side:
         frame.scale = min(1.0, max(rgb.shape[:2]) / side)
     frame.lens = lambda: lens_profile(source, frame.rgb)
+    frame.wb = lambda: whitebalance.of_source(source)
     return frame
 
 

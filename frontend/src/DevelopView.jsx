@@ -1,4 +1,5 @@
 import DoubleExposureDialog from "./DoubleExposureDialog.jsx";
+import WhiteBalance from "./WhiteBalance.jsx";
 import { editKey, makeDoubleExposure, sameEdit, secondOf, secondOfRow, versionThumb, versionsOf } from "./doubleExposure.js";
 import { useState, useEffect, useCallback, useRef, useMemo, useId, createContext, useContext } from "react";
 import { copiedEdit, copyEdit, useCopiedEdit, copyChoice, keepCopyChoice, PASTE_AS, pasteAs, keepPasteAs,
@@ -78,11 +79,18 @@ const GROUPS = [
   {
     id: "wb",
     title: "White balance",
-    hint: "A correction, so it comes first: a colour cast changes how bright the picture looks.",
+    hint: "A correction, so it comes first: a colour cast changes how bright the picture looks. Temp is the colour of the light in Kelvin; Pick grey solves both from something neutral.",
+    // Drawn by WhiteBalance.jsx, not as sliders: listed here so the edit, undo
+    // and reset know them. Warmth and tint are the earlier relative trim, kept
+    // for the edits that carry them.
     sliders: [
-      { key: "temperature", label: "Warmth", min: -100, max: 100, step: 1, format: signed,
+      { key: "wb_kelvin", label: "Temp", min: 2000, max: 50000, step: 10, format: (v) => `${v} K`, hidden: true,
+        title: "The colour of the light, in Kelvin." },
+      { key: "wb_tint", label: "Tint", min: -150, max: 150, step: 1, format: signed, hidden: true,
+        title: "Green or magenta." },
+      { key: "temperature", label: "Earlier warmth", min: -100, max: 100, step: 1, format: signed, hidden: true,
         title: "Warmer or cooler. A relative channel shift, not a colour temperature." },
-      { key: "tint", label: "Tint", min: -100, max: 100, step: 1, format: signed,
+      { key: "tint", label: "Earlier tint", min: -100, max: 100, step: 1, format: signed, hidden: true,
         title: "Green or magenta, for a cast the white balance cannot reach." },
     ],
   },
@@ -472,7 +480,7 @@ const LOOK_KEYS = [
 // frame. The ticks are kept on this device (editClipboard.js).
 const COPY_SECTIONS = [
   { id: "profile", label: "Profile", keys: ["mono", "flat", "style", "style_fade"] },
-  { id: "wb", label: "White balance", keys: ["temperature", "tint"] },
+  { id: "wb", label: "White balance", keys: ["wb_kelvin", "wb_tint", "temperature", "tint"] },
   { id: "light", label: "Light", keys: [...LIGHT_KEYS, "contrast"] },
   { id: "noise", label: "Noise reduction", keys: ["nr_luma", "nr_color"] },
   { id: "sharpen", label: "Sharpening", keys: ["sharpen", "sharpen_radius", "sharpen_detail", "sharpen_masking"] },
@@ -1684,7 +1692,10 @@ function matchAt(found, amount) {
 // What a match was fitted on: the controls under its curves. A match is measured
 // once, on the frame as it was then, so when one of these changes the curves no
 // longer fit it and the panel offers to match again.
-const MATCH_BASE_KEYS = ["flat", "style", "style_fade", "exposure", "temperature", "tint"];
+const MATCH_BASE_KEYS = ["flat", "style", "style_fade", "exposure", "temperature", "tint", "wb_kelvin", "wb_tint"];
+// What a paste's keep_light keeps of a frame's own, and its match_exposure sets
+// (backend export/paste_match.py LIGHT_KEYS).
+const PASTE_LIGHT_KEYS = ["exposure", "temperature", "tint", "wb_kelvin", "wb_tint"];
 const matchBase = (settings) => JSON.stringify(MATCH_BASE_KEYS.map((k) => settings?.[k] ?? 0));
 
 function MatchPanel({ filepath, reference, match, busy, error, stale, onPickThis, onFile, onForget, onMatch, onAmount }) {
@@ -4059,6 +4070,10 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
 
   // While the lens blur's focus is being picked, what a click on the picture does.
   const focusPick = useRef(null);
+  // The same while a grey is being picked for the white balance (WhiteBalance.jsx).
+  const whitePick = useRef(null);
+  const [pickingWhite, setPickingWhite] = useState(false);
+  useEffect(() => { setPickingWhite(false); }, [filepath]);
   const onPictureClick = useCallback((e) => {
     if (panned.current) { panned.current = false; return; }
     if (fullView || !imgRef.current) return;
@@ -4066,6 +4081,7 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
     const u = (e.clientX - rect.left) / rect.width;
     const v = (e.clientY - rect.top) / rect.height;
     if (u < 0 || u > 1 || v < 0 || v > 1) return;
+    if (whitePick.current) { whitePick.current(u, v); return; }
     if (focusPick.current) { focusPick.current(u, v); return; }
     placeLoupe({ u, v });
   }, [fullView, placeLoupe]);
@@ -5083,7 +5099,7 @@ ${known.license}
     const label = skipped ? "Edit pasted (crop and spots kept: this frame is turned)" : "Edit pasted";
     const mode = pasteAs();
     if (mode === "keep_light") {
-      for (const key of ["exposure", "temperature", "tint"]) next[key] = key in current ? current[key] : ZERO[key];
+      for (const key of PASTE_LIGHT_KEYS) next[key] = key in current ? current[key] : ZERO[key];
       applySettings(next, `${label}, keeping this frame's exposure and white balance`);
       return;
     }
@@ -5103,7 +5119,7 @@ ${known.license}
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setNote(data.detail || "Could not match: pasted as copied"); applySettings(next, label); return; }
       const got = data.settings || {};
-      const changed = mode === "match_exposure" ? ["exposure", "temperature", "tint"] : [...CURVE_KEYS, "saturation", "mono"];
+      const changed = mode === "match_exposure" ? PASTE_LIGHT_KEYS : [...CURVE_KEYS, "saturation", "mono"];
       for (const key of changed) next[key] = key in got ? got[key] : ZERO[key];
       applySettings(next, data.note ? `${label} · ${data.note}` : label);
     } catch {
@@ -5621,8 +5637,15 @@ ${known.license}
             {NOISE_NOTES[noiseState]}
           </div>
         )}
+        {id === "wb" && (
+          <WhiteBalance filepath={filepath} settings={settings} onChange={change} onApply={applyGroup}
+            picking={pickingWhite} setPicking={(on) => { setPickingWhite(on); if (on) setPickingFocus(false); }}
+            pickRef={whitePick}
+            pickBody={(u, v) => ({ filepath, u, v, size: PREVIEW_SIZE, settings: activeOnly(settingsRef.current),
+              ...frameGeometry(settingsRef.current) })} />
+        )}
         <Controls>
-          {group.sliders.filter((def) => (!def.needsLook || hasLook)
+          {group.sliders.filter((def) => !def.hidden && (!def.needsLook || hasLook)
             && (!def.needsStyle || settings.style)
             && (!def.needsSharpen || Number(settings.sharpen) > 0)
             && (!def.needsBlur || Number(settings.lens_blur) > 0)
@@ -5940,7 +5963,8 @@ Number(settings.mono) ? (
                 transformOrigin: "0 0" }}
               onClick={onPictureClick}
               onPointerMove={onPictureMove} onPointerLeave={() => setProbe(null)}
-              title={fullView ? undefined : pickingFocus ? "Click what should be sharp" : "Click to look at this spot at 1:1"}>
+              title={fullView ? undefined : pickingWhite ? "Click something that should be grey"
+                : pickingFocus ? "Click what should be sharp" : "Click to look at this spot at 1:1"}>
               <img ref={imgRef} src={shown} alt="" draggable={false}
                 className="max-h-[calc(100vh-9rem)] max-w-full object-contain"
                 style={cropMode && angle ? { transform: `rotate(${angle}deg)` } : undefined} />

@@ -21,6 +21,9 @@ _MEANING = {
     "exposure": "Stops. +1 doubles the light; a real re-exposure in linear light, not a brightness lift",
     "temperature": "White balance. Negative cooler (bluer), positive warmer (yellower)",
     "tint": "White balance. Negative greener, positive more magenta",
+    "wb_kelvin": ("White balance as a colour temperature in Kelvin, as Lightroom's Temp: higher is warmer. "
+                  "Absent is as shot; temperature and tint above are a relative trim on top of it"),
+    "wb_tint": "White balance tint beside wb_kelvin, Lightroom's scale: positive more magenta. Ignored without wb_kelvin",
     "contrast": "A curve through the mid-tones. Negative flatter, positive punchier",
     "highlights": "The bright half. Negative recovers a bright sky, positive brightens",
     "lights": "The bright middle tones, about two thirds of a stop over grey: a lit face, skin, pale cloth",
@@ -150,7 +153,8 @@ def controls() -> list[dict]:
             low, high = -develop.MAX_EXPOSURE_EV, develop.MAX_EXPOSURE_EV
         else:
             low, high = develop.SLIDER_RANGES.get(key, (-develop.MAX_TONE_VALUE, develop.MAX_TONE_VALUE))
-        out.append({"key": key, "min": low, "max": high, "default": 0, "meaning": _MEANING.get(key, "")})
+        default = None if key == "wb_kelvin" else 0
+        out.append({"key": key, "min": low, "max": high, "default": default, "meaning": _MEANING.get(key, "")})
     for key in develop.CURVE_KEYS:
         out.append({"key": key, "min": 0, "max": 255, "default": None, "meaning": _CURVE_MEANING[key]})
     out.append({"key": develop.MASKS_KEY, "min": None, "max": None, "default": None, "meaning": _MASKS_MEANING})
