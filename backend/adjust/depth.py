@@ -425,6 +425,6 @@ def blurred(frame, amount: float, focus: float = 0, sharp: float = 0):
     if rgb is frame.rgb:
         return frame
     out = LinearFrame(rgb, look=frame.look, window=frame.window, scale=frame.scale,
-                      anchor_of=frame.anchor_of or frame, lens=frame.lens)
+                      anchor_of=frame.anchor_of or frame, lens=frame.lens, wb=frame.wb)
     frame._blurred = (key, out)
     return out

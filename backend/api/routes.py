@@ -138,6 +138,10 @@ class AdjustmentParams(BaseModel):
     exposure: float = 0.0      # stops: -5.0 darker .. +5.0 brighter
     temperature: int = 0       # -100 cool .. +100 warm
     tint: int = 0              # -100 green .. +100 magenta
+    # White balance, absolute (adjust.whitebalance): absent is as shot. A tint is
+    # read only beside a colour temperature.
+    wb_kelvin: Optional[int] = None   # 2000 .. 50000, higher warmer
+    wb_tint: Optional[int] = None     # -150 green .. +150 magenta
     contrast: int = 0          # -100 flat .. +100 punchy
     highlights: int = 0        # -100 recover .. +100 brighten
     shadows: int = 0           # -100 deepen .. +100 open up
@@ -3472,6 +3476,58 @@ class DepthAtRequest(FrameGeometry):
     v: float
     settings: dict = {}          # the edit, whose crop and level say where that is
     size: int = 1600
+
+
+class WhiteBalanceRequest(BaseModel):
+    filepath: str
+
+
+@router.post("/export/develop/white-balance")
+async def develop_white_balance(req: WhiteBalanceRequest, request: Request):
+    """What a file knows of its own white balance: whether it is a RAW whose Kelvin
+    is known, and the Kelvin and tint it was shot at (D65 when it is not)."""
+    from adjust import whitebalance
+    from export.engine import resolve_export_source
+
+    config = request.app.state.config
+
+    def read():
+        source = resolve_export_source(_library_file(config, req.filepath), config.export_prefer_raw)
+        return whitebalance.of_source(source)
+
+    found = await _run_blocking(read)
+    kelvin, tint = whitebalance.as_shot(found)
+    return {"raw": bool(found and found.raw), "as_shot": {"kelvin": int(round(kelvin)), "tint": int(round(tint))}}
+
+
+class WhitePointRequest(DepthAtRequest):
+    pass
+
+
+@router.post("/export/develop/white-point")
+async def develop_white_point(req: WhitePointRequest, request: Request):
+    """The Kelvin and tint that make the patch at a point of the frame neutral: the
+    grey picker. 422 with a sentence when that patch cannot be read as grey."""
+    from adjust import whitebalance
+    from adjust.develop import normalize
+    from adjust.geometry import source_point
+
+    config = request.app.state.config
+
+    def read():
+        frame = _mask_frame(config, req.filepath, req.size, req)
+        if frame is None:
+            return None
+        u, v = source_point(normalize(req.settings), req.u, req.v, *frame.size)
+        return whitebalance.white_point(whitebalance.of_frame(frame), whitebalance.sample(frame.rgb, u, v))
+
+    try:
+        found = await _run_blocking(read)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Could not read this frame")
+    return {"kelvin": found[0], "tint": found[1]}
 
 
 @router.get("/export/develop/second")

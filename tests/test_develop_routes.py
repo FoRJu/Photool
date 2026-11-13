@@ -208,3 +208,34 @@ class TestLooksOfYourOwn:
     def test_a_look_of_only_its_frame_is_nothing_to_save(self, client):
         res = client.post("/api/export/develop/presets", json={"name": "Crop", "settings": {"angle": 2.0}})
         assert res.status_code == 400
+
+
+class TestWhiteBalance:
+    def test_a_jpeg_is_not_raw_and_reads_as_daylight(self, client):
+        res = client.post("/api/export/develop/white-balance", json={"filepath": PHOTO})
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["raw"] is False
+        assert abs(body["as_shot"]["kelvin"] - 6500) < 30 and 5 <= body["as_shot"]["tint"] <= 15
+
+    def test_the_picker_reads_a_grey_as_the_file_s_own_white(self, client):
+        res = client.post("/api/export/develop/white-point",
+                          json={"filepath": PHOTO, "u": 0.5, "v": 0.08, "settings": {}, "size": 400})
+        assert res.status_code == 200, res.text
+        as_shot = client.post("/api/export/develop/white-balance", json={"filepath": PHOTO}).json()["as_shot"]
+        got = res.json()
+        assert abs(1e6 / got["kelvin"] - 1e6 / as_shot["kelvin"]) < 3 and abs(got["tint"] - as_shot["tint"]) <= 2
+
+    def test_the_picker_refuses_with_a_sentence(self, client, monkeypatch):
+        from adjust import whitebalance
+
+        monkeypatch.setattr(whitebalance, "CLIPPED", 0.5)     # the bright strip, as if blown out
+        res = client.post("/api/export/develop/white-point",
+                          json={"filepath": PHOTO, "u": 0.5, "v": 0.08, "settings": {}, "size": 400})
+        assert res.status_code == 422
+        assert "clipped" in res.json()["detail"]
+
+    def test_the_edit_keeps_both_keys(self, client):
+        settings = _edit(client, wb_kelvin=3200, wb_tint=-7)
+        assert settings["wb_kelvin"] == 3200 and settings["wb_tint"] == -7
+        assert "wb_tint" not in _edit(client, wb_tint=-7)

@@ -70,7 +70,8 @@ def retouched(frame, masks: list, reach):
     if kept is not None and kept[0] == key:
         return kept[1]
     rgb = retouch(frame, masks, reach)
-    out = LinearFrame(rgb, look=frame.look, window=frame.window, scale=frame.scale, anchor_of=frame.anchor_of)
+    out = LinearFrame(rgb, look=frame.look, window=frame.window, scale=frame.scale, anchor_of=frame.anchor_of,
+                      wb=frame.wb)
     out._mattes = frame._mattes
     frame._retouched = (key, out)
     return out

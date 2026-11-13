@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 from adjust.geometry import GEOMETRY_KEYS, apply_geometry
 from adjust.lens import FRAME_KEYS, TRANSFORM_KEYS
+from adjust.whitebalance import matrix_of
 from functools import lru_cache
 
 from adjust.develop import (
@@ -375,6 +376,10 @@ class LinearFrame:
     lens: Optional[object] = field(default=None, repr=False)
     # This frame with its lens corrected, by the model (see lens_corrected).
     _corrected: Optional[tuple] = field(default=None, repr=False)
+    # The file's own white balance: a callable ``() -> adjust.whitebalance.WhiteBalance
+    # or None`` (export.engine.frame_of), None for a frame that cannot know (the
+    # nominal case). A frame cut from another reads its anchor's.
+    wb: Optional[object] = field(default=None, repr=False)
     # The frame as shown before any edit, display-encoded: what a mask's range
     # is judged on (see shown).
     _shown: Optional[np.ndarray] = field(default=None, repr=False)
@@ -427,6 +432,7 @@ def region_frame(small: "LinearFrame", region: np.ndarray, box: tuple) -> "Linea
     patch.look = small.look
     patch.window = tuple(box)
     patch.anchor_of = small.anchor_of or small
+    patch.wb = small.wb
     _, base_small, _ = small.layers()
     sh, sw = base_small.shape
     left, top, right, bottom = box
@@ -473,7 +479,7 @@ def draft_of(frame: "LinearFrame") -> "LinearFrame":
     frame._draft = LinearFrame(rgb, look=frame.look, window=frame.window,
                                scale=frame.scale * rgb.shape[1] / w,
                                anchor_of=frame.anchor_of or frame,
-                               denoiser=denoiser, lens=frame.lens)
+                               denoiser=denoiser, lens=frame.lens, wb=frame.wb)
     frame._draft._is_draft = True
     return frame._draft
 
@@ -488,7 +494,7 @@ def healed(frame: "LinearFrame", spots: list, fetch=None) -> "LinearFrame":
     if frame._healed is not None and frame._healed[0] == key:
         return frame._healed[1]
     out = LinearFrame(apply_spots(frame.rgb, spots, frame.window, fetch), look=frame.look,
-                      window=frame.window, scale=frame.scale, anchor_of=frame.anchor_of)
+                      window=frame.window, scale=frame.scale, anchor_of=frame.anchor_of, wb=frame.wb)
     frame._healed = (key, out)
     return out
 
@@ -510,7 +516,7 @@ def noise_reduced(frame: "LinearFrame", luma: float, color: float, wait: bool = 
 
     out = LinearFrame(blend(frame.rgb, denoised, luma, color), look=frame.look,
                       window=frame.window, scale=frame.scale, anchor_of=frame.anchor_of or frame,
-                      lens=frame.lens)
+                      lens=frame.lens, wb=frame.wb)
     frame._reduced = (key, out)
     return out
 
@@ -538,7 +544,7 @@ def lens_corrected(frame: "LinearFrame", profile: float = 0, amount: float = 0,
     key = json.dumps(model, sort_keys=True)
     if frame._corrected is not None and frame._corrected[0] == key:
         return frame._corrected[1]
-    out = LinearFrame(warp(frame.rgb, model), look=frame.look, scale=frame.scale, lens=frame.lens)
+    out = LinearFrame(warp(frame.rgb, model), look=frame.look, scale=frame.scale, lens=frame.lens, wb=frame.wb)
     frame._corrected = (key, out)
     return out
 
@@ -1041,7 +1047,7 @@ def _linear_gain_of_encoded(change: Optional[dict]) -> Optional[dict]:
 _TONAL_KEYS = ("highlights", "lights", "darks", "shadows", "whites", "blacks", "contrast", "compress", "clarity")
 # Everything the first two stages read. The rest of an edit — curve, mixer,
 # black and white, the look, effects — starts from their result.
-_LIGHT_AND_TONE_KEYS = ("exposure", "temperature", "tint", "flat", "style", "style_fade",
+_LIGHT_AND_TONE_KEYS = ("exposure", "temperature", "tint", "wb_kelvin", "wb_tint", "flat", "style", "style_fade",
                         "masks") + _TONAL_KEYS
 # A gradient's controls that act through the tone curve on the base.
 _MASK_TONE_KEYS = ("contrast", "highlights", "lights", "darks", "shadows")
@@ -1127,7 +1133,13 @@ def _light_and_tone(frame: LinearFrame, clean: dict, change: Optional[dict]) -> 
         [change["wb_r"], change["wb_g"], change["wb_b"]] if change else [1.0, 1.0, 1.0],
         dtype=np.float32,
     )
-    rgb = frame.rgb * gains
+    rgb = frame.rgb
+    balance = matrix_of(frame, clean)
+    if balance is not None:
+        # The white balance first, as a decode at that white would have made the
+        # frame; the relative warmth and tint, and a set's match, trim it after.
+        rgb = np.clip(rgb @ balance.T, 0.0, None)
+    rgb = rgb * gains
 
     # Gradients (adjust.masks): each control scaled by the gradient's weight at
     # every pixel, in the stage where its global slider acts. Exposure is a map
@@ -1223,6 +1235,11 @@ def develop_frame(
     is empty.
     """
     clean = normalize(settings)
+    if "wb_kelvin" in clean and matrix_of(frame, clean) is None:
+        # As shot, to within a mired and a unit of tint: the same picture as no
+        # white balance at all, and drawn as that.
+        clean.pop("wb_kelvin")
+        clean.pop("wb_tint", None)
     if "masks" in clean:
         from adjust.masks import active
 

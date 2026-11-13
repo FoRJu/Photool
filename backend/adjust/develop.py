@@ -97,6 +97,11 @@ MIN_GAIN = 0.005
 # line up in practice.
 
 POINT_SLIDERS = ("exposure", "temperature", "tint")
+# White balance, absolute (adjust.whitebalance): ``wb_kelvin`` 2000..50000 and
+# ``wb_tint`` -150..150 on Lightroom's scales. No ``wb_kelvin`` is as shot, and
+# ``wb_tint`` is read only beside it. ``temperature`` and ``tint`` above stay a
+# relative trim, applied after this.
+WB_SLIDERS = ("wb_kelvin", "wb_tint")
 TONE_SLIDERS = ("contrast", "highlights", "shadows", "whites", "blacks")
 
 # Controls that only the float pipeline (adjust.render) understands. They are
@@ -167,7 +172,7 @@ LENS_SLIDERS = ("lens_profile", "distortion")
 # (tf_vertical) and its vertical one (tf_horizontal), and its aspect, -100..100.
 TRANSFORM_SLIDERS = ("tf_vertical", "tf_horizontal", "tf_aspect")
 
-SETTINGS_SLIDERS = (POINT_SLIDERS + TONE_SLIDERS + LOOK_SLIDERS + HSL_SLIDERS
+SETTINGS_SLIDERS = (POINT_SLIDERS + WB_SLIDERS + TONE_SLIDERS + LOOK_SLIDERS + HSL_SLIDERS
                     + BW_SLIDERS + EFFECT_SLIDERS + NOISE_SLIDERS + SHARPEN_SLIDERS + BLUR_SLIDERS
                     + LENS_SLIDERS + TRANSFORM_SLIDERS)
 
@@ -192,6 +197,8 @@ OWN_KEYS = GEOMETRY_KEYS + (SPOTS_KEY, SECOND_KEY) + TRANSFORM_SLIDERS
 
 # (low, high) for the controls that are not the usual -100..100.
 SLIDER_RANGES = {
+    "wb_kelvin": (2000.0, 50000.0),
+    "wb_tint": (-150.0, 150.0),
     "flat": (0.0, 100.0),
     "style_fade": (0.0, 100.0),
     "compress": (0.0, 100.0),
@@ -478,6 +485,9 @@ def normalize(settings: Optional[dict]) -> dict:
     else:
         clean.pop("style_fade", None)
     clean.update(normalize_geometry(settings))
+    # A tint is read only beside a colour temperature.
+    if "wb_kelvin" not in clean:
+        clean.pop("wb_tint", None)
     # A hue with no strength behind it is not an edit.
     for hue, strength in HUE_OF.items():
         if hue in clean and strength not in clean:
@@ -865,6 +875,10 @@ _MASKS_CRS = "crs:PhotoolMasks"
 _SPOTS_CRS = "crs:PhotoolSpots"
 # The second exposure (adjust.double), the same way.
 _SECOND_CRS = "crs:PhotoolSecond"
+# The absolute white balance, in this app's own names: Lightroom's own
+# crs:Temperature is not written (yet), so as not to claim its meaning.
+_WB_KELVIN_CRS = "crs:WBKelvin"
+_WB_TINT_CRS = "crs:WBTint"
 # Written without a sign: they are 0..100 / 0..360, never negative.
 _UNSIGNED = {"flat", "style_fade", "compress", "fade", "shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat",
              "grain", "nr_luma", "nr_color", "sharpen", "sharpen_masking", "lens_profile",
@@ -905,6 +919,9 @@ def to_crs(settings: Optional[dict]) -> dict:
             out[name] = f"{clean[key]:+d}" if key not in _UNSIGNED else f"{clean[key]:d}"
     if clean.get("mono"):
         out[GRAYSCALE_CRS] = "True"
+    if "wb_kelvin" in clean:
+        out[_WB_KELVIN_CRS] = f"{clean['wb_kelvin']:d}"
+        out[_WB_TINT_CRS] = f"{clean.get('wb_tint', 0):+d}"
     if "temperature" in clean:
         out["crs:TemperatureShift"] = f"{clean['temperature']:+d}"
     if "tint" in clean:
@@ -1003,6 +1020,11 @@ def from_crs(develop: Optional[dict]) -> dict:
     if str(develop.get(GRAYSCALE_CRS, "")).strip().lower() == "true":
         raw["mono"] = 1
 
+    kelvin = number(_WB_KELVIN_CRS)
+    if kelvin is not None:
+        raw["wb_kelvin"] = kelvin
+        raw["wb_tint"] = number(_WB_TINT_CRS) or 0
+
     temperature = number("crs:TemperatureShift")
     if temperature is not None:
         raw["temperature"] = temperature
@@ -1056,6 +1078,8 @@ CRS_KEYS = (
     "crs:Blacks2012",
     "crs:TemperatureShift",
     "crs:TintShift",
+    _WB_KELVIN_CRS,
+    _WB_TINT_CRS,
     "crs:Tint2012",
     *_LOOK_CRS.values(),
     GRAYSCALE_CRS,
