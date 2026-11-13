@@ -173,6 +173,14 @@ class Config:
         return list(self.import_extensions)
 
     def __post_init__(self):
+        # A path written as "~/Photos" means the home folder. Left as it is, it is
+        # a folder named "~" under wherever the app was started.
+        for name in ("library_root", "db_path", "thumbnail_cache", "models_dir", "tls_cert", "tls_key"):
+            value = getattr(self, name)
+            if isinstance(value, str) and value.startswith("~"):
+                setattr(self, name, str(Path(value).expanduser()))
+        self.sd_mount_paths = [str(Path(p).expanduser()) if isinstance(p, str) and p.startswith("~") else p
+                               for p in (self.sd_mount_paths or [])]
         if not self.db_path:
             self.db_path = str(Path(self.library_root) / ".photomanager" / "catalog.db")
         if not self.thumbnail_cache:
