@@ -1,5 +1,7 @@
 import DoubleExposureDialog from "./DoubleExposureDialog.jsx";
 import WhiteBalance from "./WhiteBalance.jsx";
+import Vectorscope, { scopeOfBitmap } from "./Vectorscope.jsx";
+import { recall, remember } from "./remembered.js";
 import { editKey, makeDoubleExposure, sameEdit, secondOf, secondOfRow, versionThumb, versionsOf } from "./doubleExposure.js";
 import { useState, useEffect, useCallback, useRef, useMemo, useId, createContext, useContext } from "react";
 import { copiedEdit, copyEdit, useCopiedEdit, copyChoice, keepCopyChoice, PASTE_AS, pasteAs, keepPasteAs,
@@ -3570,6 +3572,10 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
   const [pairing, setPairing] = useState(false);
   const [clipUrl, setClipUrl] = useState(null);
   const [showClip, setShowClip] = useState(false);
+  // The histogram or the vectorscope under the panel's header, kept on this device.
+  const [scopeMode, setScopeMode] = useState(() => (recall("develop.scope") === "scope" ? "scope" : "histogram"));
+  const [scopeGain, setScopeGain] = useState(1);
+  const [scope, setScope] = useState(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [split, setSplit] = useState(0);          // 0 = off, else 0..100 percent
   const [note, setNote] = useState("");
@@ -3654,6 +3660,12 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   showClipRef.current = showClip;
+  // The scope is not offered on a short screen.
+  const showScope = scopeMode === "scope" && !short;
+  const showScopeRef = useRef(false);
+  showScopeRef.current = showScope;
+  const scopeGainRef = useRef(1);
+  scopeGainRef.current = scopeGain;
 
   const position = useMemo(
     () => (photos || []).findIndex((p) => p.filepath === filepath),
@@ -3923,6 +3935,7 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
         setEditedChannels(stats.rgb);
         setClip({ high: stats.clipHigh, low: stats.clipLow });
         setClipUrl(showClipRef.current ? clipOverlayOf(result.bitmap) : null);
+        if (showScopeRef.current) setScope(scopeOfBitmap(result.bitmap, scopeGainRef.current));
         lastBitmap.current = result.bitmap;
         probePixels.current = null;
         if (result.photoSize) setPhotoSize(result.photoSize);
@@ -4007,6 +4020,12 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
     if (!showClip) { setClipUrl(null); return; }
     if (lastBitmap.current) setClipUrl(clipOverlayOf(lastBitmap.current));
   }, [showClip]);
+
+  // The same for the vectorscope: worked out once when it is shown or magnified.
+  useEffect(() => {
+    if (!showScope) { setScope(null); return; }
+    if (lastBitmap.current) setScope(scopeOfBitmap(lastBitmap.current, scopeGain));
+  }, [showScope, scopeGain]);
 
   // The loupe: a 1:1 patch of the edited frame around the clicked point. It is
   // redrawn when the edit changes — the point of it is to watch a face or a
@@ -6170,12 +6189,39 @@ Number(settings.mono) ? (
 
           <div>
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs uppercase tracking-wide text-neutral-500">Histogram</span>
-              <span className="text-[10px] text-neutral-500"
-                title="The grey line is the original's brightness, the white line the edit's; the red, green and blue the edit's channels.">grey original · white edit · RGB</span>
+              {short ? (
+                <span className="text-xs uppercase tracking-wide text-neutral-500">Histogram</span>
+              ) : (
+                <div className="flex items-center gap-1">
+                  {[["histogram", "Histogram", "scope-histogram"], ["scope", "Scope", "scope-vectorscope"]].map(([mode, label, id]) => (
+                    <button key={mode} data-testid={id} aria-pressed={scopeMode === mode}
+                      onClick={() => { setScopeMode(mode); remember("develop.scope", mode); }}
+                      className={`h-8 px-2 rounded text-xs uppercase tracking-wide ${scopeMode === mode
+                        ? "bg-neutral-800 text-neutral-200" : "text-neutral-500 hover:text-neutral-300"}`}>{label}</button>
+                  ))}
+                  {showScope && (
+                    <button data-testid="scope-gain" aria-pressed={scopeGain === 2}
+                      title="Magnify the middle, for judging a white balance"
+                      onClick={() => setScopeGain((g) => (g === 2 ? 1 : 2))}
+                      className={`h-8 px-2 rounded text-xs ${scopeGain === 2
+                        ? "bg-neutral-800 text-neutral-200" : "text-neutral-500 hover:text-neutral-300"}`}>2×</button>
+                  )}
+                </div>
+              )}
+              {showScope ? (
+                <span className="text-[10px] text-neutral-500"
+                  title="Each pixel placed by its colour: a neutral grey in the centre, more saturated further out. The boxes are 75% red, magenta, blue, cyan, green and yellow.">neutral in the centre · line: skin</span>
+              ) : (
+                <span className="text-[10px] text-neutral-500"
+                  title="The grey line is the original's brightness, the white line the edit's; the red, green and blue the edit's channels.">grey original · white edit · RGB</span>
+              )}
             </div>
-            <Histogram original={originalHist} edited={editedHist} channels={editedChannels}
-              className={short ? "h-10" : "h-16"} />
+            {showScope ? (
+              <Vectorscope scope={scope} gain={scopeGain} probe={probe?.rgb} />
+            ) : (
+              <Histogram original={originalHist} edited={editedHist} channels={editedChannels}
+                className={short ? "h-10" : "h-16"} />
+            )}
             {/* The pixel under the cursor: where it is in the whole photograph and
                 its colour in the edited picture, always in this one place. */}
             {/* A phone on its side has no pointer to read and no height to spare. */}
