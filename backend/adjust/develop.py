@@ -461,6 +461,9 @@ def normalize(settings: Optional[dict]) -> dict:
             clean[key] = value
         else:
             low, high = SLIDER_RANGES.get(key, (-MAX_TONE_VALUE, MAX_TONE_VALUE))
+            if key == "wb_kelvin" and _coerce(settings[key], 0.0, high) <= 0:
+                # No colour temperature is as shot: a 0 is not clamped up to 2000 K.
+                continue
             value = int(round(_coerce(settings[key], low, high)))
             if value == 0:
                 continue

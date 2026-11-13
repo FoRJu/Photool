@@ -175,6 +175,9 @@ class TestTheEdit:
         assert normalize({"wb_kelvin": 99999.4, "wb_tint": -12.6}) == {"wb_kelvin": 50000, "wb_tint": -13}
         assert normalize({"wb_kelvin": 5500, "wb_tint": 0}) == {"wb_kelvin": 5500}
         assert normalize({"wb_kelvin": None, "wb_tint": None}) == {}
+        # A zero is no colour temperature, not one to clamp up to 2000 K.
+        assert normalize({"wb_kelvin": 0, "wb_tint": 12}) == {}
+        assert normalize({"wb_kelvin": -5, "exposure": 1}) == {"exposure": 1.0}
 
     def test_sidecar_round_trip(self):
         for edit in ({"wb_kelvin": 5500, "wb_tint": 10}, {"wb_kelvin": 2850},
