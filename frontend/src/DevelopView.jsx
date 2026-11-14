@@ -514,6 +514,12 @@ const LOOK_SECTIONS = COPY_SECTIONS.filter((s) => !s.framing && s.id !== "masks"
 export const keysOfSections = (ids) => LOOK_SECTIONS.filter((s) => ids.includes(s.id)).flatMap((s) => s.keys);
 // A look saved before looks said what they carry carries every tone section.
 export const lookSections = (preset) => (preset.sections?.length ? preset.sections : LOOK_SECTIONS.map((s) => s.id));
+// A saved look as the develop view puts it on: the keys it owns, and its values for them.
+function lookOfPreset(preset) {
+  const keys = keysOfSections(lookSections(preset));
+  const values = Object.fromEntries(Object.entries(preset.settings || {}).filter(([k]) => keys.includes(k)));
+  return { name: preset.name, keys, values, own: true };
+}
 // Tied to where things are in the frame: not put on a frame turned the other way.
 const PLACED_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "spots"];
 const chosenSections = () => {
@@ -5075,8 +5081,7 @@ ${known.license}
   const applyPreset = useCallback((name) => {
     const found = presets.find((p) => p.name === name);
     if (!found) return;
-    const keys = keysOfSections(lookSections(found));
-    const values = Object.fromEntries(Object.entries(found.settings).filter(([k]) => keys.includes(k)));
+    const { keys, values } = lookOfPreset(found);
     applyLook(name, keys, values, true);
   }, [presets, applyLook]);
 
@@ -5588,6 +5593,13 @@ ${known.license}
       : stepNow?.look === activeLook.name && stepNow.lookAmount != null && lookAt(stepNow.lookAmount) ? stepNow.lookAmount
         : lookAt(100) ? 100 : null;
   if (lookShown != null && lookShown !== lookAmount) setLookAmount(lookShown);
+  // A frame opened with one of your looks on it, as saved, has its tools too:
+  // the look is found from the frame rather than from the click that put it on.
+  if (lookShown == null && presets.length && toneEdited) {
+    const found = presets.map(lookOfPreset).find((l) => l.keys.length
+      && lookIsLive(settings, l.keys, l.values, 100, ZERO, LOOK_LIMITS));
+    if (found && found.name !== activeLook?.name) setActiveLook(found);
+  }
   const camerasLook = camera ? presets.find((p) => p.camera === camera) || null : null;
   const angle = Number(settings.angle) || 0;
   const activeAspect = ASPECTS.find((a) => a.id === aspect);
@@ -5900,9 +5912,16 @@ ${known.license}
                 onCamera={(on) => starLook(activeLook.name, on)} />
             )}
             {lookTicks == null ? (
+              <>
+              {presets.length === 0 && (
+                <div className="text-[10px] text-neutral-600" data-testid="looks-hint">
+                  Save an edit as a look of your own to keep it for a camera, put it on a selection, or download it as a LUT.
+                </div>
+              )}
               <button onClick={startLook} disabled={!toneEdited} data-testid="look-save-start"
                 title="Keep this edit's styling under a name, to put on other photos"
                 className="text-[11px] text-neutral-400 hover:text-white disabled:opacity-40">+ Save this edit as a look</button>
+              </>
             ) : (
               <div className="rounded border border-neutral-800 bg-neutral-900/60 p-2 space-y-1.5" data-testid="look-save">
                 <input value={presetName} onChange={(e) => setPresetName(e.target.value)} autoFocus
