@@ -96,13 +96,10 @@ export default function Vectorscope({ scope, gain = 1, probe, className = "" }) 
           const y = cr * gain;
           if (!inside(x, y)) return null;
           const [px, py] = at(x, y);
-          // The letters sit outward of the box, away from the centre.
-          const d = Math.hypot(x, y) || 1;
-          const [lx, ly] = at(x + (x / d) * 0.17, y + (y / d) * 0.17);
+          // The letter alone marks where the chart colour falls.
           return (
             <g key={label}>
-              <rect x={px - box} y={py - box} width={box * 2} height={box * 2} {...stroke} />
-              <text x={lx} y={ly} fill="#737373" fontSize={size * 0.07}
+              <text x={px} y={py} fill="#737373" fontSize={size * 0.065}
                 textAnchor="middle" dominantBaseline="central">{label}</text>
             </g>
           );
