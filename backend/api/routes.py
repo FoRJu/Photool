@@ -3932,8 +3932,8 @@ async def develop_blur_outline(req: BlurOutlineRequest, request: Request):
 
     The model is the one object masks use, so nothing else is loaded for it. The depth
     map is read from the preview's frame, which lens blur has already worked it out on:
-    the depth model and SAM cannot share an 8 GB card (adjust.gpu), and opening one
-    after the other on every click was what made a click take minutes on Windows."""
+    the depth model and SAM cannot share an 8 GB card (adjust.gpu), and reading it on
+    a frame of its own opened SAM, then the depth model (letting SAM go), then SAM again."""
     import time
 
     import cv2
