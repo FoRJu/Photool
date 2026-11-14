@@ -3906,6 +3906,59 @@ async def develop_object_commit(req: ObjectCommitRequest, request: Request):
     return {"matte": matte_id, "parts": parts, "model": objects.model_name(req.model)}
 
 
+class BlurOutlineRequest(FrameGeometry):
+    filepath: str
+    u: float                     # the click, fractions of the picture as shown: cropped and levelled
+    v: float
+    settings: dict = {}          # the edit, whose crop and level say where that is
+    parts: list = []             # the outline so far (its blur_outline's parts)
+
+
+@router.post("/export/develop/blur-outline")
+async def develop_blur_outline(req: BlurOutlineRequest, request: Request):
+    """Outline what was clicked for lens blur to end at (adjust.outline): SAM 2.1's
+    candidate that holds together at one distance, added to the outline so far, worked
+    out on the whole frame and kept. With the distance there, for the focus."""
+    import cv2
+
+    from adjust import depth, objects, outline
+    from adjust.develop import normalize
+    from adjust.geometry import source_point
+    from adjust.masks import MAX_PARTS, _normalize_parts
+    from faces.models import ModelsUnavailable
+
+    config = request.app.state.config
+    model = "sam2.1"                 # never SAM 3: its licence is asked for elsewhere
+
+    def _outline():
+        size = objects.PICTURE_SIZE
+        frame = _mask_frame(config, req.filepath, size, req)
+        if frame is None:
+            return None
+        u, v = source_point(normalize(req.settings), req.u, req.v, *frame.size)
+        u, v = float(min(max(u, 0.0), 1.0)), float(min(max(v, 0.0), 1.0))
+        rgb8 = objects.picture(frame)
+        key = _object_key(req, size)
+        part = {"view": [0.0, 0.0, 1.0, 1.0], "points": [[round(u, 5), round(v, 5), 1]]}
+        logits, scores = objects.predict(rgb8, part, model, key)
+        whole = depth.whole_map(frame)
+        lh, lw = logits.shape[1:]
+        near = cv2.resize(whole, (lw, lh), interpolation=cv2.INTER_AREA)
+        at = depth.depth_at(frame, u, v)
+        part["pick"] = outline.pick(logits, scores, near, at / 100.0)
+        parts = _normalize_parts((list(req.parts) + [part])[-MAX_PARTS:])
+        matte = objects.selection(rgb8, parts, model, key)
+        return {"outline": {"matte": objects.save(matte), "parts": parts, "model": model}, "depth": at}
+
+    try:
+        found = await _run_blocking(_outline)
+    except ModelsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Could not read this frame")
+    return found
+
+
 @router.get("/export/develop/object-matte/{matte_id}")
 async def develop_object_matte(matte_id: str):
     """A kept object selection, as the grey PNG it is kept as."""

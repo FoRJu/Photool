@@ -1276,7 +1276,8 @@ def develop_frame(
         # the light and tone: an exposure edit lifts the blurred picture like any other.
         from adjust.depth import blurred
 
-        frame = blurred(frame, clean.pop("lens_blur"), clean.pop("blur_focus", 0), clean.pop("blur_sharp", 0))
+        frame = blurred(frame, clean.pop("lens_blur"), clean.pop("blur_focus", 0), clean.pop("blur_sharp", 0),
+                        clean.pop("blur_outline", None))
     finished_second = None
     if "second" in clean:
         from adjust.double import developed, exposed

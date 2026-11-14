@@ -134,6 +134,10 @@ _SECOND_MEANING = ("A second exposure laid over this frame in linear light: an o
                    'library), mode (add, average, lighten, darken), amount (1..200 percent), exposure (-3..3 stops), '
                    "x and y (-100..100 percent of the frame), scale (100..400), flip, reach (empty, subject, people, "
                    "sky) and invert. It belongs to this frame and does not paste.")
+_BLUR_OUTLINE_MEANING = ("Lens blur: an outline of what is sharp, so the blur ends where it ends rather than "
+                        "where the depth map's softer edge does: an object with matte (a kept selection's "
+                        "id), parts and model, made by clicking in the develop view. Needs lens_blur. It "
+                        "belongs to this frame and does not paste.")
 _SPOTS_MEANING = (
     "Spots removed (dust, a blemish): a list, at most 200, done before every other control. "
     "{x, y: the spot's centre, fractions of the whole frame before crop and level; r: its radius, a "
@@ -160,6 +164,8 @@ def controls() -> list[dict]:
     out.append({"key": develop.MASKS_KEY, "min": None, "max": None, "default": None, "meaning": _MASKS_MEANING})
     out.append({"key": develop.SPOTS_KEY, "min": None, "max": None, "default": None, "meaning": _SPOTS_MEANING})
     out.append({"key": develop.SECOND_KEY, "min": None, "max": None, "default": None, "meaning": _SECOND_MEANING})
+    out.append({"key": develop.BLUR_OUTLINE_KEY, "min": None, "max": None, "default": None,
+                "meaning": _BLUR_OUTLINE_MEANING})
     for key in GEOMETRY_KEYS:
         low, high = (-MAX_ANGLE, MAX_ANGLE) if key == "angle" else (0.0, 1.0)
         out.append({"key": key, "min": low, "max": high, "default": 0 if key == "angle" else None,

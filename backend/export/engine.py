@@ -2368,7 +2368,7 @@ def loupe_image(
 
         # The patch is toned with the preview's base, so that is healed too.
         small = healed(small, spots)
-    blur = {k: clean.pop(k) for k in ("lens_blur", "blur_focus", "blur_sharp") if k in clean}
+    blur = {k: clean.pop(k) for k in ("lens_blur", "blur_focus", "blur_sharp", "blur_outline") if k in clean}
     second = clean.pop("second", None)
     if second and second.get("version") is not None:
         # As edited, it is laid on at the end of develop_frame, on the patch as on any frame.
@@ -2437,9 +2437,10 @@ def loupe_image(
         patch = apply_spots(patch, spots, wider, fetch)
     if blur:
         amount, focus, sharp = blur["lens_blur"], blur.get("blur_focus", 0), blur.get("blur_sharp", 0)
-        patch = blurred_pixels(small, patch, wider, amount, focus, sharp)
+        outline = blur.get("blur_outline")
+        patch = blurred_pixels(small, patch, wider, amount, focus, sharp, outline=outline)
         patch = patch[top - y0:top - y0 + side, left - x0:left - x0 + side]
-        small = blurred(small, amount, focus, sharp)
+        small = blurred(small, amount, focus, sharp, outline)
     if not blur:
         patch = patch[top - y0:top - y0 + side, left - x0:left - x0 + side]
     if second:

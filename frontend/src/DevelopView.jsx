@@ -1,5 +1,6 @@
 import DoubleExposureDialog from "./DoubleExposureDialog.jsx";
 import WhiteBalance from "./WhiteBalance.jsx";
+import BlurOutline from "./BlurOutline.jsx";
 import Vectorscope, { scopeOfBitmap } from "./Vectorscope.jsx";
 import { recall, remember } from "./remembered.js";
 import { editKey, makeDoubleExposure, sameEdit, secondOf, secondOfRow, versionThumb, versionsOf } from "./doubleExposure.js";
@@ -378,7 +379,7 @@ const GEOM_KEYS = ["angle", "crop_x", "crop_y", "crop_w", "crop_h"];
 // What belongs to one frame and is not carried to another by presets, nor
 // undone by Reset: its framing and the spots removed from it.
 const TRANSFORM_KEYS = ["tf_vertical", "tf_horizontal", "tf_aspect"];
-const OWN_KEYS = [...GEOM_KEYS, "spots", ...TRANSFORM_KEYS];
+const OWN_KEYS = [...GEOM_KEYS, "spots", "blur_outline", ...TRANSFORM_KEYS];
 const ZERO = {
   ...Object.fromEntries(KEYS.map((k) => [k, 0])),
   ...Object.fromEntries(CURVE_KEYS.map((k) => [k, null])),
@@ -392,6 +393,8 @@ const ZERO = {
   spots: [],
   // A photograph laid over this one (backend adjust/double.py), or null.
   second: null,
+  // The outline lens blur ends at (BlurOutline.jsx), a frame's own, or null.
+  blur_outline: null,
   angle: 0, crop_x: null, crop_y: null, crop_w: null, crop_h: null,
 };
 
@@ -585,6 +588,7 @@ function asSettings(stored) {
   next.masks = Array.isArray(stored?.masks) ? stored.masks.map((m) => ({ ...m })) : [];
   next.spots = Array.isArray(stored?.spots) ? stored.spots.map((sp) => ({ ...sp })) : [];
   next.second = stored?.second?.path ? { ...stored.second } : null;
+  next.blur_outline = stored?.blur_outline?.matte ? { ...stored.blur_outline } : null;
   next.angle = Number(stored?.angle) || 0;
   const box = boxOf(stored || {});
   if (box) Object.assign(next, { crop_x: box.x, crop_y: box.y, crop_w: box.w, crop_h: box.h });
@@ -624,6 +628,7 @@ function activeOnly(settings, withFraming = true) {
   // Always, framed or not: a spot is part of the picture, not of its framing.
   if (settings.spots?.length) out.spots = settings.spots;
   if (settings.second) out.second = settings.second;
+  if (settings.blur_outline && Number(settings.lens_blur) !== 0) out.blur_outline = settings.blur_outline;
   if (withFraming) {
     if (Number(settings.angle) !== 0) out.angle = settings.angle;
     const box = boxOf(settings);
@@ -4093,6 +4098,10 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
   const whitePick = useRef(null);
   const [pickingWhite, setPickingWhite] = useState(false);
   useEffect(() => { setPickingWhite(false); }, [filepath]);
+  // And while what the lens blur keeps sharp is being outlined (BlurOutline.jsx).
+  const outlinePick = useRef(null);
+  const [pickingOutline, setPickingOutline] = useState(false);
+  useEffect(() => { setPickingOutline(false); }, [filepath]);
   const onPictureClick = useCallback((e) => {
     if (panned.current) { panned.current = false; return; }
     if (fullView || !imgRef.current) return;
@@ -4101,6 +4110,7 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
     const v = (e.clientY - rect.top) / rect.height;
     if (u < 0 || u > 1 || v < 0 || v > 1) return;
     if (whitePick.current) { whitePick.current(u, v); return; }
+    if (outlinePick.current) { outlinePick.current(u, v); return; }
     if (focusPick.current) { focusPick.current(u, v); return; }
     placeLoupe({ u, v });
   }, [fullView, placeLoupe]);
@@ -5644,12 +5654,21 @@ ${known.license}
           <div className="text-[10px] text-neutral-500 -mt-1" data-testid="blur-note">{blurNote}</div>
         )}
         {id === "blur" && blurOn && (
-          <button onClick={() => setPickingFocus(!pickingFocus)} data-testid="blur-pick"
+          <button onClick={() => { setPickingFocus(!pickingFocus); if (!pickingFocus) { setPickingWhite(false); setPickingOutline(false); } }}
+            data-testid="blur-pick"
             title="Click what should be sharp, and the focus goes to its distance."
             className={`text-[11px] px-2 py-0.5 rounded border ${pickingFocus ? "border-amber-400 text-amber-300"
               : "border-neutral-700 text-neutral-300 hover:text-white"}`}>
             {pickingFocus ? "Click what should be sharp…" : "Pick the focus on the picture"}
           </button>
+        )}
+        {id === "blur" && blurOn && (
+          <BlurOutline filepath={filepath} settings={settings} onApply={applyGroup}
+            picking={pickingOutline}
+            setPicking={(on) => { setPickingOutline(on); if (on) { setPickingFocus(false); setPickingWhite(false); } }}
+            pickRef={outlinePick}
+            pickBody={(u, v) => ({ filepath, u, v, size: PREVIEW_SIZE, settings: activeOnly(settingsRef.current),
+              ...frameGeometry(settingsRef.current) })} />
         )}
         {id === "noise" && NOISE_NOTES[noiseState] && (
           <div className="text-[10px] text-neutral-600 -mt-1" data-testid="noise-note">
@@ -5658,7 +5677,8 @@ ${known.license}
         )}
         {id === "wb" && (
           <WhiteBalance filepath={filepath} settings={settings} onChange={change} onApply={applyGroup}
-            picking={pickingWhite} setPicking={(on) => { setPickingWhite(on); if (on) setPickingFocus(false); }}
+            picking={pickingWhite}
+            setPicking={(on) => { setPickingWhite(on); if (on) { setPickingFocus(false); setPickingOutline(false); } }}
             pickRef={whitePick}
             pickBody={(u, v) => ({ filepath, u, v, size: PREVIEW_SIZE, settings: activeOnly(settingsRef.current),
               ...frameGeometry(settingsRef.current) })} />
@@ -5983,6 +6003,7 @@ Number(settings.mono) ? (
               onClick={onPictureClick}
               onPointerMove={onPictureMove} onPointerLeave={() => setProbe(null)}
               title={fullView ? undefined : pickingWhite ? "Click something that should be grey"
+                : pickingOutline ? "Click what should be sharp, to outline it"
                 : pickingFocus ? "Click what should be sharp" : "Click to look at this spot at 1:1"}>
               <img ref={imgRef} src={shown} alt="" draggable={false}
                 className="max-h-[calc(100vh-9rem)] max-w-full object-contain"

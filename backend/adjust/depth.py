@@ -27,7 +27,7 @@ evened out by how much of each pixel was covered, which fills what a blurred lay
 thin beside a nearer one. Doing that layer by layer would stretch each one to the full width
 of its disc and stop it dead there, drawing a hard line. What a frame cannot show, it cannot
 blur: fine hair against a busy background follows the map's edge, which is soft by a few
-pixels.
+pixels, unless the blur is given an outline of what is sharp (adjust.outline).
 
 Dual-pixel data, which some Canon bodies can record, could give a second reading of depth
 later. Nothing here assumes where the map came from.
@@ -354,10 +354,14 @@ def _layer(rgb: np.ndarray, mine: np.ndarray, radius: float) -> tuple:
 
 
 def lens_blur(rgb: np.ndarray, depth: np.ndarray, focus: float, sharp: float, radius: float,
-              layers: int = LAYERS) -> np.ndarray:
+              layers: int = LAYERS, edge: Optional[tuple] = None) -> np.ndarray:
     """``rgb`` (linear, H, W, 3) as if shot wider open. ``depth`` is 0 far to 1 near, the same
     size; ``focus`` the distance in focus and ``sharp`` how much stays sharp each side of it
     (both 0..1); ``radius`` the disc's pixels for what is furthest from focus.
+
+    ``edge``, when given, is ``(alpha, inside)`` at the same size: how much of each pixel is
+    the outlined thing, and its depth (adjust.outline). ``depth`` is then the rest's, and a
+    pixel is shared between the two by ``alpha``.
 
     Blur goes with distance on this scale because the map is, near enough, inverse distance,
     and a lens's blur is proportional to the difference of inverse distances."""
@@ -365,11 +369,17 @@ def lens_blur(rgb: np.ndarray, depth: np.ndarray, focus: float, sharp: float, ra
 
     centres = np.linspace(0.0, 1.0, layers)
     position = np.clip(depth, 0.0, 1.0) * (layers - 1.0)
+    if edge is not None:
+        alpha = np.clip(edge[0], 0.0, 1.0).astype(np.float32)
+        position_inside = np.clip(edge[1], 0.0, 1.0) * (layers - 1.0)
     out = np.zeros_like(rgb, dtype=np.float32)
     covered = np.zeros(rgb.shape[:2], np.float32)
     for i, centre in enumerate(centres):
         # This layer's share of each pixel, far to near; shares add up to one.
         mine = np.maximum(1.0 - np.abs(position - i), 0.0).astype(np.float32)
+        if edge is not None:
+            theirs = np.maximum(1.0 - np.abs(position_inside - i), 0.0).astype(np.float32)
+            mine = ((1.0 - alpha) * mine + alpha * theirs).astype(np.float32)
         if not mine.any():
             continue
         r = radius * float(np.clip((abs(centre - focus) - sharp) / max(1.0 - sharp, 1e-3), 0.0, 1.0))
@@ -390,10 +400,38 @@ def reach(amount: float, longest: int) -> int:
     return int(np.ceil(float(amount) / 100.0 * MAX_BLUR * longest)) + 1
 
 
+def _matte_id(outline) -> Optional[str]:
+    """The kept picture an edit's ``blur_outline`` names, or ``None``."""
+    if isinstance(outline, dict):
+        outline = outline.get("matte")
+    return outline if isinstance(outline, str) and outline else None
+
+
+def _sides(whole: np.ndarray, frame, matte_id: Optional[str]) -> Optional[tuple]:
+    """``(matte, inside, outside)`` over the whole map for an outline, kept on the whole
+    frame; ``None`` when the outline is not here (an edit from another computer) or has
+    no edge."""
+    from adjust import objects, outline
+
+    if not matte_id:
+        return None
+    owner = getattr(frame, "anchor_of", None) or frame
+    key = ("depth_sides", matte_id)
+    if key in owner._mattes:
+        return owner._mattes[key]
+    matte = objects.load(matte_id)
+    found = outline.sides(whole, matte) if matte is not None else None
+    kept = None if found is None else (matte, *found)
+    owner._mattes[key] = kept
+    return kept
+
+
 def blurred_pixels(frame, rgb: np.ndarray, window: tuple, amount: float, focus: float = 0,
-                   sharp: float = 0, layers: int = LAYERS) -> np.ndarray:
+                   sharp: float = 0, layers: int = LAYERS, outline=None) -> np.ndarray:
     """``rgb``, which is the part ``window`` of ``frame``'s picture at any resolution, with
-    lens blur (see :func:`blurred`). ``rgb`` itself when the model can't be had."""
+    lens blur (see :func:`blurred`). ``rgb`` itself when the model can't be had. ``outline``
+    names a kept outline (adjust.objects) the blur ends at: an edit's ``blur_outline``, or
+    its ``matte``."""
     from adjust.segment import sample
 
     try:
@@ -408,20 +446,28 @@ def blurred_pixels(frame, rgb: np.ndarray, window: tuple, amount: float, focus: 
     longest = max(w / max(right - left, 1e-9), h / max(bottom - top, 1e-9))
     at = float(focus) / 100.0 if focus else auto_focus(whole)
     around = float(sharp) / 200.0 if sharp else DEFAULT_SHARP
-    return lens_blur(rgb, depth, at, around, float(amount) / 100.0 * MAX_BLUR * longest, layers)
+    edge = None
+    held = _sides(whole, frame, _matte_id(outline))
+    if held is not None:
+        matte, inside, outside = held
+        depth = np.ascontiguousarray(sample(outside, (h, w), window), dtype=np.float32)
+        edge = (np.ascontiguousarray(sample(matte, (h, w), window), dtype=np.float32),
+                np.ascontiguousarray(sample(inside, (h, w), window), dtype=np.float32))
+    return lens_blur(rgb, depth, at, around, float(amount) / 100.0 * MAX_BLUR * longest, layers, edge)
 
 
-def blurred(frame, amount: float, focus: float = 0, sharp: float = 0):
+def blurred(frame, amount: float, focus: float = 0, sharp: float = 0, outline=None):
     """``frame`` with lens blur, as a frame of its own: ``amount`` 0..100, ``focus`` 1..100
-    (0 chooses, see :func:`auto_focus`), ``sharp`` 0..100 (how deep a range stays sharp).
+    (0 chooses, see :func:`auto_focus`), ``sharp`` 0..100 (how deep a range stays sharp),
+    ``outline`` the kept outline it ends at, if any (:func:`blurred_pixels`).
     ``frame`` itself when the model can't be had. Kept on the frame for these values."""
     from adjust.render import LinearFrame
 
-    key = (float(amount), float(focus), float(sharp))
+    key = (float(amount), float(focus), float(sharp), _matte_id(outline))
     if frame._blurred is not None and frame._blurred[0] == key:
         return frame._blurred[1]
     layers = DRAFT_LAYERS if frame._is_draft else LAYERS
-    rgb = blurred_pixels(frame, frame.rgb, frame.window, amount, focus, sharp, layers)
+    rgb = blurred_pixels(frame, frame.rgb, frame.window, amount, focus, sharp, layers, outline)
     if rgb is frame.rgb:
         return frame
     out = LinearFrame(rgb, look=frame.look, window=frame.window, scale=frame.scale,

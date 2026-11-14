@@ -627,6 +627,13 @@ other one. The Lens blur group has:
   the frame. **Pick the focus on the picture** sets it from the next click.
 - **Sharp range**, how deep a range stays sharp round the focus. Raise it if part of
   the subject goes soft.
+- **Outline what is sharp**: the next click outlines the thing clicked with SAM 2.1
+  (about 330 MB, fetched the first time), sets the focus to its distance, and from
+  then on the blur ends at that outline rather than at the depth map's softer edge.
+  **Add to the outline** takes in another thing; **Clear** goes back to the map's
+  edge. The outline belongs to its frame: Paste and a saved look leave each frame its
+  own. It lies on the frame as its lens correction and transform were when it was
+  drawn, so outline again after changing those.
 
 It works in linear light, before the tone, so a bright point spreads into a bright
 disc rather than a grey smudge, and in layers from far to near, so a sharp subject
