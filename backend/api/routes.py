@@ -2932,6 +2932,22 @@ async def delete_develop_preset(name: str, request: Request):
     return {"ok": True, "presets": catalog.db.list_develop_presets()}
 
 
+class PresetCameraRequest(BaseModel):
+    camera: str = ""             # the catalog's camera string; "" takes it off
+
+
+@router.put("/export/develop/presets/{name}/camera")
+async def set_develop_preset_camera(name: str, req: PresetCameraRequest, request: Request):
+    """Make a look of your own the one for a camera, as the catalog names it.
+    One look per camera: the camera is taken off any other look. ``""`` takes
+    this look's camera off."""
+    camera = (req.camera or "").strip()[:200]
+    catalog = _get_catalog(request)
+    if not catalog.db.set_develop_preset_camera(name, camera):
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return {"ok": True, "presets": catalog.db.list_develop_presets()}
+
+
 def _full_size_of(frame) -> str:
     """A decoded frame's whole photograph size, "WxH" in its own pixels."""
     w, h = frame.size

@@ -5097,6 +5097,22 @@ ${known.license}
   }, [activeLook, scheduleSave, record]);
   useEffect(() => { setActiveLook(null); setLookAmount(100); }, [filepath, version]);
 
+  // The look for this frame's camera (the catalog's string, as it is): one look
+  // per camera, starred under "Yours". Nothing is put on by it; it is offered.
+  const camera = photos?.[position]?.camera || "";
+  const starLook = useCallback(async (name, on) => {
+    try {
+      const res = await fetch(`${API}/export/develop/presets/${encodeURIComponent(name)}/camera`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ camera: on ? camera : "" }),
+      });
+      if (!res.ok) { setNote("Could not keep the look for this camera"); return; }
+      const data = await res.json();
+      setPresets(data.presets || []);
+      setNote(on ? `“${name}” is the look for ${camera}` : `“${name}” is no longer the look for ${camera}`);
+    } catch { setNote("The server did not answer"); }
+  }, [camera]);
+
   // Saving a look: its name and the sections it carries, ticked to begin with
   // where this edit has changes.
   const [lookTicks, setLookTicks] = useState(null);       // null: not saving one
@@ -5572,6 +5588,7 @@ ${known.license}
       : stepNow?.look === activeLook.name && stepNow.lookAmount != null && lookAt(stepNow.lookAmount) ? stepNow.lookAmount
         : lookAt(100) ? 100 : null;
   if (lookShown != null && lookShown !== lookAmount) setLookAmount(lookShown);
+  const camerasLook = camera ? presets.find((p) => p.camera === camera) || null : null;
   const angle = Number(settings.angle) || 0;
   const activeAspect = ASPECTS.find((a) => a.id === aspect);
   const ratioFrac = activeAspect && activeAspect.ratio
@@ -5846,7 +5863,7 @@ ${known.license}
     presence: section("presence"),
     looks: (
           <Fold id="looks" title="Looks" open={folds.includes("looks")} onToggle={toggleFold}
-            summary={activePreset ? `“${activePreset}”` : ""}
+            summary={activePreset ? `“${activePreset}”` : camerasLook && !toneEdited ? `★ ${camerasLook.name}` : ""}
             hint="Starting points for the styling, built in or saved from your own edits. Each sets only the sections it carries, so pick one before fine-tuning those.">
             <div className="text-[11px] text-neutral-500">Built in · contrast, colour, toning, grain and vignette</div>
             <div className="flex flex-wrap gap-1">
@@ -5862,13 +5879,13 @@ ${known.license}
               <>
                 <div className="text-[11px] text-neutral-500">Yours</div>
                 <div className="flex flex-wrap gap-1" data-testid="my-looks">
-                  {presets.map((p) => (
+                  {[...presets].sort((a, b) => (b === camerasLook) - (a === camerasLook)).map((p) => (
                     <span key={p.name} className="inline-flex">
                       <button onClick={() => applyPreset(p.name)}
                         title={`Sets ${sectionNames(LOOK_SECTIONS.filter((sec) => lookSections(p).includes(sec.id))).join(" + ")}`}
                         className={`text-[11px] px-2 py-0.5 rounded-l border ${activePreset === p.name
                           ? "border-amber-500 text-amber-300" : "border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500"}`}>
-                        {p.name}
+                        {p === camerasLook ? `★ ${p.name}` : p.name}
                       </button>
                       <button onClick={() => deletePreset(p.name)} title={`Forget the look “${p.name}”`}
                         className="text-[10px] px-1 rounded-r border border-l-0 border-neutral-700 text-neutral-600 hover:text-red-400">✕</button>
@@ -5878,7 +5895,9 @@ ${known.license}
               </>
             )}
             {lookShown != null && (
-              <LookTools key={activeLook.name} look={activeLook} amount={lookShown} onAmount={changeLookAmount} />
+              <LookTools key={activeLook.name} look={activeLook} amount={lookShown} onAmount={changeLookAmount}
+                camera={camera} isCameras={!!camera && camerasLook?.name === activeLook.name}
+                onCamera={(on) => starLook(activeLook.name, on)} />
             )}
             {lookTicks == null ? (
               <button onClick={startLook} disabled={!toneEdited} data-testid="look-save-start"
