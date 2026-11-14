@@ -287,7 +287,7 @@ app.add_middleware(
     allow_headers=["*"],
     # Readable by the page: whether a frame has a camera look to dial.
     expose_headers=["X-Camera-Look", "X-Camera-Look-State", "X-Camera-Look-Frames", "X-Camera-Look-Hint",
-                    "X-Noise-Reduction"],
+                    "X-Noise-Reduction", "X-Lut-Left-Out"],
 )
 
 import background  # noqa: E402

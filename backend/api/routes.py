@@ -2932,6 +2932,50 @@ async def delete_develop_preset(name: str, request: Request):
     return {"ok": True, "presets": catalog.db.list_develop_presets()}
 
 
+class PresetCameraRequest(BaseModel):
+    camera: str = ""             # the catalog's camera string; "" takes it off
+
+
+@router.put("/export/develop/presets/{name}/camera")
+async def set_develop_preset_camera(name: str, req: PresetCameraRequest, request: Request):
+    """Make a look of your own the one for a camera, as the catalog names it.
+    One look per camera: the camera is taken off any other look. ``""`` takes
+    this look's camera off."""
+    camera = (req.camera or "").strip()[:200]
+    catalog = _get_catalog(request)
+    if not catalog.db.set_develop_preset_camera(name, camera):
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return {"ok": True, "presets": catalog.db.list_develop_presets()}
+
+
+@router.get("/export/develop/presets/{name}/lut")
+async def develop_preset_lut(name: str, request: Request, size: int = 33):
+    """A look of your own as a .cube LUT (adjust.lut): what it does to a colour,
+    for a video editor or another photo app. ``X-Lut-Left-Out`` names what a LUT
+    cannot hold (clarity, grain, a style, …)."""
+    import re
+    from urllib.parse import quote
+
+    from adjust.lut import SIZES, cube_of
+
+    if size not in SIZES:
+        raise HTTPException(status_code=400, detail="A LUT is 17, 33 or 65 colours a side")
+    catalog = _get_catalog(request)
+    look = next((p for p in catalog.db.list_develop_presets() if p["name"] == name), None)
+    if look is None:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    try:
+        text, left_out = await _run_blocking(cube_of, look["settings"], size, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", name).strip(" .") or "look"
+    ascii_name = safe.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    return Response(content=text, media_type="text/plain; charset=utf-8", headers={
+        "Content-Disposition": f'attachment; filename="{ascii_name}.cube"; filename*=UTF-8\'\'{quote(safe)}.cube',
+        "X-Lut-Left-Out": ", ".join(left_out),
+    })
+
+
 def _full_size_of(frame) -> str:
     """A decoded frame's whole photograph size, "WxH" in its own pixels."""
     w, h = frame.size

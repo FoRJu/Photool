@@ -3,6 +3,8 @@ import WhiteBalance from "./WhiteBalance.jsx";
 import BlurOutline from "./BlurOutline.jsx";
 import BlurFocusPicture from "./BlurFocusPicture.jsx";
 import Vectorscope, { scopeOfBitmap } from "./Vectorscope.jsx";
+import LookTools from "./LookTools.jsx";
+import { scaleLook, lookIsLive } from "./lookAmount.js";
 import { recall, remember } from "./remembered.js";
 import { editKey, makeDoubleExposure, sameEdit, secondOf, secondOfRow, versionThumb, versionsOf } from "./doubleExposure.js";
 import { useState, useEffect, useCallback, useRef, useMemo, useId, createContext, useContext } from "react";
@@ -369,6 +371,8 @@ const curveEdited = (points) =>
   Array.isArray(points) && points.length >= 2 && points.some(([x, y]) => x !== y);
 
 const ALL_SLIDERS = GROUPS.flatMap((g) => g.sliders);
+// Each slider's own range, for a look made stronger (lookAmount.js).
+const LOOK_LIMITS = Object.fromEntries(ALL_SLIDERS.map((s) => [s.key, [s.min, s.max]]));
 // Every control that is a number: the panel's sliders and the mixer's.
 const KEYS = [...ALL_SLIDERS.map((s) => s.key), ...HSL_KEYS, ...BW_KEYS, "lens_profile"];
 
@@ -507,9 +511,15 @@ const TONE_SECTIONS = COPY_SECTIONS.filter((s) => !s.framing).map((s) => s.id);
 // What a look of your own can carry: the tone sections. Never the masks, which
 // are drawn on the frame they were made on.
 const LOOK_SECTIONS = COPY_SECTIONS.filter((s) => !s.framing && s.id !== "masks" && s.id !== "blur");
-const keysOfSections = (ids) => LOOK_SECTIONS.filter((s) => ids.includes(s.id)).flatMap((s) => s.keys);
+export const keysOfSections = (ids) => LOOK_SECTIONS.filter((s) => ids.includes(s.id)).flatMap((s) => s.keys);
 // A look saved before looks said what they carry carries every tone section.
-const lookSections = (preset) => (preset.sections?.length ? preset.sections : LOOK_SECTIONS.map((s) => s.id));
+export const lookSections = (preset) => (preset.sections?.length ? preset.sections : LOOK_SECTIONS.map((s) => s.id));
+// A saved look as the develop view puts it on: the keys it owns, and its values for them.
+function lookOfPreset(preset) {
+  const keys = keysOfSections(lookSections(preset));
+  const values = Object.fromEntries(Object.entries(preset.settings || {}).filter(([k]) => keys.includes(k)));
+  return { name: preset.name, keys, values, own: true };
+}
 // Tied to where things are in the frame: not put on a frame turned the other way.
 const PLACED_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "spots"];
 const chosenSections = () => {
@@ -3612,6 +3622,10 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
   const [lookRefresh, setLookRefresh] = useState(0);
   const [presets, setPresets] = useState([]);
   const [activePreset, setActivePreset] = useState("");
+  // The look last put on, { name, keys, values, own }, and how much of it. It is
+  // shown while the frame still reads what it gives (lookShown, on render).
+  const [activeLook, setActiveLook] = useState(null);
+  const [lookAmount, setLookAmount] = useState(100);
   const [presetName, setPresetName] = useState("");
 
   const clipboard = useCopiedEdit();
@@ -5054,15 +5068,55 @@ ${known.license}
 
   useEffect(() => { loadPresets(); }, [loadPresets]);
 
+  // A look, built in or your own, sets the keys it owns and leaves the rest; it
+  // starts at its full amount.
+  const applyLook = useCallback((name, keys, values, own) => {
+    applyGroup(keys, values, own ? `Look “${name}”` : name);
+    if (own) setActivePreset(name);
+    setActiveLook({ name, keys, values, own });
+    setLookAmount(100);
+  }, [applyGroup]);
+
   // A look of your own sets the sections it carries and leaves the rest.
   const applyPreset = useCallback((name) => {
     const found = presets.find((p) => p.name === name);
     if (!found) return;
-    const keys = keysOfSections(lookSections(found));
-    const values = Object.fromEntries(Object.entries(found.settings).filter(([k]) => keys.includes(k)));
-    applyGroup(keys, values, `Look “${name}”`);
-    setActivePreset(name);
-  }, [presets, applyGroup]);
+    const { keys, values } = lookOfPreset(found);
+    applyLook(name, keys, values, true);
+  }, [presets, applyLook]);
+
+  // Dragging the Amount: the look's keys at the new amount, saved once and one
+  // step of undo however long the drag (the steps share a group).
+  const changeLookAmount = useCallback((amount) => {
+    const look = activeLook;
+    if (!look) return;
+    const next = { ...settingsRef.current };
+    for (const key of look.keys) next[key] = ZERO[key];
+    Object.assign(next, scaleLook(look.values, amount, LOOK_LIMITS));
+    settingsRef.current = next;
+    setSettings(next);
+    setLookAmount(amount);
+    scheduleSave(next);
+    record(next, { label: `${look.own ? `Look “${look.name}”` : look.name} at ${amount}`,
+      group: "look-amount", look: look.name, lookAmount: amount });
+  }, [activeLook, scheduleSave, record]);
+  useEffect(() => { setActiveLook(null); setLookAmount(100); }, [filepath, version]);
+
+  // The look for this frame's camera (the catalog's string, as it is): one look
+  // per camera, starred under "Yours". Nothing is put on by it; it is offered.
+  const camera = photos?.[position]?.camera || "";
+  const starLook = useCallback(async (name, on) => {
+    try {
+      const res = await fetch(`${API}/export/develop/presets/${encodeURIComponent(name)}/camera`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ camera: on ? camera : "" }),
+      });
+      if (!res.ok) { setNote("Could not keep the look for this camera"); return; }
+      const data = await res.json();
+      setPresets(data.presets || []);
+      setNote(on ? `“${name}” is the look for ${camera}` : `“${name}” is no longer the look for ${camera}`);
+    } catch { setNote("The server did not answer"); }
+  }, [camera]);
 
   // Saving a look: its name and the sections it carries, ticked to begin with
   // where this edit has changes.
@@ -5530,6 +5584,23 @@ ${known.license}
   const current = photos?.[position];
   const edited = isEdited(settings);
   const toneEdited = isToneEdited(settings);
+  // The look is live while every key it owns reads what it gives at its amount.
+  // After an undo or redo the amount is the step's own, or the look's full one.
+  const lookAt = (amount) => lookIsLive(settings, activeLook.keys, activeLook.values, amount, ZERO, LOOK_LIMITS);
+  const stepNow = history.entries[history.index];
+  const lookShown = !activeLook ? null
+    : lookAt(lookAmount) ? lookAmount
+      : stepNow?.look === activeLook.name && stepNow.lookAmount != null && lookAt(stepNow.lookAmount) ? stepNow.lookAmount
+        : lookAt(100) ? 100 : null;
+  if (lookShown != null && lookShown !== lookAmount) setLookAmount(lookShown);
+  // A frame opened with one of your looks on it, as saved, has its tools too:
+  // the look is found from the frame rather than from the click that put it on.
+  if (lookShown == null && presets.length && toneEdited) {
+    const found = presets.map(lookOfPreset).find((l) => l.keys.length
+      && lookIsLive(settings, l.keys, l.values, 100, ZERO, LOOK_LIMITS));
+    if (found && found.name !== activeLook?.name) setActiveLook(found);
+  }
+  const camerasLook = camera ? presets.find((p) => p.camera === camera) || null : null;
   const angle = Number(settings.angle) || 0;
   const activeAspect = ASPECTS.find((a) => a.id === aspect);
   const ratioFrac = activeAspect && activeAspect.ratio
@@ -5804,13 +5875,13 @@ ${known.license}
     presence: section("presence"),
     looks: (
           <Fold id="looks" title="Looks" open={folds.includes("looks")} onToggle={toggleFold}
-            summary={activePreset ? `“${activePreset}”` : ""}
+            summary={activePreset ? `“${activePreset}”` : camerasLook && !toneEdited ? `★ ${camerasLook.name}` : ""}
             hint="Starting points for the styling, built in or saved from your own edits. Each sets only the sections it carries, so pick one before fine-tuning those.">
             <div className="text-[11px] text-neutral-500">Built in · contrast, colour, toning, grain and vignette</div>
             <div className="flex flex-wrap gap-1">
               {LOOKS.map((r) => (
                 <button key={r.name} title={r.note}
-                  onClick={() => applyGroup(LOOK_KEYS, r.settings, r.name)}
+                  onClick={() => applyLook(r.name, LOOK_KEYS, r.settings, false)}
                   className="text-[11px] px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500">
                   {r.name}
                 </button>
@@ -5820,13 +5891,13 @@ ${known.license}
               <>
                 <div className="text-[11px] text-neutral-500">Yours</div>
                 <div className="flex flex-wrap gap-1" data-testid="my-looks">
-                  {presets.map((p) => (
+                  {[...presets].sort((a, b) => (b === camerasLook) - (a === camerasLook)).map((p) => (
                     <span key={p.name} className="inline-flex">
                       <button onClick={() => applyPreset(p.name)}
                         title={`Sets ${sectionNames(LOOK_SECTIONS.filter((sec) => lookSections(p).includes(sec.id))).join(" + ")}`}
                         className={`text-[11px] px-2 py-0.5 rounded-l border ${activePreset === p.name
                           ? "border-amber-500 text-amber-300" : "border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500"}`}>
-                        {p.name}
+                        {p === camerasLook ? `★ ${p.name}` : p.name}
                       </button>
                       <button onClick={() => deletePreset(p.name)} title={`Forget the look “${p.name}”`}
                         className="text-[10px] px-1 rounded-r border border-l-0 border-neutral-700 text-neutral-600 hover:text-red-400">✕</button>
@@ -5835,10 +5906,22 @@ ${known.license}
                 </div>
               </>
             )}
+            {lookShown != null && (
+              <LookTools key={activeLook.name} look={activeLook} amount={lookShown} onAmount={changeLookAmount}
+                camera={camera} isCameras={!!camera && camerasLook?.name === activeLook.name}
+                onCamera={(on) => starLook(activeLook.name, on)} />
+            )}
             {lookTicks == null ? (
+              <>
+              {presets.length === 0 && (
+                <div className="text-[10px] text-neutral-600" data-testid="looks-hint">
+                  Save an edit as a look of your own to keep it for a camera, put it on a selection, or download it as a LUT.
+                </div>
+              )}
               <button onClick={startLook} disabled={!toneEdited} data-testid="look-save-start"
                 title="Keep this edit's styling under a name, to put on other photos"
                 className="text-[11px] text-neutral-400 hover:text-white disabled:opacity-40">+ Save this edit as a look</button>
+              </>
             ) : (
               <div className="rounded border border-neutral-800 bg-neutral-900/60 p-2 space-y-1.5" data-testid="look-save">
                 <input value={presetName} onChange={(e) => setPresetName(e.target.value)} autoFocus

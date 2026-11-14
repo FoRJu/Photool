@@ -473,6 +473,9 @@ _MIGRATIONS = [
     # Which of the develop panel's sections a saved look carries (a JSON list);
     # '' for one saved before looks said, which carries what it holds.
     "ALTER TABLE develop_presets ADD COLUMN sections TEXT NOT NULL DEFAULT ''",
+    # The camera a saved look is the look for (the catalog's camera string, as
+    # it is); '' for none. One look per camera (set_develop_preset_camera).
+    "ALTER TABLE develop_presets ADD COLUMN camera TEXT NOT NULL DEFAULT ''",
     # The named person an unnamed group most resembles, offered as a question.
     "ALTER TABLE person_clusters ADD COLUMN suggest_id INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE person_clusters ADD COLUMN suggest_score REAL NOT NULL DEFAULT 0",
@@ -2123,7 +2126,7 @@ class CatalogDB:
         import json as _json
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT name, settings, sections FROM develop_presets ORDER BY name ASC"
+                "SELECT name, settings, sections, camera FROM develop_presets ORDER BY name ASC"
             ).fetchall()
             out = []
             for row in rows:
@@ -2138,8 +2141,29 @@ class CatalogDB:
                     preset = {"name": row["name"], "settings": settings}
                     if isinstance(sections, list):
                         preset["sections"] = [s for s in sections if isinstance(s, str)]
+                    if row["camera"]:
+                        preset["camera"] = row["camera"]
                     out.append(preset)
             return out
+
+    def set_develop_preset_camera(self, name: str, camera: str) -> bool:
+        """Make a saved look the look for ``camera``, taking that camera off any
+        other look; ``""`` takes this look's camera off. ``False`` when there is
+        no such look."""
+        now = datetime.now().isoformat()
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM develop_presets WHERE name = ?", (name,)).fetchone():
+                return False
+            if camera:
+                conn.execute(
+                    "UPDATE develop_presets SET camera = '' WHERE camera = ? AND name != ?",
+                    (camera, name),
+                )
+            conn.execute(
+                "UPDATE develop_presets SET camera = ?, updated_at = ? WHERE name = ?",
+                (camera, now, name),
+            )
+            return True
 
     def delete_develop_preset(self, name: str) -> bool:
         with self._connect() as conn:

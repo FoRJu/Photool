@@ -197,6 +197,57 @@ class TestDevelopPresets:
             db.save_develop_preset("Night", {"exposure": 0.2})
             assert "sections" not in db.list_develop_presets()[0]
 
+    def test_a_look_keeps_its_camera_and_lists_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = CatalogDB(str(Path(tmp) / "test.db"))
+            db.save_develop_preset("Night", {"contrast": 20})
+            db.save_develop_preset("Day", {"contrast": 5})
+            assert db.set_develop_preset_camera("Night", "Canon EOS R5")
+            looks = {p["name"]: p for p in db.list_develop_presets()}
+            assert looks["Night"]["camera"] == "Canon EOS R5"
+            assert "camera" not in looks["Day"]
+            assert not db.set_develop_preset_camera("Nowhere", "Canon EOS R5")
+
+    def test_starring_a_second_look_for_a_camera_takes_it_off_the_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = CatalogDB(str(Path(tmp) / "test.db"))
+            db.save_develop_preset("Night", {"contrast": 20})
+            db.save_develop_preset("Day", {"contrast": 5})
+            db.save_develop_preset("Film", {"contrast": 8})
+            db.set_develop_preset_camera("Night", "Canon EOS R5")
+            db.set_develop_preset_camera("Film", "Fujifilm X-T5")
+            db.set_develop_preset_camera("Day", "Canon EOS R5")
+            cams = {p["name"]: p.get("camera") for p in db.list_develop_presets()}
+            assert cams == {"Day": "Canon EOS R5", "Film": "Fujifilm X-T5", "Night": None}
+            db.set_develop_preset_camera("Day", "")
+            assert "camera" not in db.list_develop_presets()[0]
+
+    def test_saving_a_look_again_keeps_its_camera(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = CatalogDB(str(Path(tmp) / "test.db"))
+            db.save_develop_preset("Night", {"contrast": 20}, ["light"])
+            db.set_develop_preset_camera("Night", "Canon EOS R5")
+            db.save_develop_preset("Night", {"contrast": 30}, ["light"])
+            look = db.list_develop_presets()[0]
+            assert look["camera"] == "Canon EOS R5" and look["settings"] == {"contrast": 30}
+
+    def test_a_catalog_made_before_the_camera_column_opens_and_lists(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "old.db")
+            conn = sqlite3.connect(path)
+            conn.execute("""CREATE TABLE develop_presets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL,
+                settings TEXT NOT NULL DEFAULT '{}', created_at TEXT DEFAULT '',
+                updated_at TEXT DEFAULT '')""")
+            conn.execute("INSERT INTO develop_presets (name, settings) VALUES ('Old', '{\"contrast\": 10}')")
+            conn.commit()
+            conn.close()
+            db = CatalogDB(path)
+            assert db.list_develop_presets() == [{"name": "Old", "settings": {"contrast": 10}}]
+            assert db.set_develop_preset_camera("Old", "Canon EOS R5")
+
     def test_saving_the_same_name_again_replaces_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = CatalogDB(str(Path(tmp) / "test.db"))

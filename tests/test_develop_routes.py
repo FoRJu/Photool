@@ -210,6 +210,52 @@ class TestLooksOfYourOwn:
         assert res.status_code == 400
 
 
+class TestALookForACamera:
+    def _looks(self, client):
+        for name, contrast in (("Night", 20), ("Day", 5)):
+            assert client.post("/api/export/develop/presets", json={
+                "name": name, "sections": ["light"], "settings": {"contrast": contrast}}).status_code == 200
+
+    def test_the_camera_is_set_moved_and_cleared(self, client):
+        self._looks(client)
+        res = client.put("/api/export/develop/presets/Night/camera", json={"camera": "  Canon EOS R5 "})
+        assert res.status_code == 200
+        cams = {p["name"]: p.get("camera") for p in res.json()["presets"]}
+        assert cams == {"Day": None, "Night": "Canon EOS R5"}
+        res = client.put("/api/export/develop/presets/Day/camera", json={"camera": "Canon EOS R5"})
+        cams = {p["name"]: p.get("camera") for p in res.json()["presets"]}
+        assert cams == {"Day": "Canon EOS R5", "Night": None}
+        res = client.put("/api/export/develop/presets/Day/camera", json={"camera": ""})
+        assert all("camera" not in p for p in res.json()["presets"])
+        assert client.put("/api/export/develop/presets/Nowhere/camera", json={"camera": "X"}).status_code == 404
+
+    def test_a_look_on_two_photos_and_back(self, client, tmp_path):
+        second = f"{FOLDER}/IMG_0002.JPG"
+        Image.fromarray(np.full((300, 400, 3), 90, dtype=np.uint8), "RGB").save(
+            tmp_path / "lib" / second, format="JPEG", quality=95)
+        assert client.post(f"/api/catalog/index/{FOLDER}").status_code == 200
+        # Each photo's own edit: a contrast in Light, which the look carries and
+        # has none of, and a crop, which a look never carries.
+        own = {"contrast": 30, "exposure": 0.5, "crop_x": 0.1, "crop_y": 0.1, "crop_w": 0.5, "crop_h": 0.5}
+        for path in (PHOTO, second):
+            assert client.put("/api/photos/edit", json={"filepath": path, **own}).status_code == 200
+        look = {"exposure": 1.0, "vibrance": 25}
+        keys = ["exposure", "highlights", "lights", "darks", "shadows", "whites", "blacks", "compress",
+                "contrast", "clarity", "vibrance", "saturation"]   # Light + Presence
+        res = client.post("/api/photos/edit/batch", json={
+            **look, "filepaths": [PHOTO, second], "keys": keys, "paste_as": "copied"})
+        assert res.status_code == 200, res.text
+        body = res.json()
+        for path in (PHOTO, second):
+            now = client.get("/api/photos/edit", params={"filepath": path}).json()["settings"]
+            assert "contrast" not in now and now["exposure"] == 1.0 and now["vibrance"] == 25
+            assert now["crop_w"] == 0.5
+        assert client.post("/api/photos/edit/restore", json={"edits": body["previous"]}).status_code == 200
+        for path in (PHOTO, second):
+            now = client.get("/api/photos/edit", params={"filepath": path}).json()["settings"]
+            assert now["contrast"] == 30 and now["exposure"] == 0.5 and "vibrance" not in now
+
+
 class TestWhiteBalance:
     def test_a_jpeg_is_not_raw_and_reads_as_daylight(self, client):
         res = client.post("/api/export/develop/white-balance", json={"filepath": PHOTO})

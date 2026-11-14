@@ -1,6 +1,7 @@
 import { Component, Fragment, useState, useEffect, useCallback, useRef, useMemo } from "react";
 
-import DevelopView from "./DevelopView.jsx";
+import DevelopView, { keysOfSections, lookSections } from "./DevelopView.jsx";
+import LookOnSelection, { EACH_CAMERAS } from "./LookOnSelection.jsx";
 import DoubleExposureDialog from "./DoubleExposureDialog.jsx";
 import SameMomentDialog, { shiftLabel } from "./SameMomentDialog.jsx";
 import { enterFullscreen } from "./fullscreen.js";
@@ -1211,7 +1212,7 @@ function ReferenceBadge({ filepath }) {
 }
 
 function SelectionBar({ photos, selected, tags, busy, message, selecting, onEdit, onBasket, onCollage, onSelectAll, onClear,
-  copied, onPaste, onUndoPaste, onMatch, onDouble, onSameMoment }) {
+  copied, onPaste, onUndoPaste, onMatch, onDouble, onSameMoment, onLook }) {
   const pasteMode = usePasteAs();
   const reference = useMatchReference();
   const [tagDraft, setTagDraft] = useState("");
@@ -1285,6 +1286,7 @@ function SelectionBar({ photos, selected, tags, busy, message, selecting, onEdit
           className="bg-neutral-800 border border-neutral-700 rounded px-1 py-1 text-xs text-neutral-300 disabled:opacity-40">
           {PASTE_AS.map((opt) => <option key={opt.id} value={opt.id} title={opt.title}>{opt.short}</option>)}
         </select>
+        {onLook && <LookOnSelection picked={picked} disabled={off} onLook={onLook} />}
         {/* Matching: one photo set as the reference, the selection brought to it. */}
         <button disabled={off || n !== 1 || picked[0]?.filepath === reference?.filepath}
           onClick={() => useAsReference(picked[0].filepath)} data-testid="use-reference"
@@ -5167,6 +5169,54 @@ function PhotoolApp({ access }) {
     } catch { setPickMessage("The backend is not reachable"); } finally { setPickBusy(false); }
   }, [photos, picked, handleEditSaved]);
 
+  // One of your looks on every selected photo, or each camera's own look on the
+  // photos of that camera: a paste of the sections the look carries, taken back
+  // by the same Undo.
+  const lookPicked = useCallback(async (choice, presets) => {
+    const rows = photos.filter((p) => picked.has(p.filepath));
+    if (!rows.length) return;
+    const groups = new Map();          // look name -> filepaths
+    let left = 0;
+    if (choice === EACH_CAMERAS) {
+      for (const p of rows) {
+        const look = p.camera ? presets.find((x) => x.camera === p.camera) : null;
+        if (!look) { left += 1; continue; }
+        groups.set(look.name, [...(groups.get(look.name) || []), p.filepath]);
+      }
+    } else if (presets.some((x) => x.name === choice)) {
+      groups.set(choice, rows.map((p) => p.filepath));
+    }
+    const total = [...groups.values()].reduce((n, g) => n + g.length, 0);
+    if (!total) { setPickMessage(left ? `No look for the camera of ${left === 1 ? "this photo" : `these ${left} photos`}` : ""); return; }
+    const names = [...groups.keys()].map((name) => `“${name}”`).join(", ");
+    if (total > PASTE_ASKS_ABOVE && !window.confirm(
+      `Put ${names} on ${total} photos?\n\n`
+      + "Each keeps the rest of its own edit. Undo is offered until you leave this selection.")) return;
+    setPickBusy(true);
+    setPickMessage("");
+    setPasteUndo(null);
+    const previous = {};
+    const done = [];
+    try {
+      for (const [name, filepaths] of groups) {
+        const look = presets.find((x) => x.name === name);
+        const res = await fetch(`${API}/photos/edit/batch`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...look.settings, filepaths, keys: keysOfSections(lookSections(look)), paste_as: "copied" }),
+        });
+        const out = await res.json();
+        if (!res.ok) { setPickMessage(out.detail || `“${name}” was not put on`); break; }
+        for (const [fp, stored] of Object.entries(out.edits || {})) handleEditSaved(fp, stored);
+        Object.assign(previous, out.previous || {});
+        done.push(`“${name}” on ${out.copied.length} photo${out.copied.length === 1 ? "" : "s"}`);
+      }
+      if (done.length) {
+        setPickMessage(`Put ${done.join(", ")}` + (left ? ` · ${left} left: no look for their camera` : ""));
+      }
+      if (Object.keys(previous).length) setPasteUndo(previous);
+    } catch { setPickMessage("The backend is not reachable"); } finally { setPickBusy(false); }
+  }, [photos, picked, handleEditSaved]);
+
   // A batch match has finished, or was stopped: its edits are on the frames. Its undo is on
   // the folder's toolbar (LastMatch), which outlives this selection.
   const matchDone = useCallback((state, kind) => {
@@ -5569,7 +5619,7 @@ function PhotoolApp({ access }) {
             startVersion={developVersion}
             onOpenCopy={openCopy}
             photos={photos.filter((p) => !isVideo(p)).map((p) => ({
-              filepath: p.filepath, filename: p.filename, folder: p.folder,
+              filepath: p.filepath, filename: p.filename, folder: p.folder, camera: p.camera,
             }))}
             onClose={closeDevelop}
             onNavigate={(filepath) => { setDevelopVersion(0); setDevelopFile(filepath); }}
@@ -5964,6 +6014,7 @@ function PhotoolApp({ access }) {
             onCollage={() => setCollageOf(photos.filter((p) => picked.has(p.filepath)).map((p) => p.filepath))}
             onSelectAll={() => setPicked(new Set(photos.map((p) => p.filepath)))} onClear={clearPicked}
             copied={clipboard} onPaste={pastePicked} onUndoPaste={pasteUndo ? undoPaste : null}
+            onLook={lookPicked}
             onMatch={() => setMatching(true)}
             onDouble={() => {
               // In the order they were selected: the first is the one that keeps the copy.
