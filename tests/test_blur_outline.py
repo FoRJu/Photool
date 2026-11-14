@@ -215,10 +215,16 @@ class TestSettings:
 
     def test_its_parts_cleaned(self):
         raw = {"matte": MATTE, "parts": [{"points": [[2, -1, 1]], "pick": 9, "extra": 1}, "nonsense",
-                                         {"points": [[0.5, 0.5, 0]]}], "model": "sam3"}
+                                         {"points": [[0.5, 0.5, 0]]}], "model": "sam9", "people": "yes"}
         clean = normalize({"lens_blur": 40, "blur_outline": raw})["blur_outline"]
         assert clean == {"matte": MATTE, "model": "sam2.1",
                          "parts": [{"view": [0.0, 0.0, 1.0, 1.0], "points": [[1.0, 0.0, 1]], "pick": 2}]}
+
+    def test_sam3_and_everyone_kept(self):
+        raw = {"matte": MATTE, "parts": [{"view": [0, 0, 1, 1], "text": "person"}], "model": "sam3", "people": True}
+        clean = normalize({"lens_blur": 40, "blur_outline": raw})["blur_outline"]
+        assert clean["model"] == "sam3" and clean["people"] is True
+        assert clean["parts"] == [{"view": [0.0, 0.0, 1.0, 1.0], "text": "person"}]
 
     def test_it_belongs_to_its_frame(self):
         assert "blur_outline" in OWN_KEYS
@@ -255,14 +261,23 @@ class TestRoute:
             monkeypatch.setattr(objects, "_mattes_dir", str(tmp_path / "mattes"))
             yield c, f"{folder}/IMG_0001.JPG"
 
-    def test_an_outline_is_made_kept_and_added_to(self, client, monkeypatch):
-        c, photo = client
-        seen = {}
+    @pytest.fixture()
+    def models(self, monkeypatch):
+        """SAM and the depth model stood in for: what was asked of each, in order."""
+        seen = {"calls": [], "selections": []}
         near = np.zeros((64, 64), np.float32)
         near[:, 32:] = 1.0
+        here = {"sam2.1": True, "sam3": False}
+
+        def whole_map(frame):
+            # The model runs once a frame: the map is kept on it after.
+            if not frame._mattes.get("_test_depth"):
+                frame._mattes["_test_depth"] = True
+                seen["calls"].append(("depth", max(frame.size)))
+            return near
 
         def predict(rgb8, part, model, key=None):
-            assert model == "sam2.1"
+            seen["calls"].append(("sam", model))
             logits = np.full((3, 64, 64), -5.0, np.float32)
             logits[0, :, 40:] = 5.0
             logits[1, :, 32:] = 5.0
@@ -270,27 +285,121 @@ class TestRoute:
             return logits, np.array([0.9, 0.1, 0.95], np.float32)
 
         def selection(rgb8, parts, model, key=None):
-            seen["parts"] = parts
+            seen["calls"].append(("sam", model))
+            seen["selections"].append(parts)
             out = np.zeros(rgb8.shape[:2], np.float32)
-            out[:, out.shape[1] // 2:] = 1.0
+            if any(p.get("text") != "nothing" for p in parts):
+                out[:, out.shape[1] // 2:] = 1.0
             return out
 
         monkeypatch.setattr(objects, "predict", predict)
         monkeypatch.setattr(objects, "selection", selection)
-        monkeypatch.setattr(depth, "whole_map", lambda frame: near)
+        monkeypatch.setattr(objects, "available", lambda model: here.get(model, False))
+        monkeypatch.setattr(depth, "whole_map", whole_map)
+        seen["here"] = here
+        return seen
+
+    def test_an_outline_is_made_kept_and_added_to(self, client, models):
+        c, photo = client
         earlier = {"view": [0, 0, 1, 1], "points": [[0.2, 0.3, 1]]}
         res = c.post("/api/export/develop/blur-outline",
-                     json={"filepath": photo, "u": 0.8, "v": 0.5, "settings": {}, "parts": [earlier]})
+                     json={"filepath": photo, "u": 0.8, "v": 0.5, "settings": {}, "size": 200,
+                           "outline": {"matte": MATTE, "parts": [earlier], "model": "sam2.1"}})
         assert res.status_code == 200
         body = res.json()
         assert body["depth"] == 100
         made = body["outline"]
-        assert made["model"] == "sam2.1"
+        assert made["model"] == "sam2.1" and "people" not in made
         assert objects.load(made["matte"]) is not None
         assert len(made["parts"]) == 2 and made["parts"][0]["points"] == [[0.2, 0.3, 1]]
         assert made["parts"][1]["points"] == [[0.8, 0.5, 1]]
         assert made["parts"][1]["pick"] == 1      # the larger of the two at one distance
-        assert seen["parts"] == made["parts"]
+        assert models["selections"] == [made["parts"][:1], made["parts"][1:]]
+
+    def test_the_depth_is_the_previews_and_read_before_sam(self, client, models):
+        """The depth model and SAM do not share the card: read in the other order, a click
+        opened SAM, then the depth model (closing SAM), then SAM again."""
+        c, photo = client
+        assert c.post("/api/export/develop/blur-outline",
+                      json={"filepath": photo, "u": 0.8, "v": 0.5, "size": 300}).status_code == 200
+        assert models["calls"][0] == ("depth", 300)
+        assert all(kind == "sam" for kind, _ in models["calls"][1:])
+
+    def test_older_clients_send_the_parts_alone(self, client, models):
+        c, photo = client
+        earlier = {"view": [0, 0, 1, 1], "points": [[0.2, 0.3, 1]]}
+        res = c.post("/api/export/develop/blur-outline",
+                     json={"filepath": photo, "u": 0.8, "v": 0.5, "parts": [earlier]})
+        assert len(res.json()["outline"]["parts"]) == 2
+
+    def test_the_object_masks_model_when_it_is_here(self, client, models):
+        c, photo = client
+        ask = {"filepath": photo, "u": 0.8, "v": 0.5, "model": "sam3"}
+        assert c.post("/api/export/develop/blur-outline", json=ask).json()["outline"]["model"] == "sam2.1"
+        models["here"]["sam3"] = True
+        models["calls"].clear()
+        assert c.post("/api/export/develop/blur-outline", json=ask).json()["outline"]["model"] == "sam3"
+        assert {m for kind, m in models["calls"] if kind == "sam"} == {"sam3"}
+
+    def test_everyone_with_sam2(self, client, models, monkeypatch):
+        from adjust import segment
+
+        c, photo = client
+        everyone = np.zeros((50, 50), np.float32)
+        everyone[:, 25:] = 1.0                     # where the map says 1, nearest
+        monkeypatch.setattr(segment, "whole_matte", lambda frame, kind, *a, **k: everyone)
+        res = c.post("/api/export/develop/blur-outline", json={"filepath": photo, "kind": "people"})
+        assert res.status_code == 200
+        made = res.json()["outline"]
+        assert made["people"] is True and made["parts"] == []
+        assert res.json()["depth"] == 100
+        # A click after it keeps everyone.
+        res = c.post("/api/export/develop/blur-outline",
+                     json={"filepath": photo, "u": 0.1, "v": 0.5, "outline": made})
+        assert res.json()["outline"]["people"] is True and len(res.json()["outline"]["parts"]) == 1
+
+    def test_everyone_by_their_faces_with_sam2(self, client, models, monkeypatch):
+        """Each face found is clicked for, on the face and the body under it, in one request."""
+        from adjust import segment
+
+        c, photo = client
+        monkeypatch.setattr(segment, "face_boxes", lambda frame: [(0.1, 0.1, 0.1, 0.1), (0.6, 0.8, 0.1, 0.1)])
+        res = c.post("/api/export/develop/blur-outline", json={"filepath": photo, "kind": "people"})
+        assert res.status_code == 200
+        made = res.json()["outline"]
+        assert "people" not in made
+        assert [p["points"] for p in made["parts"]] == [[[0.15, 0.15, 1], [0.15, 0.33, 1]], [[0.65, 0.85, 1]]]   # no body below the frame's foot
+        # Each picked at its own face's distance: on the far left none holds together, so the model's best.
+        assert [p["pick"] for p in made["parts"]] == [2, 1]
+        assert models["selections"] == [made["parts"]]
+        # Asked again, the same people are not added twice.
+        again = c.post("/api/export/develop/blur-outline", json={"filepath": photo, "kind": "people", "outline": made})
+        assert again.json()["outline"]["parts"] == made["parts"]
+
+    def test_no_one_there(self, client, models, monkeypatch):
+        from adjust import segment
+
+        c, photo = client
+        monkeypatch.setattr(segment, "whole_matte", lambda frame, kind, *a, **k: np.zeros((50, 50), np.float32))
+        assert c.post("/api/export/develop/blur-outline", json={"filepath": photo, "kind": "people"}).status_code == 404
+
+    def test_everyone_and_names_with_sam3(self, client, models):
+        c, photo = client
+        models["here"]["sam3"] = True
+        res = c.post("/api/export/develop/blur-outline", json={"filepath": photo, "kind": "people", "model": "sam3"})
+        made = res.json()["outline"]
+        assert made["parts"] == [{"view": [0.0, 0.0, 1.0, 1.0], "text": "person"}] and "people" not in made
+        res = c.post("/api/export/develop/blur-outline",
+                     json={"filepath": photo, "kind": "text", "text": "  the  dog ", "model": "sam3", "outline": made})
+        assert res.json()["outline"]["parts"][-1] == {"view": [0.0, 0.0, 1.0, 1.0], "text": "the dog"}
+        res = c.post("/api/export/develop/blur-outline",
+                     json={"filepath": photo, "kind": "text", "text": "nothing", "model": "sam3"})
+        assert res.status_code == 404
+
+    def test_names_need_sam3(self, client, models):
+        c, photo = client
+        res = c.post("/api/export/develop/blur-outline", json={"filepath": photo, "kind": "text", "text": "dog"})
+        assert res.status_code == 400
 
     def test_a_frame_that_is_not_there(self, client):
         c, _ = client

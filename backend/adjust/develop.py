@@ -509,8 +509,9 @@ def normalize(settings: Optional[dict]) -> dict:
 
 def normalize_blur_outline(raw) -> Optional[dict]:
     """The outline lens blur ends at, cleaned, or ``None``: its kept picture's name, the
-    parts that made it (as an object mask's) and the model. Text is read as the sidecar
-    writes it. Without a picture there is nothing to end at."""
+    parts that made it (as an object mask's), the model (the object masks' own: SAM 2.1
+    or SAM 3), and ``people`` when everyone was outlined with SAM 2.1's people mask. Text
+    is read as the sidecar writes it. Without a picture there is nothing to end at."""
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -521,7 +522,11 @@ def normalize_blur_outline(raw) -> Optional[dict]:
     matte = raw.get("matte")
     if not (isinstance(matte, str) and 8 <= len(matte) <= 64 and all(c in "0123456789abcdef" for c in matte)):
         return None
-    return {"matte": matte, "parts": _normalize_parts(raw.get("parts")), "model": "sam2.1"}
+    out = {"matte": matte, "parts": _normalize_parts(raw.get("parts")),
+           "model": "sam3" if raw.get("model") == "sam3" else "sam2.1"}
+    if raw.get("people") is True:
+        out["people"] = True        # everyone, as the people mask selects them
+    return out
 
 
 def normalize_curve(points) -> Optional[list]:

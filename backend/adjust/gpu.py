@@ -58,6 +58,7 @@ def open_large() -> None:
     """A large model is about to open: nothing else stays on the card with it."""
     global _large_open
     with LOCK:
+        logger.info("[gpu] a large model opens: every other model on the card is let go of")
         release_all()
         _large_open = True
 
@@ -66,4 +67,6 @@ def make_room() -> None:
     """Another model is about to open: a large one goes, and opens again when it is wanted."""
     with LOCK:
         if _large_open:
+            # Seen in the log next to a model opening again, this is the card being shared badly.
+            logger.info("[gpu] another model opens: the large one is let go of")
             release_all()

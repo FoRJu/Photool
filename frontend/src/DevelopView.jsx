@@ -5666,7 +5666,7 @@ ${known.license}
           <BlurOutline filepath={filepath} settings={settings} onApply={applyGroup}
             picking={pickingOutline}
             setPicking={(on) => { setPickingOutline(on); if (on) { setPickingFocus(false); setPickingWhite(false); } }}
-            pickRef={outlinePick}
+            pickRef={outlinePick} objectModel={lastObjectModel}
             pickBody={(u, v) => ({ filepath, u, v, size: PREVIEW_SIZE, settings: activeOnly(settingsRef.current),
               ...frameGeometry(settingsRef.current) })} />
         )}

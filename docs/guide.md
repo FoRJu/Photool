@@ -627,11 +627,14 @@ other one. The Lens blur group has:
   the frame. **Pick the focus on the picture** sets it from the next click.
 - **Sharp range**, how deep a range stays sharp round the focus. Raise it if part of
   the subject goes soft.
-- **Outline what is sharp**: the next click outlines the thing clicked with SAM 2.1
-  (about 330 MB, fetched the first time), sets the focus to its distance, and from
-  then on the blur ends at that outline rather than at the depth map's softer edge.
-  **Add to the outline** takes in another thing; **Clear** goes back to the map's
-  edge. The outline belongs to its frame: Paste and a saved look leave each frame its
+- **Outline what is sharp**: the next click outlines the thing clicked, sets the focus
+  to its distance, and from then on the blur ends at that outline rather than at the
+  depth map's softer edge. It uses the model object masks use: SAM 2.1 (about 330 MB,
+  fetched the first time), or SAM 3 once you have chosen it there. **Outline the
+  people** takes everyone whose face is found at once, with the focus in the middle
+  of where they stand; with SAM 3 you can also name what to outline ("dog") and every
+  one found is taken. **Add to the outline** takes in another thing; **Clear** goes
+  back to the map's edge. The outline belongs to its frame: Paste and a saved look leave each frame its
   own. It lies on the frame as its lens correction and transform were when it was
   drawn, so outline again after changing those.
 

@@ -35,6 +35,7 @@ later. Nothing here assumes where the map came from.
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -213,6 +214,7 @@ def _get_session():
         gpu.open_large()
     else:
         gpu.make_room()
+    began = time.perf_counter()
     try:
         session = _open(path)
         if spec is MODEL and session.get_providers()[0] == "CPUExecutionProvider":
@@ -224,7 +226,8 @@ def _get_session():
         _give_up(exc)
         return _get_session()
     _session, _session_spec = session, spec
-    logger.info("[depth] %s loaded on %s", spec.name, session.get_providers()[0])
+    logger.info("[depth] %s loaded on %s in %.1f s", spec.name, session.get_providers()[0],
+                time.perf_counter() - began)
     return session, spec
 
 
