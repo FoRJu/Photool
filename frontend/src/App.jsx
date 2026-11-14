@@ -5619,7 +5619,7 @@ function PhotoolApp({ access }) {
             startVersion={developVersion}
             onOpenCopy={openCopy}
             photos={photos.filter((p) => !isVideo(p)).map((p) => ({
-              filepath: p.filepath, filename: p.filename, folder: p.folder,
+              filepath: p.filepath, filename: p.filename, folder: p.folder, camera: p.camera,
             }))}
             onClose={closeDevelop}
             onNavigate={(filepath) => { setDevelopVersion(0); setDevelopFile(filepath); }}
