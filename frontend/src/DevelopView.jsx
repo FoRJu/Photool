@@ -4,6 +4,7 @@ import BlurOutline from "./BlurOutline.jsx";
 import BlurFocusPicture from "./BlurFocusPicture.jsx";
 import Vectorscope, { scopeOfBitmap } from "./Vectorscope.jsx";
 import LookTools from "./LookTools.jsx";
+import FilmLutImport from "./FilmLutImport.jsx";
 import { scaleLook, lookIsLive } from "./lookAmount.js";
 import { recall, remember } from "./remembered.js";
 import { editKey, makeDoubleExposure, sameEdit, secondOf, secondOfRow, versionThumb, versionsOf } from "./doubleExposure.js";
@@ -3240,7 +3241,7 @@ function StylePicker({ value, onChange, folder, filepath, edit, onRefitted }) {
           className="flex-1 min-w-0 bg-neutral-900 border border-neutral-800 rounded px-1 py-0.5 text-xs">
           <option value="">Camera's own look</option>
           {list.map((s) => (
-            <option key={s.id} value={s.id} title={s.source}>{s.name} ({s.frames})</option>
+            <option key={s.id} value={s.id} title={s.source}>{s.name} ({s.kind === "lut" ? "film LUT" : s.frames})</option>
           ))}
           {value && !known && <option value={value}>{value} (not on this computer)</option>}
         </select>
@@ -3281,10 +3282,15 @@ function StylePicker({ value, onChange, folder, filepath, edit, onRefitted }) {
             + New style from this folder
           </button>
         ) : null}
+        {!running && !naming && (
+          <span className={folder ? "ml-2" : ""}>
+            <FilmLutImport onImported={async (style) => { await load(); onChange(style.id); }} />
+          </span>
+        )}
         {naming && !running && <span className="block mt-0.5 leading-snug" data-testid="style-preview">
           {stylePreviewText(preview)}
         </span>}
-        {value && known && !running && !naming && (
+        {value && known && !running && !naming && chosen.kind !== "lut" && (
           <button onClick={improve} disabled={!chosen.improvable} data-testid="style-improve"
             title={chosen.improvable
               ? "Look in other folders for frames shot with this style's camera and settings, and add them only if the style gets no worse on its own frames. Runs in the background."

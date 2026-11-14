@@ -60,7 +60,7 @@ configuring it, see [setup.md](setup.md); for an overview, the
 | **Collage** | ✅ v1 | 2 to 9 photos on one fixed page: a 9:16 phone story, a square, a 4×6, 5×7 or 8×10 print at 300 dpi, or a 3:2 screen. Each photo is cut to fill its cell around the people in it, and the layouts offered cut away the least. See [Collages](#collages) |
 | **Agent control (MCP)** | ✅ v5 | The library as MCP tools at `http://127.0.0.1:8000/mcp`: find, cull, tag, develop, preview and export, the same actions the UI takes, on the same catalog. See [Driving it from an agent](#driving-it-from-an-agent-mcp) |
 | **Library search** | ✅ v5.2 | One line of text over the whole library — `rating:>=3 iso:>3200 date:2026-04 -is:edited` — and, with smart search, by what the photos show: `kids at the beach rating:>=3`. See [Searching the library](#searching-the-library) |
-| **Styles** | ✅ v1 | A look learned from many frames — a Ricoh's Positive Film, Canon's Neutral, your own edited exports — kept under a name and rendered on any RAW, from any camera |
+| **Styles** | ✅ v1 | A look learned from many frames — a Ricoh's Positive Film, Canon's Neutral, your own edited exports — kept under a name and rendered on any RAW, from any camera; or a film look imported as a `.cube` LUT (a Fujifilm film simulation, say), anchored to each frame's brightness the same way |
 | **Other computers** | ✅ v1 | The album on a laptop or phone in the house, for devices you have paired; nobody else on the Wi-Fi sees a thumbnail |
 | **On a phone or an iPad** | ✅ v2 | A touch screen gets the mobile layout whichever way it is turned: the tabs in a bar at the bottom (Library, People, Export; Import, Activity and Devices under More), a folder's filters folded behind one *Filters* button with *Undecided only* beside it, and a grid of thumbnails (three across a phone, larger on an iPad). *Desktop layout* under More switches to the desktop's, and *Mobile layout* in its header back; the choice is kept on the device. Tapping a photo opens a viewer made for a thumb: swipe sideways for the next or previous photo (it slides on and fades, and the next fades in), or tap the left or right edge of the screen; swipe down to go back to the grid; pinch or double-tap to look closer (then drag about); a tap in the middle hides everything but the photo, and another brings it back. A phone turned on its side has its controls in a column beside the photo, so the photo keeps the screen's whole height. The stars and *Reject* sit along the bottom, and a reject dims the frame and moves on. A burst's frames are a strip of thumbnails with *Keep sharpest*; ⓘ shows the camera settings and ⬡ puts the photo in the basket. On an iPad the viewer also has *Develop*. A slideshow started on an iPad takes the whole screen. An iPhone lets no web page do that; added to its home screen (Share → *Add to Home Screen*, in Safari or Chrome), Photool opens as an app of its own without the address bar, and has to be paired again there, since an app from the home screen keeps its own cookies |
 | **Touch screens** | ✅ v2 | Where there is no Esc key (an iPad, a phone), the browser's Back, which is the swipe in from the screen's left edge in Safari and Chrome, backs out one step at a time, as Esc does: the shortcut list, the crop, the masks, the spots or the loupe, then the develop view, the viewer, the folder. Each is a step in the browser's history; one left by its own button (Done, Close) is taken off it too. Opened as an app from the home screen, where there is no browser to swipe back in, a round **‹** button at the bottom left does the same. The keyboard hints are hidden on a touch screen |
@@ -922,6 +922,31 @@ Two limits. A sensor's matrix is one 3×3 fitted under one light, so two cameras
 decodes of a very saturated colour can differ by a few ΔE before any style is
 applied. And a style learned only from one kind of scene carries that scene's
 choices — learned only from night shots, it will lift shadows.
+
+### Film looks from a .cube LUT
+
+A style can also be a **film LUT** brought in from elsewhere: **+ Film LUT
+(.cube)…** under Style reads a `.cube` file and keeps it in `styles/` like a
+learned style (`adjust/film_lut.py`). It is made for film-simulation LUTs built
+for a picture with *linear contrast*, such as abpy's Fujifilm ones
+(github.com/abpy/FujifilmCameraProfiles: Provia, Velvia, Classic Chrome, Classic
+Neg, Eterna and others, in sRGB and Display P3). Those LUTs expect the camera's
+colour matrix and white balance as shot and no tone curve, the whole film
+character being in the LUT, which is the middle space above. So a LUT is put on
+any RAW the way a style is: **anchored** to the frame's own middle brightness
+(a Canon R6 Mark II's decode sat 2 to 2.5 stops under where those LUTs want
+middle grey), with the highlight **shoulder** folding the headroom above white
+in, since a LUT's input stops at white. A file named or marked *DisplayP3* is
+read in Display P3; otherwise sRGB. Style fade, the gallery (*Try each*), saved
+looks and copy and paste work as for any style; a LUT is not learned, so it
+cannot be improved from other folders.
+
+Two cautions. Adobe's linear profile keeps Adobe Standard's own hue and
+saturation adjustments, and this decode has the camera's matrix alone, so
+strongly saturated colours can sit a little apart from the same LUT in Camera
+Raw; how close a LUT comes to a Fujifilm camera's own JPEG has not been measured
+here. And the LUTs are someone else's work under their own licence (abpy's are
+CC BY-NC-SA 4.0): Photool ships none and keeps a copy only of what you import.
 
 ## Culling a burst
 

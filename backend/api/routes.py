@@ -3219,6 +3219,34 @@ class StyleRenameRequest(BaseModel):
     name: str
 
 
+class StyleLutRequest(BaseModel):
+    text: str                     # the .cube file as text
+    filename: str = ""
+    name: str = ""                # "" uses the file's own title, or its name
+    space: str = ""               # "srgb" | "p3"; "" reads it from the file
+
+
+@router.post("/styles/import-lut")
+async def import_lut_style_route(req: StyleLutRequest):
+    """Keep a .cube film look (a film simulation, say) as a style, to render on
+    any RAW like a learned one (adjust.film_lut). The file is copied in: the
+    app ships no LUTs of its own."""
+    from adjust import styles
+    from adjust.film_lut import MAX_BYTES, SPACES
+
+    if len(req.text) > MAX_BYTES:
+        raise HTTPException(status_code=400, detail="That file is too large for a LUT")
+    if req.space and req.space not in SPACES:
+        raise HTTPException(status_code=400, detail="The colour space is sRGB or Display P3")
+    if styles.style_dir() is None:
+        raise HTTPException(status_code=503, detail="No place to keep styles on this computer")
+    try:
+        style = await _run_blocking(styles.import_lut, req.name, req.text, req.filename, req.space or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "style": style.summary()}
+
+
 @router.get("/styles")
 async def list_styles_route():
     from adjust import styles
@@ -3305,6 +3333,8 @@ async def improve_style_route(style_id: str, request: Request):
     style = await _run_blocking(styles.load, style_id)
     if style is None:
         raise HTTPException(status_code=404, detail="No such style")
+    if style.lut is not None:
+        raise HTTPException(status_code=400, detail="A film LUT is used as it is; it is not learned from frames.")
     if not style.key:
         raise HTTPException(status_code=400, detail=(
             "This style was learned before styles remembered their camera settings; "

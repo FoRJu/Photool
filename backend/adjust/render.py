@@ -560,7 +560,7 @@ def style_anchor(frame: "LinearFrame", style) -> float:
     """The exposure factor that anchors ``style`` on this frame, worked out once
     per frame and style from the unedited picture (adjust.styles.anchor)."""
     owner = frame.anchor_of or frame
-    key = (style.id, id(style.look))
+    key = (style.id, id(style.look if style.lut is None else style.lut))
     factor = owner._anchors.get(key)
     if factor is None:
         from adjust.styles import anchor
