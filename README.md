@@ -35,6 +35,8 @@ make the keepers look right, and share them.
   - double exposure: one photo laid over another in linear light, RAW or JPEG
   - spot healing, noise reduction (AI), sharpening, lens correction, upright
   - virtual copies, presets, copy/paste and "match this look"
+  - looks of your own: an amount from 0 to 150, a look for each camera, a look on a
+    whole selection, and any look as a `.cube` LUT for a video editor or another app
 
   Edits are non-destructive and written to XMP.
 - **People:** faces are found and grouped on your own computer. Name a group

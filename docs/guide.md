@@ -252,6 +252,46 @@ to begin with where the edit has changes; putting one on a photo sets only those
 sections. A look never carries the crop, the level, spots or masks, which belong
 to the photo they were made on.
 
+Putting a look on shows an **Amount** under the looks, 0 to 150 and starting at
+100. It scales what the look does by strength: the light and tone sliders,
+presence, fade, the toning and mixer strengths, grain and vignette. Below 100 a
+curve bends less and a style fades toward the camera's own look (0 is the
+camera's picture, with the style still named); above 100 the curve and the style
+stay as saved, because stretching a curve can stop it rising. What is a choice
+rather than a strength stays as it is at any amount: black and white, which
+style, a white balance in Kelvin, a toning hue, the grain's size, noise
+reduction, sharpening and lens corrections. Double-click the slider to go back to
+100. One drag is one step of undo. The Amount stays while the look's own controls
+are as it left them, and goes when one of them is moved by hand; moving a control
+the look does not carry leaves it.
+
+With one of your looks on a photo, **☆ For {camera}** makes it the look for that
+camera, as the catalog names it. One look per camera: starring another moves the
+star. The camera's look is listed first under *Yours* with a ★, and the closed
+Looks fold names it on a frame of that camera with no tone edit yet. Nothing is
+put on by it, on opening or on import: it is there to be chosen. A photo whose
+file says no camera is not offered the star.
+
+In the folder view, the selection bar's **Look** menu puts one of your looks on
+every selected photo, or **each camera's own look** on the photos of each
+camera (those whose camera has none are left, and counted). Each photo keeps the
+rest of its edit, its crop among it, and **Undo** takes it all back, as it does a
+paste.
+
+**LUT** downloads a look of your own as a `.cube` file (33 colours a side,
+display-encoded Rec. 709 in and out), for a video editor or another photo app. A
+LUT gives one colour out for each colour in, so it holds what the look does to a
+pixel by its colour alone: exposure and the relative temperature and tint, the
+tone sliders, presence, fade, toning, the curves, the colour mixer and black and
+white. It cannot hold what depends on the pixels round it (clarity, sharpening,
+noise reduction, lens blur), on where a pixel is in the frame (grain, vignette,
+lens corrections), or on the RAW file (a learned style, the camera's look, a
+white balance in Kelvin, which is worked out from one file's own white). Those
+are left out and named when it is saved: *Saved Night.cube · not in it: Clarity,
+Grain*. Exposure above zero meets the highlight shoulder, which follows a
+picture's brightest value; the LUT is the edit as it is on a picture with a full
+white in it.
+
 **Squeeze** is the answer to "can a wide scene be put into a normal 8-bit JPEG":
 it compresses the scene's overall range — a bright window and a dark room, ten
 stops across — and keeps the local contrast, so the result reads as a photograph
