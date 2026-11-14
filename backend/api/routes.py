@@ -3541,6 +3541,46 @@ async def develop_second_status(path: str):
     return {"exists": not missing(second), "name": second["path"].rsplit("/", 1)[-1]}
 
 
+class FocusPictureRequest(FrameGeometry):
+    filepath: str
+    settings: dict = {}          # the edit: its lens_blur, blur_focus, blur_sharp and blur_outline
+    size: int = 1600             # the preview's size, whose frame already holds the depth map
+
+
+@router.post("/export/develop/focus-picture")
+async def develop_focus_picture(req: FocusPictureRequest, request: Request):
+    """What lens blur keeps sharp, as a small picture: the frame in its own colours where it
+    stays sharp, greyed where it is blurred (adjust.depth.focus_picture)."""
+    import io as _io
+
+    from PIL import Image
+
+    from adjust import depth
+    from adjust.develop import normalize
+    from faces.models import ModelsUnavailable
+
+    config = request.app.state.config
+    clean = normalize(req.settings)
+
+    def draw():
+        frame = _mask_frame(config, req.filepath, max(256, min(int(req.size), 4096)), req)
+        if frame is None:
+            return None
+        rgb = depth.focus_picture(frame, clean.get("blur_focus", 0), clean.get("blur_sharp", 0),
+                                  clean.get("blur_outline"))
+        buf = _io.BytesIO()
+        Image.fromarray(rgb, "RGB").save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
+    try:
+        found = await _run_blocking(draw)
+    except ModelsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Could not read this frame")
+    return Response(content=found, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 @router.post("/export/develop/depth-at")
 async def develop_depth_at(req: DepthAtRequest, request: Request):
     """The distance at a point of the frame on the lens blur's scale: 1 far to 100 near."""

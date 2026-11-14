@@ -121,6 +121,28 @@ class TestEdge:
         before = depth.lens_blur(rgb, d, FOCUS, depth.DEFAULT_SHARP, RADIUS)
         assert before[:, 170:200, 0].max() > 0.05
 
+    def test_what_is_outlined_is_kept_sharp_whatever_its_distance(self):
+        """The outline says what is in focus: a subject far from the focus is not blurred."""
+        rgb, d, matte = scene()
+        far_focus = 0.0                    # the background's distance: the subject would blur
+        plain = depth.lens_blur(rgb, d, far_focus, depth.DEFAULT_SHARP, RADIUS)
+        assert np.abs(plain - rgb)[:, 230:380].max() > 0.1
+        inside, outside = outline.sides(d, matte)
+        out = depth.lens_blur(rgb, outside, far_focus, depth.DEFAULT_SHARP, RADIUS, edge=(matte, inside))
+        assert np.abs(out - rgb)[:, 205:395].max() < 0.02
+
+    def test_a_blurred_thing_nearer_still_spreads_over_what_is_outlined(self):
+        rgb = np.zeros((60, 120, 3), np.float32)
+        rgb[:, :60] = (0.0, 0.0, 1.0)      # the outlined thing, far
+        rgb[:, 60:] = (1.0, 0.0, 0.0)      # a nearer thing, out of focus
+        d = np.zeros((60, 120), np.float32)
+        d[:, 60:] = 1.0
+        alpha = np.zeros((60, 120), np.float32)
+        alpha[:, :60] = 1.0
+        out = depth.lens_blur(rgb, d, 0.0, 0.02, 12.0, edge=(alpha, np.zeros_like(d)))
+        assert out[:, 52:60, 0].max() > 0.1          # the near red spreads over its edge
+        assert np.abs(out[:, :40] - rgb[:, :40]).max() < 0.02
+
     def test_no_edge_is_exactly_as_before(self):
         rgb, d, _ = scene()
         a = depth.lens_blur(rgb, d, FOCUS, depth.DEFAULT_SHARP, RADIUS)
@@ -405,3 +427,21 @@ class TestRoute:
         c, _ = client
         res = c.post("/api/export/develop/blur-outline", json={"filepath": "2025/nothing.JPG", "u": 0.5, "v": 0.5})
         assert res.status_code in (400, 404)
+
+
+class TestFocusPicture:
+    def test_sharp_where_in_focus_and_where_outlined(self, kept):
+        rgb, d, matte = scene()
+        frame = framed(rgb, d)
+        near = depth.blur_share(d, 100, 10)
+        assert near[:, 300:].max() < 0.05 and near[:, :100].min() > 0.9
+        far = depth.blur_share(d, 1, 10)
+        assert far[:, 300:].min() > 0.9
+        # Focus near, and the far half outlined: both are sharp.
+        held = depth.blur_share(d, 100, 10, frame, {"matte": kept(1.0 - matte)})
+        assert held[:, :170].max() < 0.05 and held[:, 300:].max() < 0.05
+
+    def test_drawn(self):
+        rgb, d, _ = scene()
+        out = depth.focus_picture(framed(rgb, d), 100, 10, size=200)
+        assert out.dtype == np.uint8 and max(out.shape[:2]) == 200

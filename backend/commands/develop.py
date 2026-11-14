@@ -110,7 +110,9 @@ _MASKS_MEANING = (
     "x1 0.5 y1 0 x2 0.5 y2 0.4 for a sky; invert turns it round. {kind: 'radial', cx, cy, rx, ry, angle, feather 0-100, invert}: "
     "whole inside the ellipse (rx a share of the width, ry of the height), fading out over feather; "
     "invert puts it outside. Each takes exposure (-4..4 stops) and contrast, highlights, lights, darks, shadows, "
-    "temperature, clarity (-100..100) and saturation (-200..200, added to the edit's own); and, on the skin of the "
+    "temperature, clarity (-100..100), saturation (-200..200, added to the edit's own) and blur (0..100, puts "
+    "what it reaches out of focus as a lens would, e.g. an inverted subject mask with blur 40 for a soft "
+    "background); and, on the skin of the "
     "people it reaches only, smooth (0..100, calms blemishes and blotches), even (0..100, evens redness and dark "
     "patches) and texture (-100..100, softer or crisper pores), e.g. people with smooth 30 even 20 for a natural "
     "touch. {kind: 'brush', invert} reaches only where painted, or with invert everywhere but there. {kind: 'subject' or 'sky', invert}: where a "
@@ -134,10 +136,11 @@ _SECOND_MEANING = ("A second exposure laid over this frame in linear light: an o
                    'library), mode (add, average, lighten, darken), amount (1..200 percent), exposure (-3..3 stops), '
                    "x and y (-100..100 percent of the frame), scale (100..400), flip, reach (empty, subject, people, "
                    "sky) and invert. It belongs to this frame and does not paste.")
-_BLUR_OUTLINE_MEANING = ("Lens blur: an outline of what is sharp, so the blur ends where it ends rather than "
+_BLUR_OUTLINE_MEANING = ("Lens blur: an outline of what is kept sharp. Whatever it holds stays in focus "
+                        "whatever its distance, and the blur of the rest ends where it ends rather than "
                         "where the depth map's softer edge does: an object with matte (a kept selection's "
-                        "id), parts and model, made by clicking in the develop view. Needs lens_blur. It "
-                        "belongs to this frame and does not paste.")
+                        "id), parts, model (sam2.1 or sam3) and people, made in the develop view. Needs "
+                        "lens_blur. It belongs to this frame and does not paste.")
 _SPOTS_MEANING = (
     "Spots removed (dust, a blemish): a list, at most 200, done before every other control. "
     "{x, y: the spot's centre, fractions of the whole frame before crop and level; r: its radius, a "

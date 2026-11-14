@@ -200,4 +200,4 @@ def _region(rgb: np.ndarray, weight: np.ndarray, face: float, mask: dict) -> np.
 # The other controls a mask carries, which do not change what the retouch does
 # and so are not part of what it is kept by.
 _OTHER_SLIDERS = ("exposure", "contrast", "highlights", "lights", "darks", "shadows", "temperature",
-                  "saturation", "clarity")
+                  "saturation", "clarity", "blur")

@@ -1,9 +1,9 @@
-// Lens blur that ends at an outline of what is sharp (backend adjust/outline.py).
+// What lens blur keeps sharp, by an outline (backend adjust/outline.py).
 //
-// The depth map is soft at an edge, so on its own the blur gives a person's edge a
-// distance between theirs and the wall's. Here what is sharp is outlined with the model
-// object masks use (SAM 2.1, or SAM 3 once it has been chosen there), the focus goes to
-// its distance, and from then on the blur ends at that outline. It can be a click on a
+// What is outlined stays sharp whatever its distance, and the blur of the rest ends at its
+// edge rather than at the depth map's softer one. It is outlined with the model object
+// masks use (SAM 2.1, or SAM 3 once it has been chosen there), and Focus at goes to its
+// distance, so what stands beside it is sharp too. It can be a click on a
 // thing, everyone in the frame at once, or with SAM 3 everything a word names. The edit
 // holds it as `blur_outline`: {matte, parts, model, people?}, a kept selection as an
 // object mask's is. It belongs to its frame: it is not pasted, nor kept in a saved look.
@@ -97,7 +97,7 @@ export default function BlurOutline({ filepath, settings, onApply, picking, setP
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setNote(data.detail || "Could not outline that."); return; }
       onApply(["blur_outline", "blur_focus"], { blur_outline: data.outline, blur_focus: data.depth },
-        held ? "Added to the blur's outline" : "Blur outlined");
+        held ? "Kept another thing sharp" : "Kept sharp");
       if (what === "name") setName("");
     } catch {
       setNote("The server did not answer.");
@@ -119,21 +119,21 @@ export default function BlurOutline({ filepath, settings, onApply, picking, setP
     <div className="space-y-1.5" data-testid="blur-outline-panel">
       <div className="flex flex-wrap items-center gap-1">
         <button onClick={() => { setNote(""); setPicking(!picking); }} data-testid="blur-outline" disabled={!!busy}
-          title="Then click what should be sharp: it is outlined, the focus goes to its distance, and the blur ends where it ends."
+          title="Then click a thing on the picture: it is outlined and kept sharp, whatever its distance, and the focus goes to it."
           className={`${button} ${picking ? lit : idle} disabled:opacity-50`}>
-          {busy === "point" ? "Outlining…" : picking ? "Click it on the picture…" : held ? "Add to the outline" : "Outline what is sharp"}
+          {busy === "point" ? "Outlining…" : picking ? "Click it on the picture…" : held ? "Keep another thing sharp" : "Keep sharp: click a thing"}
         </button>
         {!everyone && (
           <button onClick={() => { setPicking(false); outline("people", { ...pickBody(0.5, 0.5), kind: "people" }); }}
             data-testid="blur-outline-people" disabled={!!busy}
-            title="Everyone in the frame, outlined at once: the focus goes to the middle of where they stand."
+            title="Everyone in the frame, outlined at once and kept sharp: the focus goes to the middle of where they stand."
             className={`${button} ${idle} disabled:opacity-50`}>
-            {busy === "people" ? "Finding everyone…" : "Outline the people"}
+            {busy === "people" ? "Finding everyone…" : "Keep the people sharp"}
           </button>
         )}
         {held && (
-          <button onClick={() => onApply(["blur_outline"], {}, "Blur outline cleared")} data-testid="blur-outline-clear"
-            disabled={!!busy} title="The blur goes back to ending where the depth map says"
+          <button onClick={() => onApply(["blur_outline"], {}, "Nothing kept sharp by outline")} data-testid="blur-outline-clear"
+            disabled={!!busy} title="Forget the outline: Focus at and Depth of field alone say what is sharp"
             className={`${button} ${idle} disabled:opacity-50`}>
             Clear
           </button>
@@ -143,19 +143,19 @@ export default function BlurOutline({ filepath, settings, onApply, picking, setP
         <form className="flex items-center gap-1" data-testid="blur-outline-name-form"
           onSubmit={(e) => { e.preventDefault(); if (name.trim()) outline("name", { ...pickBody(0.5, 0.5), kind: "text", text: name }); }}>
           <input value={name} onChange={(e) => setName(e.target.value)} disabled={!!busy} maxLength={60}
-            placeholder="Or name it: dog, bicycle…" data-testid="blur-outline-name" aria-label="What to outline, by name"
+            placeholder="Or name what to keep sharp: dog, bike…" data-testid="blur-outline-name" aria-label="What to outline, by name"
             className="min-w-0 flex-1 min-h-8 text-[11px] px-2 rounded border border-neutral-700 bg-neutral-900 text-neutral-200 placeholder:text-neutral-600" />
           <button type="submit" disabled={!!busy || !name.trim()} data-testid="blur-outline-name-go"
-            title="Every one of them SAM 3 finds is outlined" className={`${button} ${idle} disabled:opacity-50`}>
-            {busy === "name" ? "Finding…" : "Outline"}
+            title="Every one of them SAM 3 finds is kept sharp" className={`${button} ${idle} disabled:opacity-50`}>
+            {busy === "name" ? "Finding…" : "Keep sharp"}
           </button>
         </form>
       )}
       {held && (
         <div className="flex items-center gap-2 text-[10px] text-neutral-400" data-testid="blur-outline-held">
-          <img src={`${API}/export/develop/object-matte/${held.matte}`} alt="The outline"
+          <img src={`${API}/export/develop/object-matte/${held.matte}`} alt="What is kept sharp"
             className="w-24 h-auto bg-neutral-950 rounded border border-neutral-800" />
-          <span>Outlined: {described(held)}</span>
+          <span>Kept sharp: {described(held)}</span>
         </div>
       )}
       {wait && <div className="text-[10px] text-neutral-500" data-testid="blur-outline-wait">{wait}</div>}

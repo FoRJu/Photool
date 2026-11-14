@@ -2428,6 +2428,12 @@ def loupe_image(
         from adjust.depth import blurred, blurred_pixels, reach
 
         margin = reach(blur["lens_blur"], max(fw, fh))
+    from adjust import defocus
+
+    # A mask's blur likewise (adjust.defocus), after the lens blur as in develop_frame.
+    mask_blur = defocus.wanted(clean.get("masks"))
+    if mask_blur:
+        margin = max(margin, defocus.reach(mask_blur, max(fw, fh)))
     x0, y0 = max(0, left - margin), max(0, top - margin)
     x1, y1 = min(fw, left + side + margin), min(fh, top + side + margin)
     wider = (x0 / fw, y0 / fh, x1 / fw, y1 / fh)
@@ -2444,10 +2450,17 @@ def loupe_image(
         amount, focus, sharp = blur["lens_blur"], blur.get("blur_focus", 0), blur.get("blur_sharp", 0)
         outline = blur.get("blur_outline")
         patch = blurred_pixels(small, patch, wider, amount, focus, sharp, outline=outline)
-        patch = patch[top - y0:top - y0 + side, left - x0:left - x0 + side]
         small = blurred(small, amount, focus, sharp, outline)
-    if not blur:
-        patch = patch[top - y0:top - y0 + side, left - x0:left - x0 + side]
+    if mask_blur:
+        from adjust.render import LinearFrame, mask_reach
+
+        around = LinearFrame(patch, look=small.look, window=wider, anchor_of=small.anchor_of or small,
+                             wb=small.wb)
+        patch = defocus.pixels(patch, wider, mask_blur, lambda m: mask_reach(around, m))
+        small = defocus.defocused(small, clean["masks"], mask_reach)
+        # Done here, on the wider cut: the patch's own develop does not blur again.
+        clean["masks"] = [{k: val for k, val in m.items() if k != "blur"} for m in clean["masks"]]
+    patch = patch[top - y0:top - y0 + side, left - x0:left - x0 + side]
     if second:
         from adjust.double import exposed, pixels
 

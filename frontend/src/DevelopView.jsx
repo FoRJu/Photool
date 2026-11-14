@@ -1,6 +1,7 @@
 import DoubleExposureDialog from "./DoubleExposureDialog.jsx";
 import WhiteBalance from "./WhiteBalance.jsx";
 import BlurOutline from "./BlurOutline.jsx";
+import BlurFocusPicture from "./BlurFocusPicture.jsx";
 import Vectorscope, { scopeOfBitmap } from "./Vectorscope.jsx";
 import { recall, remember } from "./remembered.js";
 import { editKey, makeDoubleExposure, sameEdit, secondOf, secondOfRow, versionThumb, versionsOf } from "./doubleExposure.js";
@@ -160,16 +161,16 @@ const GROUPS = [
     // the range at 0 leave the choice to the blur.
     id: "blur",
     title: "Lens blur",
-    hint: "Blurs by how far away each part of the picture is, as read from the picture itself. Look closely round hair and other fine edges: that is where it can show.",
+    hint: "Puts the picture out of focus by how far away each part is, as a wider aperture would: the distance is read from the picture itself. Blur sets how strong, Focus at where the sharp distance is, Depth of field how much either side of it stays sharp. The small picture below shows what stays sharp.",
     sliders: [
-      { key: "lens_blur", label: "Amount", min: 0, max: 100, step: 1, format: (v) => `${v}`,
-        title: "How wide the aperture would have been. 0 is off. Far less than all the way is usually enough." },
-      { key: "blur_focus", label: "Focus", min: 0, max: 100, step: 1, needsBlur: true,
+      { key: "lens_blur", label: "Blur", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+        title: "How strongly what is out of focus blurs, as if the aperture were wider. 0 is off; 30–60 is usually enough." },
+      { key: "blur_focus", label: "Focus at", min: 0, max: 100, step: 1, needsBlur: true,
+        format: (v) => (v ? `${v} ${v >= 67 ? "near" : v >= 34 ? "mid" : "far"}` : "auto"),
+        title: "Which distance is sharp: 1 is the farthest thing in this frame, 100 the nearest. Auto takes what is near in the middle of the frame. Or click Pick the focus, and click on the picture." },
+      { key: "blur_sharp", label: "Depth of field", min: 0, max: 100, step: 1, needsBlur: true,
         format: (v) => (v ? `${v}` : "auto"),
-        title: "The distance that stays sharp: low is far away, high is near. Auto takes what is near in the middle of the frame. Or pick it on the picture." },
-      { key: "blur_sharp", label: "Sharp range", min: 0, max: 100, step: 1, needsBlur: true,
-        format: (v) => (v ? `${v}` : "auto"),
-        title: "How deep a range of distance stays sharp round the focus. Raise it if part of the subject goes soft." },
+        title: "How much in front of and behind the focus stays sharp: low keeps a thin slice (the subject only), high keeps more of the scene. Raise it if part of the subject goes soft." },
     ],
   },
   {
@@ -976,6 +977,8 @@ const MASK_SLIDERS = [
     title: "More or less colour where the gradient reaches, added to the Saturation slider's: with the picture at -100, +200 here is +100 where the gradient is whole." },
   { key: "clarity", label: "Clarity", min: -100, max: 100, step: 1, format: signed,
     title: "Mid-tone local contrast where the gradient reaches." },
+  { key: "blur", label: "Blur", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+    title: "Put what the mask reaches out of focus, as a lens would: invert a subject or people mask to blur the background, or soften a busy corner. Only what it reaches is spread, so a person left out of it does not glow into the blur." },
 ];
 // Skin, on the people a mask reaches (backend adjust/skin.py): only on their
 // skin, at the scale of each person's own face, for any complexion.
@@ -1016,12 +1019,14 @@ const RANGE_LUM_DEFS = [
 ];
 // A depth mask's band of distance (backend adjust/depth.py).
 const DEPTH_DEFS = [
-  { key: "near", label: "Nearest", min: 0, max: 100, step: 1, format: (v) => `${v}`,
-    title: "The near end of the band: 100 is the nearest thing in this frame." },
-  { key: "far", label: "Farthest", min: 0, max: 100, step: 1, format: (v) => `${v}`,
-    title: "The far end of the band: 0 is the farthest thing in this frame." },
-  { key: "soft", label: "Soft", min: 0, max: 100, step: 1, format: (v) => `${v}`,
-    title: "How gently it fades out beyond the band." },
+  { key: "near", label: "Near end", min: 0, max: 100, step: 1,
+    format: (v) => `${v} ${v >= 67 ? "near" : v >= 34 ? "mid" : "far"}`,
+    title: "The nearest distance the mask reaches: 100 is the nearest thing in this frame, 0 the farthest." },
+  { key: "far", label: "Far end", min: 0, max: 100, step: 1,
+    format: (v) => `${v} ${v >= 67 ? "near" : v >= 34 ? "mid" : "far"}`,
+    title: "The farthest distance the mask reaches: 0 is the farthest thing in this frame. Near end 100 and Far end 60 is the foreground; 40 and 0 the background." },
+  { key: "soft", label: "Fade", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+    title: "How gently the mask fades out past either end: 0 is a hard cut at those distances." },
 ];
 const DEPTH_START = { near: 100, far: 50, soft: 20 };
 const RANGE_COLOUR_DEF = { key: "width", label: "Range", min: 0, max: 100, step: 1, format: (v) => `${v}`,
@@ -2397,6 +2402,12 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
               className="accent-amber-400" />
             Show where it reaches
           </label>
+          {m.kind === "depth" && (
+            <div className="text-[10px] text-neutral-500" data-testid="depth-mask-hint">
+              Reaches what lies between two distances from the camera, read from the picture: 100 is the
+              nearest thing in this frame, 0 the farthest. Tick Show where it reaches to see the band.
+            </div>
+          )}
           {m.kind === "depth" && (
             <Controls>
               {DEPTH_DEFS.map((def) => (
@@ -5669,6 +5680,11 @@ ${known.license}
             pickRef={outlinePick} objectModel={lastObjectModel}
             pickBody={(u, v) => ({ filepath, u, v, size: PREVIEW_SIZE, settings: activeOnly(settingsRef.current),
               ...frameGeometry(settingsRef.current) })} />
+        )}
+        {id === "blur" && blurOn && (
+          <BlurFocusPicture body={{ filepath, size: PREVIEW_SIZE, ...frameGeometry(settings),
+            settings: { blur_focus: settings.blur_focus || 0, blur_sharp: settings.blur_sharp || 0,
+              lens_blur: settings.lens_blur, ...(settings.blur_outline ? { blur_outline: settings.blur_outline } : {}) } }} />
         )}
         {id === "noise" && NOISE_NOTES[noiseState] && (
           <div className="text-[10px] text-neutral-600 -mt-1" data-testid="noise-note">

@@ -413,7 +413,9 @@ def lens_blur(rgb: np.ndarray, depth: np.ndarray, focus: float, sharp: float, ra
 
     ``edge``, when given, is ``(alpha, inside)`` at the same size: how much of each pixel is
     the outlined thing, and its depth (adjust.outline). ``depth`` is then the rest's, and a
-    pixel is shared between the two by ``alpha``.
+    pixel is shared between the two by ``alpha``. What is outlined is kept sharp, whatever
+    its distance: the outline says what should be in focus. Its depth still says what lies
+    in front of it, so a blurred thing nearer the camera still spreads over it.
 
     Blur goes with distance on this scale because the map is, near enough, inverse distance,
     and a lens's blur is proportional to the difference of inverse distances."""
@@ -426,22 +428,28 @@ def lens_blur(rgb: np.ndarray, depth: np.ndarray, focus: float, sharp: float, ra
         position_inside = np.clip(edge[1], 0.0, 1.0) * (layers - 1.0)
     out = np.zeros_like(rgb, dtype=np.float32)
     covered = np.zeros(rgb.shape[:2], np.float32)
-    for i, centre in enumerate(centres):
-        # This layer's share of each pixel, far to near; shares add up to one.
-        mine = np.maximum(1.0 - np.abs(position - i), 0.0).astype(np.float32)
-        if edge is not None:
-            theirs = np.maximum(1.0 - np.abs(position_inside - i), 0.0).astype(np.float32)
-            mine = ((1.0 - alpha) * mine + alpha * theirs).astype(np.float32)
-        if not mine.any():
-            continue
-        r = radius * float(np.clip((abs(centre - focus) - sharp) / max(1.0 - sharp, 1e-3), 0.0, 1.0))
-        if r < _MIN_RADIUS:
-            light, cover = cv2.multiply(rgb, cv2.merge((mine, mine, mine))), mine
-        else:
-            light, cover = _layer(rgb, mine, r)
+    def over(light, cover):
+        nonlocal out, covered
         through = 1.0 - cover
         out = light + out * through[..., None]
         covered = cover + covered * through
+
+    for i, centre in enumerate(centres):
+        # This layer's share of each pixel, far to near; shares add up to one.
+        mine = np.maximum(1.0 - np.abs(position - i), 0.0).astype(np.float32)
+        kept = None
+        if edge is not None:
+            mine = ((1.0 - alpha) * mine).astype(np.float32)
+            # The outlined thing's share at this distance, laid on sharp.
+            kept = (alpha * np.maximum(1.0 - np.abs(position_inside - i), 0.0)).astype(np.float32)
+        r = radius * float(np.clip((abs(centre - focus) - sharp) / max(1.0 - sharp, 1e-3), 0.0, 1.0))
+        if mine.any():
+            if r < _MIN_RADIUS:
+                over(cv2.multiply(rgb, cv2.merge((mine, mine, mine))), mine)
+            else:
+                over(*_layer(rgb, mine, r))
+        if kept is not None and kept.any():
+            over(cv2.multiply(rgb, cv2.merge((kept, kept, kept))), kept)
     # What is left thin is evened out, here and not layer by layer (see the top of this file).
     return (out / np.maximum(covered, 1e-3)[..., None]).astype(np.float32)
 
@@ -526,3 +534,40 @@ def blurred(frame, amount: float, focus: float = 0, sharp: float = 0, outline=No
                       anchor_of=frame.anchor_of or frame, lens=frame.lens, wb=frame.wb)
     frame._blurred = (key, out)
     return out
+
+
+def blur_share(whole: np.ndarray, focus: float = 0, sharp: float = 0, frame=None, outline=None) -> np.ndarray:
+    """How blurred each part of the whole frame is with these settings, 0 sharp to 1 the most
+    (the widest disc), over ``whole`` (:func:`whole_map`): what :func:`lens_blur` does, as a
+    picture of where. ``focus`` and ``sharp`` as :func:`blurred` takes them; what an outline
+    holds is sharp."""
+    at = float(focus) / 100.0 if focus else auto_focus(whole)
+    around = float(sharp) / 200.0 if sharp else DEFAULT_SHARP
+    share = np.clip((np.abs(whole - at) - around) / max(1.0 - around, 1e-3), 0.0, 1.0)
+    held = _sides(whole, frame, _matte_id(outline)) if frame is not None else None
+    if held is not None:
+        import cv2
+
+        matte = cv2.resize(held[0].astype(np.float32), (whole.shape[1], whole.shape[0]),
+                           interpolation=cv2.INTER_AREA)
+        share = share * (1.0 - np.clip(matte, 0.0, 1.0))
+    return share.astype(np.float32)
+
+
+def focus_picture(frame, focus: float = 0, sharp: float = 0, outline=None, size: int = 480) -> np.ndarray:
+    """The frame small, as 8-bit RGB, in its own colours where it stays sharp and greyed and
+    darkened where lens blur would blur it, the more the more: Focus and Sharp range shown,
+    rather than described."""
+    import cv2
+
+    from adjust.segment import _small_picture
+
+    whole = whole_map(frame)
+    picture = _small_picture(getattr(frame, "anchor_of", None) or frame, size).astype(np.float32)
+    h, w = picture.shape[:2]
+    share = cv2.resize(blur_share(whole, focus, sharp, frame, outline), (w, h), interpolation=cv2.INTER_LINEAR)
+    # Any blur at all shows: a little is already a lot on screen.
+    share = np.sqrt(share)[..., None]
+    grey = picture.mean(axis=2, keepdims=True)
+    faded = grey * 0.35 + np.array([10.0, 14.0, 30.0], np.float32)
+    return np.clip(picture * (1.0 - share) + faded * share, 0, 255).astype(np.uint8)

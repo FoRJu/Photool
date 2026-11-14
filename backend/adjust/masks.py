@@ -91,7 +91,8 @@ import numpy as np
 
 # The controls a mask carries, and their ranges.
 MASK_SLIDERS = ("exposure", "contrast", "highlights", "lights", "darks", "shadows", "temperature",
-                "saturation", "clarity", "smooth", "even", "texture")
+                "saturation", "clarity", "smooth", "even", "texture", "blur")
+# Blur, 0..100, puts what the mask reaches out of focus as a lens would (adjust.defocus).
 # Skin, on the people a mask reaches (adjust.skin): smooth and even 0..100,
 # texture -100..100.
 SKIN_SLIDERS = ("smooth", "even", "texture")
@@ -282,7 +283,7 @@ def normalize_mask(mask) -> Optional[dict]:
             value = round(_num(mask.get(key), -MAX_MASK_EXPOSURE, MAX_MASK_EXPOSURE, 0.0), 3)
         elif key == "saturation":
             value = int(round(_num(mask.get(key), -MAX_MASK_SATURATION, MAX_MASK_SATURATION, 0.0)))
-        elif key in ("smooth", "even"):
+        elif key in ("smooth", "even", "blur"):
             value = int(round(_num(mask.get(key), 0.0, 100.0, 0.0)))
         else:
             value = int(round(_num(mask.get(key), -100.0, 100.0, 0.0)))

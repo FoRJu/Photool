@@ -1285,6 +1285,12 @@ def develop_frame(
 
         frame = blurred(frame, clean.pop("lens_blur"), clean.pop("blur_focus", 0), clean.pop("blur_sharp", 0),
                         clean.pop("blur_outline", None))
+    if "masks" in clean:
+        from adjust import defocus
+
+        if defocus.wanted(clean["masks"]):
+            # A mask's blur beside the lens blur, on linear light and before the light and tone.
+            frame = defocus.defocused(frame, clean["masks"], mask_reach)
     finished_second = None
     if "second" in clean:
         from adjust.double import developed, exposed
