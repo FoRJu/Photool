@@ -49,6 +49,7 @@ whisper. The matching limits exist because that feature promises consistency,
 not a re-edit; someone who asks for two stops more wants two stops more.
 """
 
+import json
 import re
 from typing import Optional
 
@@ -57,7 +58,7 @@ from PIL import Image
 
 from adjust.geometry import GEOMETRY_KEYS, normalize_geometry
 from adjust.double import normalize_second, second_to_text
-from adjust.masks import normalize_masks, to_text as masks_to_text
+from adjust.masks import _normalize_parts, normalize_masks, to_text as masks_to_text
 from adjust.spots import SPOTS_KEY, normalize_spots, to_text as spots_to_text
 from analysis.harmonize import apply_correction
 
@@ -190,10 +191,14 @@ MASKS_KEY = "masks"
 # Every key an edit may carry, sliders, curves, gradients, spots and framing alike.
 # A second exposure laid over the frame (adjust.double): which photograph, and how.
 SECOND_KEY = "second"
-EDIT_KEYS = SETTINGS_SLIDERS + CURVE_KEYS + (MASKS_KEY, SPOTS_KEY, SECOND_KEY) + GEOMETRY_KEYS
+# The outline lens blur ends at (adjust.outline): a kept selection, as an object mask's is.
+BLUR_OUTLINE_KEY = "blur_outline"
+EDIT_KEYS = (SETTINGS_SLIDERS + CURVE_KEYS + (MASKS_KEY, SPOTS_KEY, SECOND_KEY, BLUR_OUTLINE_KEY)
+             + GEOMETRY_KEYS)
 # What belongs to one frame and is not put on another with its edit (a paste,
-# a preset, a burst): the crop and level, the spots removed from it, and what was laid over it.
-OWN_KEYS = GEOMETRY_KEYS + (SPOTS_KEY, SECOND_KEY) + TRANSFORM_SLIDERS
+# a preset, a burst): the crop and level, the spots removed from it, what was laid over it,
+# and the outline its blur ends at.
+OWN_KEYS = GEOMETRY_KEYS + (SPOTS_KEY, SECOND_KEY, BLUR_OUTLINE_KEY) + TRANSFORM_SLIDERS
 
 # (low, high) for the controls that are not the usual -100..100.
 SLIDER_RANGES = {
@@ -481,6 +486,10 @@ def normalize(settings: Optional[dict]) -> dict:
     second = normalize_second(settings.get(SECOND_KEY))
     if second:
         clean[SECOND_KEY] = second
+    if "lens_blur" in clean:
+        outline = normalize_blur_outline(settings.get(BLUR_OUTLINE_KEY))
+        if outline:
+            clean[BLUR_OUTLINE_KEY] = outline
     # The style is the one control that is a name rather than a number.
     style = settings.get("style")
     if isinstance(style, str) and _STYLE_ID.match(style):
@@ -496,6 +505,28 @@ def normalize(settings: Optional[dict]) -> dict:
         if hue in clean and strength not in clean:
             del clean[hue]
     return clean
+
+
+def normalize_blur_outline(raw) -> Optional[dict]:
+    """The outline lens blur ends at, cleaned, or ``None``: its kept picture's name, the
+    parts that made it (as an object mask's), the model (the object masks' own: SAM 2.1
+    or SAM 3), and ``people`` when everyone was outlined with SAM 2.1's people mask. Text
+    is read as the sidecar writes it. Without a picture there is nothing to end at."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, dict):
+        return None
+    matte = raw.get("matte")
+    if not (isinstance(matte, str) and 8 <= len(matte) <= 64 and all(c in "0123456789abcdef" for c in matte)):
+        return None
+    out = {"matte": matte, "parts": _normalize_parts(raw.get("parts")),
+           "model": "sam3" if raw.get("model") == "sam3" else "sam2.1"}
+    if raw.get("people") is True:
+        out["people"] = True        # everyone, as the people mask selects them
+    return out
 
 
 def normalize_curve(points) -> Optional[list]:
@@ -878,6 +909,8 @@ _MASKS_CRS = "crs:PhotoolMasks"
 _SPOTS_CRS = "crs:PhotoolSpots"
 # The second exposure (adjust.double), the same way.
 _SECOND_CRS = "crs:PhotoolSecond"
+# The outline lens blur ends at, the same way.
+_BLUR_OUTLINE_CRS = "crs:PhotoolBlurOutline"
 # The absolute white balance, in this app's own names: Lightroom's own
 # crs:Temperature is not written (yet), so as not to claim its meaning.
 _WB_KELVIN_CRS = "crs:WBKelvin"
@@ -939,6 +972,8 @@ def to_crs(settings: Optional[dict]) -> dict:
         out[_MASKS_CRS] = masks_to_text(clean[MASKS_KEY])
     if SECOND_KEY in clean:
         out[_SECOND_CRS] = second_to_text(clean[SECOND_KEY])
+    if BLUR_OUTLINE_KEY in clean:
+        out[_BLUR_OUTLINE_CRS] = json.dumps(clean[BLUR_OUTLINE_KEY], separators=(",", ":"), sort_keys=True)
     if SPOTS_KEY in clean:
         out[_SPOTS_CRS] = spots_to_text(clean[SPOTS_KEY])
     out.update(_geometry_to_crs(clean))
@@ -1064,6 +1099,9 @@ def from_crs(develop: Optional[dict]) -> dict:
     second = develop.get(_SECOND_CRS)
     if isinstance(second, str) and second.strip():
         raw[SECOND_KEY] = second
+    outline = develop.get(_BLUR_OUTLINE_CRS)
+    if isinstance(outline, str) and outline.strip():
+        raw[BLUR_OUTLINE_KEY] = outline
 
     return normalize(raw)
 
@@ -1091,5 +1129,6 @@ CRS_KEYS = (
     _MASKS_CRS,
     _SPOTS_CRS,
     _SECOND_CRS,
+    _BLUR_OUTLINE_CRS,
     *_GEOMETRY_CRS.values(),
 )

@@ -3541,6 +3541,46 @@ async def develop_second_status(path: str):
     return {"exists": not missing(second), "name": second["path"].rsplit("/", 1)[-1]}
 
 
+class FocusPictureRequest(FrameGeometry):
+    filepath: str
+    settings: dict = {}          # the edit: its lens_blur, blur_focus, blur_sharp and blur_outline
+    size: int = 1600             # the preview's size, whose frame already holds the depth map
+
+
+@router.post("/export/develop/focus-picture")
+async def develop_focus_picture(req: FocusPictureRequest, request: Request):
+    """What lens blur keeps sharp, as a small picture: the frame in its own colours where it
+    stays sharp, greyed where it is blurred (adjust.depth.focus_picture)."""
+    import io as _io
+
+    from PIL import Image
+
+    from adjust import depth
+    from adjust.develop import normalize
+    from faces.models import ModelsUnavailable
+
+    config = request.app.state.config
+    clean = normalize(req.settings)
+
+    def draw():
+        frame = _mask_frame(config, req.filepath, max(256, min(int(req.size), 4096)), req)
+        if frame is None:
+            return None
+        rgb = depth.focus_picture(frame, clean.get("blur_focus", 0), clean.get("blur_sharp", 0),
+                                  clean.get("blur_outline"))
+        buf = _io.BytesIO()
+        Image.fromarray(rgb, "RGB").save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
+    try:
+        found = await _run_blocking(draw)
+    except ModelsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Could not read this frame")
+    return Response(content=found, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 @router.post("/export/develop/depth-at")
 async def develop_depth_at(req: DepthAtRequest, request: Request):
     """The distance at a point of the frame on the lens blur's scale: 1 far to 100 near."""
@@ -3904,6 +3944,165 @@ async def develop_object_commit(req: ObjectCommitRequest, request: Request):
     if matte_id is None:
         raise HTTPException(status_code=404, detail="Could not read this frame")
     return {"matte": matte_id, "parts": parts, "model": objects.model_name(req.model)}
+
+
+class BlurOutlineRequest(FrameGeometry):
+    filepath: str
+    # What to outline: "point", the thing at the click (u, v); "people", everyone in
+    # the frame; "text", every instance of what ``text`` names (SAM 3 only).
+    kind: str = "point"
+    u: float = 0.5               # the click, fractions of the picture as shown: cropped and levelled
+    v: float = 0.5
+    text: str = ""
+    settings: dict = {}          # the edit, whose crop and level say where that is
+    outline: dict = {}           # the outline so far (its blur_outline)
+    parts: list = []             # older clients: the outline so far's parts alone
+    model: str = "sam2.1"        # the object mask's model: SAM 3 when it was chosen and is here
+    size: int = 1600             # the preview's size, whose frame already holds the depth map
+
+
+@router.post("/export/develop/blur-outline")
+async def develop_blur_outline(req: BlurOutlineRequest, request: Request):
+    """Outline what lens blur ends at (adjust.outline), added to the outline so far,
+    worked out on the whole frame and kept; with the distance there, for the focus.
+    A click takes SAM's candidate that holds together at one distance; "people" takes
+    everyone at once (with SAM 2.1 each face found, clicked for as a click would be, on
+    the one reading of the picture; with SAM 3 its "person"; the people model's selection
+    when no face is found); "text" every instance of a word, with SAM 3.
+
+    The model is the one object masks use, so nothing else is loaded for it. The depth
+    map is read from the preview's frame, which lens blur has already worked it out on:
+    the depth model and SAM cannot share an 8 GB card (adjust.gpu), and reading it on
+    a frame of its own opened SAM, then the depth model (letting SAM go), then SAM again."""
+    import time
+
+    import cv2
+    import numpy as np
+
+    from adjust import depth, objects, outline, segment
+    from adjust.develop import normalize, normalize_blur_outline
+    from adjust.geometry import source_point
+    from adjust.masks import MAX_PARTS, _normalize_parts
+    from faces.models import ModelsUnavailable
+
+    config = request.app.state.config
+    log = logging.getLogger(__name__)
+    model = objects.model_name(req.model)
+    if model != "sam2.1" and not objects.available(model):
+        model = "sam2.1"             # a model not fetched here (its licence agreed to elsewhere)
+    kind = req.kind if req.kind in ("point", "people", "text") else "point"
+    text = " ".join(req.text.split())
+    if kind == "text" and not text:
+        raise HTTPException(status_code=400, detail="Name what to outline")
+    if kind == "text" and not objects.finds(model):
+        raise HTTPException(status_code=400, detail="Outlining by name needs SAM 3 (choose it in an object mask)")
+    held = normalize_blur_outline(req.outline) if req.outline else None
+    before = held["parts"] if held else _normalize_parts(req.parts)
+    people = bool(held and held.get("people"))
+
+    def _outline():
+        times = {}
+        t = time.perf_counter()
+
+        def lap(name):
+            nonlocal t
+            now = time.perf_counter()
+            times[name] = round(now - t, 2)
+            t = now
+
+        # The depth model first, and on the preview's frame, where it is kept: SAM
+        # opens after it, once, rather than either side of it.
+        view = _mask_frame(config, req.filepath, max(256, min(int(req.size), 4096)), req)
+        if view is None:
+            return None
+        whole = depth.whole_map(view)
+        lap("depth")
+        size = objects.PICTURE_SIZE
+        frame = _mask_frame(config, req.filepath, size, req)
+        if frame is None:
+            return None
+        rgb8 = objects.picture(frame)
+        key = _object_key(req, size)
+        lap("decode")
+        parts = [p for p in before if objects.finds(model) or not p.get("text")]
+        full = [0.0, 0.0, 1.0, 1.0]
+        near = None
+
+        def clicked(points, at_point):
+            """A part for positive clicks, of SAM's candidates the largest that holds
+            together at the distance there (adjust.outline.pick)."""
+            nonlocal near
+            part = {"view": full, "points": [[round(x, 5), round(y, 5), 1] for x, y in points]}
+            logits, scores = objects.predict(rgb8, part, model, key)
+            if near is None or near.shape != logits.shape[1:]:
+                near = cv2.resize(whole, (logits.shape[2], logits.shape[1]), interpolation=cv2.INTER_AREA)
+            part["pick"] = outline.pick(logits, scores, near, depth.depth_at(view, *at_point) / 100.0)
+            return part
+
+        at, added, with_people = None, [], people
+        if kind == "point":
+            u, v = source_point(normalize(req.settings), req.u, req.v, *frame.size)
+            u, v = float(min(max(u, 0.0), 1.0)), float(min(max(v, 0.0), 1.0))
+            at = depth.depth_at(view, u, v)
+            added = [clicked([(u, v)], (u, v))]
+        elif kind == "text":
+            added = [{"view": full, "text": text}]
+        elif objects.finds(model):
+            # SAM 3 finds everyone itself, in one pass of the model it already has.
+            added = [{"view": full, "text": "person"}]
+        else:
+            # SAM 2.1 cannot be told "people": each face found is clicked for it, on the
+            # face and on the body below it, all on the one reading of the picture.
+            for x, y, w, h in segment.face_boxes(view):
+                cx, cy = x + w / 2, y + h / 2
+                points = [(cx, cy)] + ([(cx, cy + 1.8 * h)] if cy + 1.8 * h < 0.98 else [])
+                added.append(clicked(points, (cx, cy)))
+        shape = rgb8.shape[:2]
+
+        def everyone():
+            got = segment.whole_matte(view, "people")
+            if got is None:
+                return np.zeros(shape, np.float32)
+            return cv2.resize(got, (shape[1], shape[0]), interpolation=cv2.INTER_LINEAR)
+
+        matte = objects.selection(rgb8, _normalize_parts(parts), model, key) if parts else np.zeros(shape, np.float32)
+        new = objects.selection(rgb8, _normalize_parts(added), model, key) if added else None
+        lap("sam")
+        if kind == "people" and not added:
+            new = everyone()             # no face found: the people model's selection of everyone
+            with_people = with_people or bool((new > 0.5).any())
+            lap("people")
+        elif people:
+            np.maximum(matte, everyone(), out=matte)
+            lap("people")
+        if kind != "point" and not (new > 0.5).any():
+            return {"empty": True}
+        np.maximum(matte, new, out=matte)
+        # The same thing asked for twice ("Outline the people" again) is kept once.
+        unique = {}
+        for p in _normalize_parts(parts + added):
+            unique.setdefault(json.dumps({k: p.get(k) for k in ("view", "points", "box", "text")}, sort_keys=True), p)
+        parts = list(unique.values())[-MAX_PARTS:]
+        if at is None:
+            # The middle of what was found, for the focus: a group stands at several distances.
+            inside = cv2.resize(new, (whole.shape[1], whole.shape[0]), interpolation=cv2.INTER_AREA) > 0.5
+            at = int(np.clip(round(float(np.median(whole[inside])) * 100.0), 1, 100)) if inside.any() else 50
+        out = {"matte": objects.save(matte), "parts": parts, "model": model}
+        if with_people:
+            out["people"] = True
+        log.info("[blur-outline] %s with %s took %s", kind, model, times)
+        return {"outline": out, "depth": at, "times": times}
+
+    try:
+        found = await _run_blocking(_outline)
+    except ModelsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Could not read this frame")
+    if found.get("empty"):
+        raise HTTPException(status_code=404, detail="Nothing like that was found here"
+                            if kind != "people" else "No one was found here")
+    return found
 
 
 @router.get("/export/develop/object-matte/{matte_id}")

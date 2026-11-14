@@ -27,7 +27,7 @@ evened out by how much of each pixel was covered, which fills what a blurred lay
 thin beside a nearer one. Doing that layer by layer would stretch each one to the full width
 of its disc and stop it dead there, drawing a hard line. What a frame cannot show, it cannot
 blur: fine hair against a busy background follows the map's edge, which is soft by a few
-pixels.
+pixels, unless the blur is given an outline of what is sharp (adjust.outline).
 
 Dual-pixel data, which some Canon bodies can record, could give a second reading of depth
 later. Nothing here assumes where the map came from.
@@ -35,6 +35,8 @@ later. Nothing here assumes where the map came from.
 
 import logging
 import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -102,6 +104,7 @@ def configure(models_dir: Optional[str]) -> None:
         gpu.release_all()
         _models_dir = models_dir
         _failed.clear()
+        _shared.clear()
         _gave_up = None
 
 
@@ -213,6 +216,7 @@ def _get_session():
         gpu.open_large()
     else:
         gpu.make_room()
+    began = time.perf_counter()
     try:
         session = _open(path)
         if spec is MODEL and session.get_providers()[0] == "CPUExecutionProvider":
@@ -224,7 +228,8 @@ def _get_session():
         _give_up(exc)
         return _get_session()
     _session, _session_spec = session, spec
-    logger.info("[depth] %s loaded on %s", spec.name, session.get_providers()[0])
+    logger.info("[depth] %s loaded on %s in %.1f s", spec.name, session.get_providers()[0],
+                time.perf_counter() - began)
     return session, spec
 
 
@@ -268,21 +273,68 @@ def _read(picture: np.ndarray) -> np.ndarray:
     return cv2.resize(out, (w, h), interpolation=cv2.INTER_LINEAR)
 
 
+# Depth maps by photograph (LinearFrame.source_key), whatever size it was decoded at: the
+# preview, the thumbnails an edit redraws, an export and the outline's routes each decode
+# the photograph again, and reading each with the model costs, on a graphics card, the
+# large model's opening as often as SAM or another model has taken the card in between
+# (adjust.gpu). Each map is kept with the size of the picture it was read from.
+_SHARED_LIMIT = 24
+_shared: "OrderedDict[tuple, tuple]" = OrderedDict()
+_shared_lock = threading.Lock()
+_reading: dict = {}
+
+
 def whole_map(frame) -> np.ndarray:
     """How near each part of the whole frame is, 0 far to 1 near, as float32 about the size
-    of a matte. Its edges are brought to the picture's. Kept on the frame."""
+    of a matte. Its edges are brought to the picture's. Kept on the frame, and shared with
+    every other decode of the same photograph that is no larger than the picture it was
+    read from (a thumbnail takes the preview's)."""
     from adjust.segment import MATTE_SIZE, _guided, _small_picture
 
     whole = getattr(frame, "anchor_of", None) or frame
     kept = whole._mattes.get("depth")
     if kept is not None:
         return kept
-    picture = _small_picture(whole, MATTE_SIZE)
-    rough = _read(picture)
-    grey = (picture.astype(np.float32) / 255.0).mean(axis=2)
-    fine = np.clip(_guided(grey, rough, 6, 1e-4), 0.0, 1.0).astype(np.float32)
-    whole._mattes["depth"] = fine
-    return fine
+    key = getattr(whole, "source_key", None)
+    detail = min(MATTE_SIZE, max(whole.rgb.shape[:2]))
+
+    def shared():
+        with _shared_lock:
+            found = _shared.get(key)
+            if found is not None and found[1] >= detail:
+                _shared.move_to_end(key)
+                return found[0]
+        return None
+
+    if key is None:
+        busy = threading.Lock()
+    else:
+        found = shared()
+        if found is not None:
+            whole._mattes["depth"] = found
+            return found
+        with _shared_lock:
+            busy = _reading.setdefault(key, threading.Lock())
+    # One reading of a photograph at a time: a second asks for it while the first is
+    # reading (the preview and a thumbnail after the same edit) and takes its answer.
+    with busy:
+        found = shared() if key is not None else None
+        if found is None:
+            picture = _small_picture(whole, MATTE_SIZE)
+            logger.info("[depth] reading the depth of a %dx%d frame", *whole.rgb.shape[1::-1])
+            rough = _read(picture)
+            grey = (picture.astype(np.float32) / 255.0).mean(axis=2)
+            found = np.clip(_guided(grey, rough, 6, 1e-4), 0.0, 1.0).astype(np.float32)
+            if key is not None:
+                with _shared_lock:
+                    old = _shared.get(key)
+                    if old is None or old[1] <= detail:
+                        _shared[key] = (found, detail)
+                        _shared.move_to_end(key)
+                    while len(_shared) > _SHARED_LIMIT:
+                        _reading.pop(_shared.popitem(last=False)[0], None)
+    whole._mattes["depth"] = found
+    return found
 
 
 def _step(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
@@ -354,10 +406,16 @@ def _layer(rgb: np.ndarray, mine: np.ndarray, radius: float) -> tuple:
 
 
 def lens_blur(rgb: np.ndarray, depth: np.ndarray, focus: float, sharp: float, radius: float,
-              layers: int = LAYERS) -> np.ndarray:
+              layers: int = LAYERS, edge: Optional[tuple] = None) -> np.ndarray:
     """``rgb`` (linear, H, W, 3) as if shot wider open. ``depth`` is 0 far to 1 near, the same
     size; ``focus`` the distance in focus and ``sharp`` how much stays sharp each side of it
     (both 0..1); ``radius`` the disc's pixels for what is furthest from focus.
+
+    ``edge``, when given, is ``(alpha, inside)`` at the same size: how much of each pixel is
+    the outlined thing, and its depth (adjust.outline). ``depth`` is then the rest's, and a
+    pixel is shared between the two by ``alpha``. What is outlined is kept sharp, whatever
+    its distance: the outline says what should be in focus. Its depth still says what lies
+    in front of it, so a blurred thing nearer the camera still spreads over it.
 
     Blur goes with distance on this scale because the map is, near enough, inverse distance,
     and a lens's blur is proportional to the difference of inverse distances."""
@@ -365,21 +423,33 @@ def lens_blur(rgb: np.ndarray, depth: np.ndarray, focus: float, sharp: float, ra
 
     centres = np.linspace(0.0, 1.0, layers)
     position = np.clip(depth, 0.0, 1.0) * (layers - 1.0)
+    if edge is not None:
+        alpha = np.clip(edge[0], 0.0, 1.0).astype(np.float32)
+        position_inside = np.clip(edge[1], 0.0, 1.0) * (layers - 1.0)
     out = np.zeros_like(rgb, dtype=np.float32)
     covered = np.zeros(rgb.shape[:2], np.float32)
-    for i, centre in enumerate(centres):
-        # This layer's share of each pixel, far to near; shares add up to one.
-        mine = np.maximum(1.0 - np.abs(position - i), 0.0).astype(np.float32)
-        if not mine.any():
-            continue
-        r = radius * float(np.clip((abs(centre - focus) - sharp) / max(1.0 - sharp, 1e-3), 0.0, 1.0))
-        if r < _MIN_RADIUS:
-            light, cover = cv2.multiply(rgb, cv2.merge((mine, mine, mine))), mine
-        else:
-            light, cover = _layer(rgb, mine, r)
+    def over(light, cover):
+        nonlocal out, covered
         through = 1.0 - cover
         out = light + out * through[..., None]
         covered = cover + covered * through
+
+    for i, centre in enumerate(centres):
+        # This layer's share of each pixel, far to near; shares add up to one.
+        mine = np.maximum(1.0 - np.abs(position - i), 0.0).astype(np.float32)
+        kept = None
+        if edge is not None:
+            mine = ((1.0 - alpha) * mine).astype(np.float32)
+            # The outlined thing's share at this distance, laid on sharp.
+            kept = (alpha * np.maximum(1.0 - np.abs(position_inside - i), 0.0)).astype(np.float32)
+        r = radius * float(np.clip((abs(centre - focus) - sharp) / max(1.0 - sharp, 1e-3), 0.0, 1.0))
+        if mine.any():
+            if r < _MIN_RADIUS:
+                over(cv2.multiply(rgb, cv2.merge((mine, mine, mine))), mine)
+            else:
+                over(*_layer(rgb, mine, r))
+        if kept is not None and kept.any():
+            over(cv2.multiply(rgb, cv2.merge((kept, kept, kept))), kept)
     # What is left thin is evened out, here and not layer by layer (see the top of this file).
     return (out / np.maximum(covered, 1e-3)[..., None]).astype(np.float32)
 
@@ -390,10 +460,38 @@ def reach(amount: float, longest: int) -> int:
     return int(np.ceil(float(amount) / 100.0 * MAX_BLUR * longest)) + 1
 
 
+def _matte_id(outline) -> Optional[str]:
+    """The kept picture an edit's ``blur_outline`` names, or ``None``."""
+    if isinstance(outline, dict):
+        outline = outline.get("matte")
+    return outline if isinstance(outline, str) and outline else None
+
+
+def _sides(whole: np.ndarray, frame, matte_id: Optional[str]) -> Optional[tuple]:
+    """``(matte, inside, outside)`` over the whole map for an outline, kept on the whole
+    frame; ``None`` when the outline is not here (an edit from another computer) or has
+    no edge."""
+    from adjust import objects, outline
+
+    if not matte_id:
+        return None
+    owner = getattr(frame, "anchor_of", None) or frame
+    key = ("depth_sides", matte_id)
+    if key in owner._mattes:
+        return owner._mattes[key]
+    matte = objects.load(matte_id)
+    found = outline.sides(whole, matte) if matte is not None else None
+    kept = None if found is None else (matte, *found)
+    owner._mattes[key] = kept
+    return kept
+
+
 def blurred_pixels(frame, rgb: np.ndarray, window: tuple, amount: float, focus: float = 0,
-                   sharp: float = 0, layers: int = LAYERS) -> np.ndarray:
+                   sharp: float = 0, layers: int = LAYERS, outline=None) -> np.ndarray:
     """``rgb``, which is the part ``window`` of ``frame``'s picture at any resolution, with
-    lens blur (see :func:`blurred`). ``rgb`` itself when the model can't be had."""
+    lens blur (see :func:`blurred`). ``rgb`` itself when the model can't be had. ``outline``
+    names a kept outline (adjust.objects) the blur ends at: an edit's ``blur_outline``, or
+    its ``matte``."""
     from adjust.segment import sample
 
     try:
@@ -408,23 +506,68 @@ def blurred_pixels(frame, rgb: np.ndarray, window: tuple, amount: float, focus: 
     longest = max(w / max(right - left, 1e-9), h / max(bottom - top, 1e-9))
     at = float(focus) / 100.0 if focus else auto_focus(whole)
     around = float(sharp) / 200.0 if sharp else DEFAULT_SHARP
-    return lens_blur(rgb, depth, at, around, float(amount) / 100.0 * MAX_BLUR * longest, layers)
+    edge = None
+    held = _sides(whole, frame, _matte_id(outline))
+    if held is not None:
+        matte, inside, outside = held
+        depth = np.ascontiguousarray(sample(outside, (h, w), window), dtype=np.float32)
+        edge = (np.ascontiguousarray(sample(matte, (h, w), window), dtype=np.float32),
+                np.ascontiguousarray(sample(inside, (h, w), window), dtype=np.float32))
+    return lens_blur(rgb, depth, at, around, float(amount) / 100.0 * MAX_BLUR * longest, layers, edge)
 
 
-def blurred(frame, amount: float, focus: float = 0, sharp: float = 0):
+def blurred(frame, amount: float, focus: float = 0, sharp: float = 0, outline=None):
     """``frame`` with lens blur, as a frame of its own: ``amount`` 0..100, ``focus`` 1..100
-    (0 chooses, see :func:`auto_focus`), ``sharp`` 0..100 (how deep a range stays sharp).
+    (0 chooses, see :func:`auto_focus`), ``sharp`` 0..100 (how deep a range stays sharp),
+    ``outline`` the kept outline it ends at, if any (:func:`blurred_pixels`).
     ``frame`` itself when the model can't be had. Kept on the frame for these values."""
     from adjust.render import LinearFrame
 
-    key = (float(amount), float(focus), float(sharp))
+    key = (float(amount), float(focus), float(sharp), _matte_id(outline))
     if frame._blurred is not None and frame._blurred[0] == key:
         return frame._blurred[1]
     layers = DRAFT_LAYERS if frame._is_draft else LAYERS
-    rgb = blurred_pixels(frame, frame.rgb, frame.window, amount, focus, sharp, layers)
+    rgb = blurred_pixels(frame, frame.rgb, frame.window, amount, focus, sharp, layers, outline)
     if rgb is frame.rgb:
         return frame
     out = LinearFrame(rgb, look=frame.look, window=frame.window, scale=frame.scale,
                       anchor_of=frame.anchor_of or frame, lens=frame.lens, wb=frame.wb)
     frame._blurred = (key, out)
     return out
+
+
+def blur_share(whole: np.ndarray, focus: float = 0, sharp: float = 0, frame=None, outline=None) -> np.ndarray:
+    """How blurred each part of the whole frame is with these settings, 0 sharp to 1 the most
+    (the widest disc), over ``whole`` (:func:`whole_map`): what :func:`lens_blur` does, as a
+    picture of where. ``focus`` and ``sharp`` as :func:`blurred` takes them; what an outline
+    holds is sharp."""
+    at = float(focus) / 100.0 if focus else auto_focus(whole)
+    around = float(sharp) / 200.0 if sharp else DEFAULT_SHARP
+    share = np.clip((np.abs(whole - at) - around) / max(1.0 - around, 1e-3), 0.0, 1.0)
+    held = _sides(whole, frame, _matte_id(outline)) if frame is not None else None
+    if held is not None:
+        import cv2
+
+        matte = cv2.resize(held[0].astype(np.float32), (whole.shape[1], whole.shape[0]),
+                           interpolation=cv2.INTER_AREA)
+        share = share * (1.0 - np.clip(matte, 0.0, 1.0))
+    return share.astype(np.float32)
+
+
+def focus_picture(frame, focus: float = 0, sharp: float = 0, outline=None, size: int = 480) -> np.ndarray:
+    """The frame small, as 8-bit RGB, in its own colours where it stays sharp and greyed and
+    darkened where lens blur would blur it, the more the more: Focus and Sharp range shown,
+    rather than described."""
+    import cv2
+
+    from adjust.segment import _small_picture
+
+    whole = whole_map(frame)
+    picture = _small_picture(getattr(frame, "anchor_of", None) or frame, size).astype(np.float32)
+    h, w = picture.shape[:2]
+    share = cv2.resize(blur_share(whole, focus, sharp, frame, outline), (w, h), interpolation=cv2.INTER_LINEAR)
+    # Any blur at all shows: a little is already a lot on screen.
+    share = np.sqrt(share)[..., None]
+    grey = picture.mean(axis=2, keepdims=True)
+    faded = grey * 0.35 + np.array([10.0, 14.0, 30.0], np.float32)
+    return np.clip(picture * (1.0 - share) + faded * share, 0, 255).astype(np.uint8)

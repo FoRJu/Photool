@@ -35,6 +35,7 @@ import hashlib
 import io
 import logging
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
@@ -263,9 +264,11 @@ def _sessions_of(model: str, parts: tuple) -> tuple:
             options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             spec = MODELS[model]
             for part in missing:
+                began = time.perf_counter()
                 session = ort.InferenceSession(str(folder / spec[part]), sess_options=options,
                                                providers=providers)
-                logger.info("[objects] %s %s loaded on %s", spec["label"], part, session.get_providers()[0])
+                logger.info("[objects] %s %s loaded on %s in %.1f s", spec["label"], part,
+                            session.get_providers()[0], time.perf_counter() - began)
                 _sessions[(model, part)] = session
         return tuple(_sessions[(model, part)] for part in parts)
 

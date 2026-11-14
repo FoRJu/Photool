@@ -71,7 +71,7 @@ def retouched(frame, masks: list, reach):
         return kept[1]
     rgb = retouch(frame, masks, reach)
     out = LinearFrame(rgb, look=frame.look, window=frame.window, scale=frame.scale, anchor_of=frame.anchor_of,
-                      wb=frame.wb)
+                      wb=frame.wb, source_key=frame.source_key)
     out._mattes = frame._mattes
     frame._retouched = (key, out)
     return out
@@ -200,4 +200,4 @@ def _region(rgb: np.ndarray, weight: np.ndarray, face: float, mask: dict) -> np.
 # The other controls a mask carries, which do not change what the retouch does
 # and so are not part of what it is kept by.
 _OTHER_SLIDERS = ("exposure", "contrast", "highlights", "lights", "darks", "shadows", "temperature",
-                  "saturation", "clarity")
+                  "saturation", "clarity", "blur")
