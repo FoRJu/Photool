@@ -36,6 +36,7 @@ later. Nothing here assumes where the map came from.
 import logging
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -103,6 +104,7 @@ def configure(models_dir: Optional[str]) -> None:
         gpu.release_all()
         _models_dir = models_dir
         _failed.clear()
+        _shared.clear()
         _gave_up = None
 
 
@@ -271,21 +273,68 @@ def _read(picture: np.ndarray) -> np.ndarray:
     return cv2.resize(out, (w, h), interpolation=cv2.INTER_LINEAR)
 
 
+# Depth maps by photograph (LinearFrame.source_key), whatever size it was decoded at: the
+# preview, the thumbnails an edit redraws, an export and the outline's routes each decode
+# the photograph again, and reading each with the model costs, on a graphics card, the
+# large model's opening as often as SAM or another model has taken the card in between
+# (adjust.gpu). Each map is kept with the size of the picture it was read from.
+_SHARED_LIMIT = 24
+_shared: "OrderedDict[tuple, tuple]" = OrderedDict()
+_shared_lock = threading.Lock()
+_reading: dict = {}
+
+
 def whole_map(frame) -> np.ndarray:
     """How near each part of the whole frame is, 0 far to 1 near, as float32 about the size
-    of a matte. Its edges are brought to the picture's. Kept on the frame."""
+    of a matte. Its edges are brought to the picture's. Kept on the frame, and shared with
+    every other decode of the same photograph that is no larger than the picture it was
+    read from (a thumbnail takes the preview's)."""
     from adjust.segment import MATTE_SIZE, _guided, _small_picture
 
     whole = getattr(frame, "anchor_of", None) or frame
     kept = whole._mattes.get("depth")
     if kept is not None:
         return kept
-    picture = _small_picture(whole, MATTE_SIZE)
-    rough = _read(picture)
-    grey = (picture.astype(np.float32) / 255.0).mean(axis=2)
-    fine = np.clip(_guided(grey, rough, 6, 1e-4), 0.0, 1.0).astype(np.float32)
-    whole._mattes["depth"] = fine
-    return fine
+    key = getattr(whole, "source_key", None)
+    detail = min(MATTE_SIZE, max(whole.rgb.shape[:2]))
+
+    def shared():
+        with _shared_lock:
+            found = _shared.get(key)
+            if found is not None and found[1] >= detail:
+                _shared.move_to_end(key)
+                return found[0]
+        return None
+
+    if key is None:
+        busy = threading.Lock()
+    else:
+        found = shared()
+        if found is not None:
+            whole._mattes["depth"] = found
+            return found
+        with _shared_lock:
+            busy = _reading.setdefault(key, threading.Lock())
+    # One reading of a photograph at a time: a second asks for it while the first is
+    # reading (the preview and a thumbnail after the same edit) and takes its answer.
+    with busy:
+        found = shared() if key is not None else None
+        if found is None:
+            picture = _small_picture(whole, MATTE_SIZE)
+            logger.info("[depth] reading the depth of a %dx%d frame", *whole.rgb.shape[1::-1])
+            rough = _read(picture)
+            grey = (picture.astype(np.float32) / 255.0).mean(axis=2)
+            found = np.clip(_guided(grey, rough, 6, 1e-4), 0.0, 1.0).astype(np.float32)
+            if key is not None:
+                with _shared_lock:
+                    old = _shared.get(key)
+                    if old is None or old[1] <= detail:
+                        _shared[key] = (found, detail)
+                        _shared.move_to_end(key)
+                    while len(_shared) > _SHARED_LIMIT:
+                        _reading.pop(_shared.popitem(last=False)[0], None)
+    whole._mattes["depth"] = found
+    return found
 
 
 def _step(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:

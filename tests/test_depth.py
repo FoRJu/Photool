@@ -367,3 +367,69 @@ class TestModel:
         assert d.dtype == np.float32
         assert d.min() >= 0.0 and d.max() <= 1.0
         assert d is depth.whole_map(frame)
+
+
+class TestSharedMaps:
+    """A photograph's depth is read once, whatever size it is decoded at: on a graphics
+    card each read can cost the large model's opening (adjust.gpu)."""
+
+    @pytest.fixture()
+    def reads(self, monkeypatch):
+        seen = []
+
+        def read(picture):
+            seen.append(max(picture.shape[:2]))
+            h, w = picture.shape[:2]
+            return np.tile(np.linspace(0.0, 1.0, w, dtype=np.float32), (h, 1))
+
+        monkeypatch.setattr(depth, "_read", read)
+        monkeypatch.setattr(depth, "_shared", depth.OrderedDict())
+        return seen
+
+    @staticmethod
+    def decode(side, key=("photo.CR3", 1, 2)):
+        rgb = np.random.default_rng(0).random((side * 2 // 3, side, 3)).astype(np.float32) * 0.5
+        return LinearFrame(rgb, source_key=key)
+
+    def test_a_thumbnail_takes_the_previews(self, reads):
+        preview = depth.whole_map(self.decode(1600))
+        thumb = depth.whole_map(self.decode(400))
+        assert reads == [1024] and thumb is preview
+
+    def test_a_small_reading_does_not_serve_a_larger_frame(self, reads):
+        depth.whole_map(self.decode(400))
+        large = depth.whole_map(self.decode(2000))
+        assert reads == [400, 1024]
+        assert depth.whole_map(self.decode(400)) is large
+
+    def test_another_photograph_or_geometry_is_read_again(self, reads):
+        depth.whole_map(self.decode(1600))
+        depth.whole_map(self.decode(1600, ("other.CR3", 1, 2)))
+        depth.whole_map(self.decode(1600, (("photo.CR3", 1, 2), "lens")))
+        depth.whole_map(LinearFrame(self.decode(1600).rgb))     # one that cannot say
+        assert len(reads) == 4
+
+    def test_lens_correction_and_patches_keep_the_key(self):
+        from adjust.render import draft_of, healed, lens_corrected
+
+        frame = self.decode(600)
+        corrected = lens_corrected(frame, 0, 30)
+        assert corrected.source_key == (frame.source_key, corrected.source_key[1])
+        assert lens_corrected(self.decode(900), 0, 30).source_key == corrected.source_key
+        assert healed(corrected, []).source_key == corrected.source_key
+        assert draft_of(corrected).anchor_of is corrected
+
+    def test_read_once_when_asked_at_once(self, reads, monkeypatch):
+        import threading
+        import time
+
+        slow = depth._read
+        monkeypatch.setattr(depth, "_read", lambda picture: (time.sleep(0.2), slow(picture))[1])
+        got = []
+        threads = [threading.Thread(target=lambda: got.append(depth.whole_map(self.decode(1600))))
+                   for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert reads == [1024] and all(g is got[0] for g in got)

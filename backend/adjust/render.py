@@ -387,6 +387,11 @@ class LinearFrame:
     _draft: Optional[object] = field(default=None, repr=False)
     # This frame is such a copy, drawn for speed.
     _is_draft: bool = field(default=False, repr=False)
+    # Which photograph this is, and how its geometry was corrected: the same for every
+    # decode of it at any size, so what is worked out from the picture alone (the depth
+    # map, adjust.depth) is worked out once and shared by the preview, the thumbnails, the
+    # export and the routes that read it. None for a frame that cannot say.
+    source_key: Optional[tuple] = field(default=None, repr=False)
 
     def shown(self) -> np.ndarray:
         """The frame as it stands, display-encoded float (H, W, 3), kept."""
@@ -494,7 +499,8 @@ def healed(frame: "LinearFrame", spots: list, fetch=None) -> "LinearFrame":
     if frame._healed is not None and frame._healed[0] == key:
         return frame._healed[1]
     out = LinearFrame(apply_spots(frame.rgb, spots, frame.window, fetch), look=frame.look,
-                      window=frame.window, scale=frame.scale, anchor_of=frame.anchor_of, wb=frame.wb)
+                      window=frame.window, scale=frame.scale, anchor_of=frame.anchor_of, wb=frame.wb,
+                      source_key=frame.source_key)
     frame._healed = (key, out)
     return out
 
@@ -516,7 +522,7 @@ def noise_reduced(frame: "LinearFrame", luma: float, color: float, wait: bool = 
 
     out = LinearFrame(blend(frame.rgb, denoised, luma, color), look=frame.look,
                       window=frame.window, scale=frame.scale, anchor_of=frame.anchor_of or frame,
-                      lens=frame.lens, wb=frame.wb)
+                      lens=frame.lens, wb=frame.wb, source_key=frame.source_key)
     frame._reduced = (key, out)
     return out
 
@@ -544,7 +550,8 @@ def lens_corrected(frame: "LinearFrame", profile: float = 0, amount: float = 0,
     key = json.dumps(model, sort_keys=True)
     if frame._corrected is not None and frame._corrected[0] == key:
         return frame._corrected[1]
-    out = LinearFrame(warp(frame.rgb, model), look=frame.look, scale=frame.scale, lens=frame.lens, wb=frame.wb)
+    out = LinearFrame(warp(frame.rgb, model), look=frame.look, scale=frame.scale, lens=frame.lens, wb=frame.wb,
+                      source_key=(frame.source_key, key) if frame.source_key else None)
     frame._corrected = (key, out)
     return out
 

@@ -1976,6 +1976,11 @@ def frame_of(source: Path, rgb):
     from adjust.render import LinearFrame
 
     frame = LinearFrame(rgb)
+    try:
+        stat = source.stat()
+        frame.source_key = (str(source), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        pass
     side = _source_long_side(source)
     if side:
         frame.scale = min(1.0, max(rgb.shape[:2]) / side)
