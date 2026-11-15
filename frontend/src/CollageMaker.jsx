@@ -37,6 +37,8 @@ const STYLES = [
   ["film", "Film", "Frames on strips of film"],
 ];
 const PRINT_STYLES = new Set(["polaroid", "taped", "pinned", "stamps"]);
+// The styles with paper to write each photo's camera details on (export/collage.py CAPTION_STYLES).
+const CAPTION_STYLES = new Set(["polaroid", "gallery"]);
 // Which layouts a style offers: arrangements of loose prints, strips of film, or grids.
 const family = (style) => (PRINT_STYLES.has(style) ? "prints" : style === "film" ? "film" : "grid");
 // Patterns are drawn in the background colour; some have a colour they are usually seen in.
@@ -107,6 +109,7 @@ export default function CollageMaker({ filepaths, onClose, title = "Collage", st
   const [pattern, setPattern] = useState("");
   const [backPhoto, setBackPhoto] = useState("");   // a photo as the surface instead
   const [backBlur, setBackBlur] = useState(true);
+  const [exif, setExif] = useState(false);          // camera details on a Polaroid's chin, a gallery mat
   const [options, setOptions] = useState(null);     // {width, height, layouts}
   const [layout, setLayout] = useState(0);
   const [preview, setPreview] = useState(null);
@@ -116,7 +119,7 @@ export default function CollageMaker({ filepaths, onClose, title = "Collage", st
 
   const body = (extra = {}) => ({
     filepaths: order, format, portrait, layout, gap, margin, background, style, pattern,
-    background_photo: backPhoto, background_blur: backBlur, ...extra,
+    background_photo: backPhoto, background_blur: backBlur, exif: exif && CAPTION_STYLES.has(style), ...extra,
   });
 
   // The layouts for these photos on this canvas; the first is the least cut.
@@ -154,7 +157,7 @@ export default function CollageMaker({ filepaths, onClose, title = "Collage", st
       } catch { /* the last preview stays */ }
     }, 150);
     return () => { live = false; clearTimeout(timer); };
-  }, [options, layout, background, style, pattern, backPhoto, backBlur]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [options, layout, background, style, pattern, backPhoto, backBlur, exif]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { if (previewRef.current) URL.revokeObjectURL(previewRef.current); }, []);
 
   useEffect(() => {
@@ -257,6 +260,15 @@ export default function CollageMaker({ filepaths, onClose, title = "Collage", st
                 }} className={chip(style === k)} data-testid="collage-style">{label}</button>
               ))}
             </div>
+            {CAPTION_STYLES.has(style) && (
+              <label className="flex items-center gap-2 text-xs text-neutral-400 cursor-pointer w-fit"
+                title={style === "polaroid" ? "The camera, exposure and a date-back stamp on each print's white chin"
+                  : "The camera, exposure and date in one quiet line on each mat"}>
+                <input type="checkbox" checked={exif} onChange={(e) => setExif(e.target.checked)}
+                  data-testid="collage-exif" className="accent-amber-500" />
+                Camera details — body, exposure and date on the {style === "polaroid" ? "print" : "mat"}
+              </label>
+            )}
           </section>
 
           <section className="flex gap-6 flex-wrap">

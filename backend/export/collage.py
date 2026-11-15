@@ -370,6 +370,8 @@ def mosaic_layout(aspects: list[float], width: int, height: int, gap: int = 0) -
 
 # Styles: how each photograph sits in its cell.
 STYLES = ("clean", "rounded", "gallery", "polaroid", "taped", "pinned", "stamps", "film")
+# The styles with paper to write a photo's camera details on.
+CAPTION_STYLES = ("polaroid", "gallery")
 # Styles whose pictures lie loose on the surface, each its own shape: they are
 # arranged as prints (polaroid_layouts), not cut into a grid.
 PRINT_STYLES = ("polaroid", "taped", "pinned", "stamps")
@@ -565,7 +567,7 @@ def polaroid_layouts(aspects: list[float], width: int, height: int) -> list[dict
 
 
 def _prints(page: Image.Image, images: list, arrangement: dict, style: str, margin: int,
-            focus: Optional[list]) -> None:
+            focus: Optional[list], captions: Optional[list] = None) -> None:
     """Lay the pictures on ``page`` (already SUPERSAMPLE times the canvas) as
     ``arrangement`` (one of :func:`polaroid_layouts`), each made by ``style``'s card."""
     import random
@@ -592,7 +594,9 @@ def _prints(page: Image.Image, images: list, arrangement: dict, style: str, marg
         fit = min(1.0, 0.96 * room_w / span_w, 0.96 * room_h / span_h)
         centre = ((margin + x + w / 2) * ss, (margin + y + h / 2) * ss)
         point = (focus[k] if focus and k < len(focus) and focus[k] else None) or (0.5, 0.5)
-        piece = make(images[k], max(8, round(cw * fit)), max(8, round(ch * fit)), point, rng)
+        caption = captions[k] if captions and k < len(captions) else None
+        piece = collage_looks.captioned(make, caption)(images[k], max(8, round(cw * fit)),
+                                                        max(8, round(ch * fit)), point, rng)
         _lay_print(page, piece, centre, angle, bounds)
 
 
@@ -676,12 +680,15 @@ def _cover(image: Image.Image, w: int, h: int, focus: tuple = (0.5, 0.5)) -> Ima
 def render_canvas(images: list[Image.Image], width: int, height: int, layout: int = 0, gap: int = 0,
                   margin: int = 0, background=(255, 255, 255), focus: Optional[list] = None,
                   quality: int = 92, style: str = "clean", pattern: str = "",
-                  backdrop_photo: Optional[Image.Image] = None, backdrop_blur: bool = True) -> bytes:
+                  backdrop_photo: Optional[Image.Image] = None, backdrop_blur: bool = True,
+                  captions: Optional[list] = None) -> bytes:
     """``images`` laid out as layout number ``layout`` of :func:`layouts_for`
     ``style`` on a ``width`` × ``height`` canvas; ``focus`` is each image's point
     to keep, as fractions of it (None for its middle). The surface is
     ``background`` (a colour) with ``pattern`` drawn on it, or ``backdrop_photo``
-    (see :mod:`export.collage_looks`)."""
+    (see :mod:`export.collage_looks`). ``captions`` (each photo's
+    :func:`~export.collage_looks.caption_of`, or None) are written on the paper
+    of the styles that have room for them: a Polaroid's chin, a gallery mat."""
     from export import collage_looks
 
     images = [im.convert("RGB") for im in images]
@@ -697,6 +704,9 @@ def render_canvas(images: list[Image.Image], width: int, height: int, layout: in
 
     loose = style in PRINT_STYLES or style in ("gallery", "film")
     ss = SUPERSAMPLE if loose else 1
+    if captions:
+        # Type is sized against the page as well as the card (collage_looks._type_size).
+        captions = [dict(c, page=min(width, height) * ss) if c else None for c in captions]
     surface = collage_looks.backdrop(width * ss, height * ss, collage_looks.parse_colour(background),
                                      pattern, backdrop_photo, backdrop_blur)
     if loose:
@@ -704,14 +714,16 @@ def render_canvas(images: list[Image.Image], width: int, height: int, layout: in
         # everything is drawn large and brought down, for smooth turned edges.
         page = collage_looks.vignette(surface).convert("RGBA")
         if style in PRINT_STYLES:
-            _prints(page, images, chosen, style, margin, focus)
+            _prints(page, images, chosen, style, margin, focus, captions)
         elif style == "gallery":
             bounds = (0, 0, page.width, page.height)
             rng = None
             for k, (x, y, w, h) in enumerate(chosen["cells"]):
                 inset = min(w, h) * 0.05
                 cw, ch = (w - 2 * inset) * ss, (h - 2 * inset) * ss
-                piece = collage_looks.framed(images[k], max(8, round(cw)), max(8, round(ch)), points[k], rng)
+                caption = captions[k] if captions and k < len(captions) else None
+                piece = collage_looks.framed(images[k], max(8, round(cw)), max(8, round(ch)), points[k], rng,
+                                             caption)
                 _lay_print(page, piece, ((margin + x + w / 2) * ss, (margin + y + h / 2) * ss), 0.0, bounds)
         else:
             import random
