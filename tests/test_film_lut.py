@@ -118,7 +118,7 @@ def test_the_import_route(client):
     res = client.post("/api/styles/import-lut", json={"text": _cube(size=5), "filename": "Provia_DisplayP3.cube"})
     assert res.status_code == 200, res.text
     style = res.json()["style"]
-    assert style["kind"] == "lut" and style["name"] == "Provia"
+    assert style["kind"] == "lut" and style["name"] == "Provia (P3)" and style["space"] == "p3"
     assert any(s["id"] == style["id"] for s in client.get("/api/styles").json()["styles"])
     assert client.post(f"/api/styles/{style['id']}/improve").status_code == 400
     bad = client.post("/api/styles/import-lut", json={"text": "LUT_1D_SIZE 2\n0 0 0\n1 1 1\n"})

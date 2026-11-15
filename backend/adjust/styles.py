@@ -132,6 +132,7 @@ class Style:
     def summary(self) -> dict:
         return {"id": self.id, "name": self.name, "frames": self.frames,
                 "kind": "lut" if self.lut is not None else "learned",
+                "space": self.lut.space if self.lut is not None else "",
                 "source": self.source, "created": self.created,
                 "folders": len(self.folders), "improvable": bool(self.key),
                 "improved": self.improved, "has_previous": has_previous(self.id)}
@@ -325,7 +326,10 @@ def import_lut(name: str, text: str, filename: str = "", space: Optional[str] = 
     from adjust.film_lut import from_text
 
     lut, title = from_text(text, filename, space)
-    name = (name or title or _lut_name(filename) or "Film LUT").strip()[:80]
+    name = (name or title or _lut_name(filename) or "Film LUT").strip()[:74]
+    if lut.space == "p3" and "p3" not in name.lower():
+        # The same film in two encodings is two styles: say which this one is.
+        name += " (P3)"
     style = Style(slug(name), name, None, 0, source=f"Film LUT: {filename or name}",
                   created=time.time(), typical=LUT_TYPICAL, lut=lut)
     save(style)

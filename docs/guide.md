@@ -937,7 +937,12 @@ any RAW the way a style is: **anchored** to the frame's own middle brightness
 (a Canon R6 Mark II's decode sat 2 to 2.5 stops under where those LUTs want
 middle grey), with the highlight **shoulder** folding the headroom above white
 in, since a LUT's input stops at white. A file named or marked *DisplayP3* is
-read in Display P3; otherwise sRGB. Style fade, the gallery (*Try each*), saved
+read in Display P3 and named with *(P3)*; otherwise sRGB. The two are one film
+in two encodings, not one per kind of screen: Photool converts either into its
+own working colour, and works and exports in sRGB on a Mac and on Windows alike,
+so one of them is enough. Take the sRGB one. On a real frame the two came out
+within a level of each other almost everywhere (Provia at most 2.6 levels apart,
+Velvia 7), the P3 one differing only in very saturated colours near sRGB's edge. Style fade, the gallery (*Try each*), saved
 looks and copy and paste work as for any style; a LUT is not learned, so it
 cannot be improved from other folders.
 

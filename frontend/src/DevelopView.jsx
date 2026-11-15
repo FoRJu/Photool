@@ -3241,7 +3241,7 @@ function StylePicker({ value, onChange, folder, filepath, edit, onRefitted }) {
           className="flex-1 min-w-0 bg-neutral-900 border border-neutral-800 rounded px-1 py-0.5 text-xs">
           <option value="">Camera's own look</option>
           {list.map((s) => (
-            <option key={s.id} value={s.id} title={s.source}>{s.name} ({s.kind === "lut" ? "film LUT" : s.frames})</option>
+            <option key={s.id} value={s.id} title={s.source}>{s.name} ({s.kind === "lut" ? `film LUT · ${s.space === "p3" ? "Display P3" : "sRGB"}` : s.frames})</option>
           ))}
           {value && !known && <option value={value}>{value} (not on this computer)</option>}
         </select>
