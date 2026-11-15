@@ -123,6 +123,12 @@ def test_through_the_api_layouts_then_the_picture(client):
 
     assert c.post("/api/library/collage", json={"filepaths": paths, "format": "poster"}).status_code == 400
 
+    # Camera details, asked for on a style with paper for them.
+    for style in ("polaroid", "gallery", "clean"):
+        res = c.post("/api/library/collage", json={"filepaths": paths, "format": "square", "style": style,
+                                                   "exif": True, "preview": True})
+        assert res.status_code == 200 and res.headers["content-type"] == "image/jpeg"
+
 
 def test_a_cell_the_photos_own_shape_is_not_cut_past_its_edge():
     """Rounding can ask for a window a hair wider than the photo; it is cut to it."""
@@ -341,3 +347,44 @@ def test_asked_for_one_layout_the_answer_is_the_best_not_the_evenest():
     best = _grid_layouts(aspects, 414, 952, 12, 6)[0]
     assert _grid_layouts(aspects, 414, 952, 12, 1)[0]["cells"] == best["cells"]
     assert best["crop"] < 0.25
+
+
+# ── Camera details on the paper ──────────────────────────────────────
+
+def test_a_record_reads_as_a_caption():
+    from export.collage_looks import caption_of
+
+    cap = caption_of(camera="Canon  EOS R6m2", focal_length="45 mm", aperture="f/4.0", shutter_speed="1/100",
+                     iso="800", capture_date="2026:11:12 19:46:39", lens="ignored")
+    assert cap == {"body": "Canon EOS R6m2", "exposure": "45mm  f/4  1/100s  ISO 800",
+                   "date": "12 Nov 2026", "stamp": "'26 11 12"}
+    assert caption_of(shutter_speed="2", capture_date="2024-01-02")["exposure"] == "2s"
+    assert caption_of() is None
+
+
+def _ink_below(jpeg: bytes) -> float:
+    a = np.asarray(Image.open(io.BytesIO(jpeg)).convert("L"), dtype=np.float32)
+    return float(np.abs(np.diff(a, axis=1)).sum())
+
+
+@pytest.mark.parametrize("style", ["polaroid", "gallery"])
+def test_captions_write_on_the_paper_only_when_asked(style):
+    from export.collage_looks import caption_of
+
+    images = [Image.new("RGB", (600, 400), (90, 110, 160)) for _ in range(2)]
+    cap = caption_of(camera="Canon EOS R6m2", focal_length="45 mm", aperture="f/4.0",
+                     shutter_speed="1/100", iso="800", capture_date="2026:11:12 19:46:39")
+    plain = render_canvas(images, 1800, 1200, style=style, margin=40)
+    written = render_canvas(images, 1800, 1200, style=style, margin=40, captions=[cap, None])
+    nothing = render_canvas(images, 1800, 1200, style=style, margin=40, captions=[None, None])
+    assert _ink_below(written) > _ink_below(plain) * 1.01
+    assert nothing == plain
+
+
+def test_a_style_without_paper_ignores_captions():
+    from export.collage_looks import caption_of
+
+    images = [Image.new("RGB", (600, 400), (90, 110, 160)) for _ in range(2)]
+    cap = caption_of(camera="X", capture_date="2026:11:12")
+    assert render_canvas(images, 1200, 1200, style="clean", captions=[cap, cap]) == \
+        render_canvas(images, 1200, 1200, style="clean")

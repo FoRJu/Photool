@@ -1424,6 +1424,7 @@ class CollageRequest(BaseModel):
     background_photo: str = ""    # or a photograph as the surface, instead
     background_blur: bool = True  # blurred, so what lies on it stands out
     style: str = "clean"          # export.collage.STYLES
+    exif: bool = False            # camera details on the paper (export.collage.CAPTION_STYLES)
     preview: bool = False         # small, quick, for the page to show
 
 
@@ -1523,8 +1524,8 @@ def _shown_preview(request: Request, filepath: str) -> Optional[bytes]:
 
 
 def _collage(request: Request, req: CollageRequest) -> bytes:
-    from export.collage import FORMATS, STYLES, render, render_canvas
-    from export.collage_looks import PATTERNS, parse_colour
+    from export.collage import CAPTION_STYLES, FORMATS, STYLES, render, render_canvas
+    from export.collage_looks import PATTERNS, caption_of, parse_colour
 
     if req.format:
         if req.format not in FORMATS:
@@ -1544,10 +1545,14 @@ def _collage(request: Request, req: CollageRequest) -> bytes:
             raise HTTPException(status_code=404, detail="None of those photos could be read")
         w, h, gap, margin = _canvas(req)
         colour = _BACKGROUNDS.get(req.background) or parse_colour(req.background)
+        captions = None
+        if req.exif and req.style in CAPTION_STYLES:
+            db = _get_catalog(request).db
+            captions = [caption_of(**vars(record)) if (record := db.get_photo(fp)) else None for fp in kept]
         return render_canvas(images, w, h, req.layout, gap, margin, colour,
                              [_focus(request, fp) for fp in kept], quality=85 if req.preview else 92,
                              style=req.style, pattern=req.pattern, backdrop_photo=surface,
-                             backdrop_blur=req.background_blur)
+                             backdrop_blur=req.background_blur, captions=captions)
     images, _kept = _open_previews(request, req.filepaths[:30])
     if not images:
         raise HTTPException(status_code=404, detail="None of those photos could be read")

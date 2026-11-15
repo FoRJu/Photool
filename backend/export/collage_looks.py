@@ -236,20 +236,25 @@ def stamp(image, w, h, focus, rng) -> Image.Image:
     return card
 
 
-def framed(image, w, h, focus, rng) -> Image.Image:
-    """A picture in a white mat and a dark frame, as on a gallery wall."""
+def framed(image, w, h, focus, rng, caption: Optional[dict] = None) -> Image.Image:
+    """A picture in a white mat and a dark frame, as on a gallery wall; with a
+    ``caption`` (see :func:`caption_of`) the mat is weighted at the bottom, as
+    framers do, and the line written there."""
     from export.collage import _cover
 
     side = min(w, h)
     frame = max(2, round(side * 0.03))
     mat = max(2, round(side * 0.085))
+    foot = round(mat * 1.7) if caption else mat
     piece = Image.new("RGBA", (w, h), (34, 32, 30, 255))
     draw = ImageDraw.Draw(piece)
     draw.rectangle((frame, frame, w - frame - 1, h - frame - 1), fill=(248, 247, 243, 255))
-    inner = frame + mat
-    piece.paste(_cover(image, max(1, w - 2 * inner), max(1, h - 2 * inner), focus), (inner, inner))
+    inner, under = frame + mat, frame + foot
+    piece.paste(_cover(image, max(1, w - 2 * inner), max(1, h - inner - under), focus), (inner, inner))
     # The mat's bevel: a fine line where it is cut.
-    draw.rectangle((inner - 2, inner - 2, w - inner + 1, h - inner + 1), outline=(220, 218, 210, 255), width=2)
+    draw.rectangle((inner - 2, inner - 2, w - inner + 1, h - under + 1), outline=(220, 218, 210, 255), width=2)
+    if caption:
+        _mat_caption(piece, caption, (inner, h - under + 2, w - inner, h - frame), side)
     return piece
 
 
@@ -281,3 +286,199 @@ def film_strip(images: list, frames: list, focus: list, length: float, thick: fl
             draw.rounded_rectangle(box, radius=max(1, hole_w * 0.25), fill=0)
     strip.putalpha(alpha)
     return strip
+
+
+# ── What the camera saw, written on the card ─────────────────────────
+# On a print's white chin or a frame's mat: the body and the exposure in small,
+# quiet type, and the day in the orange of a film camera's date back. Only on
+# the paper, never over the picture.
+
+_SANS = {
+    "medium": [("Avenir Next.ttc", 5), ("HelveticaNeue.ttc", 10), ("segoeuisb.ttf", 0),
+               ("bahnschrift.ttf", 0), ("DejaVuSans.ttf", 0)],
+    "regular": [("Avenir Next.ttc", 7), ("HelveticaNeue.ttc", 0), ("segoeui.ttf", 0),
+                ("bahnschrift.ttf", 0), ("DejaVuSans.ttf", 0)],
+}
+_MONO = [("SFNSMono.ttf", 0), ("Menlo.ttc", 0), ("consola.ttf", 0), ("DejaVuSansMono.ttf", 0)]
+_FONT_DIRS = ("", "/System/Library/Fonts/", "/System/Library/Fonts/Supplemental/", "/Library/Fonts/",
+              "C:/Windows/Fonts/", "/usr/share/fonts/truetype/dejavu/")
+_found: dict = {}
+
+INK = (58, 56, 52)            # the body, in a soft near-black
+PENCIL = (128, 125, 118)      # the exposure, lighter
+DATE_BACK = (222, 104, 34)    # a date back's orange
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _face(chain: list, size: int):
+    size = max(4, int(size))
+    key = (id(chain), size)
+    if key in _found:
+        return _found[key]
+    from PIL import ImageFont
+
+    font = None
+    for name, index in chain:
+        for folder in _FONT_DIRS:
+            try:
+                font = ImageFont.truetype(folder + name, size, index=index)
+                break
+            except OSError:
+                continue
+        if font:
+            break
+    _found[key] = font or ImageFont.load_default(size=size)
+    return _found[key]
+
+
+def _number(text: str, unit: str = "") -> str:
+    """``"4.0"`` as ``"4"``, ``"45 mm"`` as ``"45mm"``."""
+    text = str(text or "").strip().replace(" ", "")
+    if unit and text.lower().endswith(unit):
+        text = text[: -len(unit)]
+    try:
+        value = float(text)
+        text = f"{value:g}"
+    except ValueError:
+        pass
+    return text + unit if text else ""
+
+
+def caption_of(camera: str = "", focal_length: str = "", aperture: str = "", shutter_speed: str = "",
+               iso: str = "", capture_date: str = "", **_) -> Optional[dict]:
+    """A catalog record's EXIF as what a card shows: ``{body, exposure, date,
+    stamp}``, or None when there is nothing to say."""
+    exposure = []
+    if focal_length:
+        exposure.append(_number(focal_length, "mm"))
+    if aperture:
+        f = _number(str(aperture).lower().removeprefix("f/").removeprefix("f"))
+        if f:
+            exposure.append(f"f/{f}")
+    if shutter_speed:
+        s = str(shutter_speed).strip().removesuffix("s").strip()
+        if "/" not in s:
+            s = _number(s)
+        if s:
+            exposure.append(f"{s}s")
+    if iso:
+        exposure.append(f"ISO {str(iso).strip()}")
+    date, stamp = "", ""
+    text = str(capture_date or "").strip()
+    if len(text) >= 10:
+        try:
+            y, m, d = int(text[0:4]), int(text[5:7]), int(text[8:10])
+            if 1 <= m <= 12 and 1 <= d <= 31:
+                date = f"{d} {_MONTHS[m - 1]} {y}"
+                stamp = f"'{y % 100:02d} {m:02d} {d:02d}"
+        except ValueError:
+            pass
+    body = " ".join(str(camera or "").split())
+    if not (body or exposure or date):
+        return None
+    return {"body": body, "exposure": "  ".join(exposure), "date": date, "stamp": stamp}
+
+
+def _width(draw, text: str, font, tracking: float = 0.0) -> float:
+    if not text:
+        return 0.0
+    return draw.textlength(text, font=font) + tracking * (len(text) - 1)
+
+
+def _write(draw, xy: tuple, text: str, font, fill, tracking: float = 0.0) -> None:
+    """``text`` with its left edge at x and its baseline at y, letters ``tracking`` further apart."""
+    x, y = xy
+    if not tracking:
+        draw.text((x, y), text, font=font, fill=fill, anchor="ls")
+        return
+    for ch in text:
+        draw.text((x, y), ch, font=font, fill=fill, anchor="ls")
+        x += draw.textlength(ch, font=font) + tracking
+
+
+def _type_size(caption: dict, side: float) -> float:
+    """What type sizes are fractions of, for a card ``side`` across: its side,
+    pulled towards a fixed share of the page, so a small card's line can still
+    be read and a large card's does not shout."""
+    page = caption.get("page") or side / 0.4
+    return math.sqrt(side * page * 0.4)
+
+
+def _print_caption(card: Image.Image, caption: dict, box: tuple, side: int) -> None:
+    """On a print's chin ``box`` (left, top, right, bottom): the body over the
+    exposure on the left, the date back's stamp on the right."""
+    draw = ImageDraw.Draw(card)
+    left, top, right, bottom = box
+    room = right - left
+    unit = _type_size(caption, side)
+    for scale in (1.0, 0.9, 0.8, 0.7, 0.62, 0.55, 0.48):
+        big, small = unit * 0.042 * scale, unit * 0.031 * scale
+        body_font = _face(_SANS["medium"], big)
+        exp_font = _face(_SANS["regular"], small)
+        stamp_font = _face(_MONO, unit * 0.036 * scale)
+        track = small * 0.06
+        text_w = max(_width(draw, caption["body"], body_font), _width(draw, caption["exposure"], exp_font, track))
+        stamp_w = _width(draw, caption["stamp"], stamp_font)
+        tall = (big if caption["body"] else 0) + (small * 1.45 if caption["exposure"] else 0)
+        if text_w + (stamp_w + unit * 0.05 if stamp_w else 0) <= room and tall <= (bottom - top) * 0.75:
+            break
+    lines = [(caption["body"], body_font, INK, 0.0, big), (caption["exposure"], exp_font, PENCIL, track, small)]
+    lines = [line for line in lines if line[0]]
+    # The block sits a little above the chin's middle, where a hand would write.
+    lead = [h * (0.8 if i == 0 else 1.45) for i, (*_, h) in enumerate(lines)]
+    baseline = top + (bottom - top - sum(lead)) * 0.44
+    for (text, font, fill, tr, _h), step in zip(lines, lead):
+        baseline += step
+        _write(draw, (left, baseline), text, font, fill, tr)
+    if caption["stamp"]:
+        sw = _width(draw, caption["stamp"], stamp_font)
+        # Level with the last line, as a date back prints along the frame's edge.
+        last = baseline if lines else top + (bottom - top) * 0.55
+        layer = Image.new("RGBA", card.size, (0, 0, 0, 0))
+        ImageDraw.Draw(layer).text((right - sw, last), caption["stamp"], font=stamp_font,
+                                   fill=DATE_BACK + (245,), anchor="ls")
+        # Printed light into paper, the stamp's edge is a touch soft.
+        card.alpha_composite(layer.filter(ImageFilter.GaussianBlur(max(0.3, side * 0.0009))))
+
+
+def _mat_caption(piece: Image.Image, caption: dict, box: tuple, side: int) -> None:
+    """One quiet line, centred in a frame's bottom mat: as a gallery labels a print."""
+    draw = ImageDraw.Draw(piece)
+    left, top, right, bottom = box
+    unit = min(_type_size(caption, side) * 0.03, (bottom - top) * 0.3)
+    # Below this a line is a grey smudge, not words: say less, or nothing.
+    least = (caption.get("page") or side / 0.4) * 0.011
+    # Smaller first; then, with no room, without the body, then without the date.
+    tries = [(caption["body"], caption["exposure"], caption["date"]),
+             (caption["exposure"], caption["date"]), (caption["exposure"] or caption["date"],)]
+    for parts in tries:
+        text = "   ·   ".join(p for p in parts if p)
+        for scale in (1.0, 0.88, 0.76, 0.66):
+            size = unit * scale
+            if size < least:
+                break
+            font = _face(_SANS["regular"], size)
+            track = size * 0.08
+            width = _width(draw, text, font, track)
+            if width <= (right - left) * 0.94:
+                _write(draw, ((left + right - width) / 2, (top + bottom) / 2 + size * 0.36),
+                       text, font, PENCIL, track)
+                return
+
+
+def captioned(make, caption: Optional[dict]):
+    """``make`` (one of CARDS) writing ``caption`` on its paper, when it has paper for it."""
+    if not caption:
+        return make
+    if make is polaroid:
+        def card(image, w, h, focus, rng):
+            piece = polaroid(image, w, h, focus, rng)
+            side = min(w, h)
+            border = max(2, round(side * 0.055))
+            bottom = max(border, round(side * 0.19))
+            _print_caption(piece, caption, (border, h - bottom, w - border, h - border * 0.35), side)
+            return piece
+        return card
+    if make is framed:
+        return lambda image, w, h, focus, rng: framed(image, w, h, focus, rng, caption)
+    return make
