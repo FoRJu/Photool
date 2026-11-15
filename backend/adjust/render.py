@@ -368,6 +368,11 @@ class LinearFrame:
     _reduced: Optional[tuple] = field(default=None, repr=False)
     # This frame with lens blur, by its settings (adjust.depth.blurred).
     _blurred: Optional[tuple] = field(default=None, repr=False)
+    # This frame with halation and bloom on it, by their settings and the exposure, and the
+    # glow itself (adjust.halation.lit): ``(key, frame, glow)``.
+    _lit: Optional[tuple] = field(default=None, repr=False)
+    # What that glow is scaled from, by the exposure, threshold and size (adjust.halation).
+    _spread: Optional[tuple] = field(default=None, repr=False)
     # This frame with a second exposure on it, by its settings (adjust.double.exposed).
     _exposed: Optional[tuple] = field(default=None, repr=False)
     # How the camera corrects this frame's lens distortion: a callable
@@ -1304,6 +1309,14 @@ def develop_frame(
             # knows nothing of the second's, and before the light and tone, which shape
             # the two as one picture.
             frame = exposed(frame, second)
+    from adjust import halation
+
+    if halation.wanted(clean):
+        # On linear light, after the blurs and before the light and tone: the film
+        # is exposed with its halo on it, and developed and printed after.
+        frame = halation.lit(frame, clean)
+        for key in halation.KEYS:
+            clean.pop(key, None)
     if not clean and not matched and finished_second is None:
         return frame.encoded()
     if not matched and finished_second is None and not any(k not in GEOMETRY_KEYS for k in clean):

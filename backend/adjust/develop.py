@@ -149,8 +149,14 @@ BW_SLIDERS = ("mono",) + tuple(f"bw_{band}" for band in HSL_BANDS)
 # Effects on the finished, framed picture. ``grain`` 0..100 is film grain and
 # ``grain_size`` -100..100 its size (0 is a 35 mm film's grain, finer to the
 # left); ``vignette`` -100..100 darkens (left) or lightens (right) the corners of
-# the picture as cropped.
-EFFECT_SLIDERS = ("grain", "grain_size", "vignette")
+# the picture as cropped. ``halation`` 0..100 is film's red-orange fringe round bright
+# light and ``bloom`` 0..100 a wider glow in the light's own colour (adjust.halation,
+# put on the linear light before the tone, not on the finished picture);
+# ``halation_colour`` -100..100 turns the fringe deep red (left) or nearly neutral
+# (right), ``glow_size`` -100..100 how far both spread (0 is a 35 mm film's) and
+# ``glow_threshold`` -100..100 how bright something must be to glow.
+EFFECT_SLIDERS = ("grain", "grain_size", "vignette",
+                  "halation", "halation_colour", "bloom", "glow_size", "glow_threshold")
 
 # Noise reduction (adjust.noise), 0..100 each: how much of the luminance noise
 # and of the colour noise a learned denoiser takes out of a RAW frame. Both at 0
@@ -214,6 +220,8 @@ SLIDER_RANGES = {
     "highlight_hue": (0.0, 360.0),
     "mono": (0.0, 1.0),
     "grain": (0.0, 100.0),
+    "halation": (0.0, 100.0),
+    "bloom": (0.0, 100.0),
     "nr_luma": (0.0, 100.0),
     "nr_color": (0.0, 100.0),
     "lens_blur": (0.0, 100.0),
@@ -231,6 +239,7 @@ _STYLE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 # A setting that means nothing without another: a hue without its strength, a
 # grain size without any grain. It is dropped when the other is at 0.
 HUE_OF = {"shadow_hue": "shadow_sat", "highlight_hue": "highlight_sat", "grain_size": "grain",
+          "halation_colour": "halation",
           "sharpen_radius": "sharpen", "sharpen_detail": "sharpen", "sharpen_masking": "sharpen",
           "blur_focus": "lens_blur", "blur_sharp": "lens_blur"}
 
@@ -504,6 +513,10 @@ def normalize(settings: Optional[dict]) -> dict:
     for hue, strength in HUE_OF.items():
         if hue in clean and strength not in clean:
             del clean[hue]
+    # A glow's size and threshold need a glow.
+    if "halation" not in clean and "bloom" not in clean:
+        clean.pop("glow_size", None)
+        clean.pop("glow_threshold", None)
     return clean
 
 
@@ -785,7 +798,8 @@ def describe_settings(settings: Optional[dict]) -> str:
         looks.append("colour mixer")
     if clean.get("mono"):
         looks.append("black and white")
-    looks.extend(f"{key} {clean[key]:+d}" for key in ("grain", "vignette") if key in clean)
+    looks.extend(f"{key} {clean[key]:+d}" for key in ("grain", "halation", "bloom", "vignette")
+                 if key in clean)
     if "nr_luma" in clean or "nr_color" in clean:
         looks.append(f"noise reduction {clean.get('nr_luma', 0)}/{clean.get('nr_color', 0)}")
     if clean.get("lens_profile"):
@@ -863,6 +877,11 @@ _LOOK_CRS.update({f"bw_{band}": f"crs:GrayMixer{band.capitalize()}" for band in 
 _LOOK_CRS.update({
     "grain": "crs:GrainAmount",
     "grain_size": "crs:PhotoolGrainSize",
+    "halation": "crs:PhotoolHalation",
+    "halation_colour": "crs:PhotoolHalationColour",
+    "bloom": "crs:PhotoolBloom",
+    "glow_size": "crs:PhotoolGlowSize",
+    "glow_threshold": "crs:PhotoolGlowThreshold",
     "vignette": "crs:PostCropVignetteAmount",
 })
 # Noise reduction under names of this app's own. Lightroom's LuminanceSmoothing and
@@ -917,7 +936,7 @@ _WB_KELVIN_CRS = "crs:WBKelvin"
 _WB_TINT_CRS = "crs:WBTint"
 # Written without a sign: they are 0..100 / 0..360, never negative.
 _UNSIGNED = {"flat", "style_fade", "compress", "fade", "shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat",
-             "grain", "nr_luma", "nr_color", "sharpen", "sharpen_masking", "lens_profile",
+             "grain", "halation", "bloom", "nr_luma", "nr_color", "sharpen", "sharpen_masking", "lens_profile",
              "lens_blur", "blur_focus", "blur_sharp"}
 
 

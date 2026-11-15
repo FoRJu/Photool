@@ -22,6 +22,7 @@ from typing import Optional
 
 import numpy as np
 
+from adjust.halation import KEYS as HALATION_KEYS
 from adjust.develop import BW_SLIDERS, CURVE_KEYS, HSL_SLIDERS, normalize, point_of
 from adjust.render import (
     LUMA,
@@ -54,6 +55,8 @@ LEFT_OUT = (
     ("Sharpening", ("sharpen", "sharpen_radius", "sharpen_detail", "sharpen_masking")),
     ("Lens blur", ("lens_blur", "blur_focus", "blur_sharp", "blur_outline")),
     ("Lens corrections", ("lens_profile", "distortion")),
+    # It depends on the pixels round each one, so no LUT can hold it.
+    ("Halation & bloom", HALATION_KEYS),
     ("Vignette", ("vignette",)),
     ("Grain", ("grain", "grain_size")),
 )

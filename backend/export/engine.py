@@ -2466,6 +2466,17 @@ def loupe_image(
 
         patch = pixels(small, patch, (left / fw, top / fh, (left + side) / fw, (top + side) / fh), second)
         small = exposed(small, second)
+    from adjust import halation
+
+    if halation.wanted(clean):
+        # The glow is smooth, so the patch takes it from the preview, as the tone base is
+        # taken: a lamp outside the patch still lights it. The patch's own develop then
+        # does not glow again.
+        window = (left / fw, top / fh, (left + side) / fw, (top + side) / fh)
+        patch = halation.pixels(small, patch, window, clean)
+        small = halation.lit(small, clean)
+        for key in halation.KEYS:
+            clean.pop(key, None)
     frame = region_frame(
         small, patch, (left / fw, top / fh, (left + side) / fw, (top + side) / fh)
     )

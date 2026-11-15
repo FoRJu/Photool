@@ -50,6 +50,14 @@ _MEANING = {
              "each colour turns; split toning (shadow_hue/sat, highlight_hue/sat) then tints the grey"),
     "grain": "Film grain, 0 none to 100 heavy. The same grains every render, sized to the picture",
     "grain_size": "Grain size: 0 is a 35 mm film's grain, negative finer, positive coarser. Needs grain",
+    "halation": ("Halation, 0 none to 100 heavy: the red-orange fringe film gives round lamps and neon. "
+                 "30-40 looks like film; strongest on night frames with lamps in them"),
+    "halation_colour": "Halation colour: 0 is film's red-orange, negative deep red, positive nearly neutral. Needs halation",
+    "bloom": "Bloom, 0 none to 100 heavy: a wide, soft glow round bright light in its own colour, as a mist filter gives",
+    "glow_size": ("How far halation and bloom spread: 0 is a 35 mm film's, negative tighter, positive wider. "
+                  "Needs halation or bloom"),
+    "glow_threshold": ("How bright something must be to glow: negative, windows and pale walls too; positive, "
+                       "only the brightest lights. Needs halation or bloom"),
     "vignette": "Corners of the picture as cropped: negative darker, positive lighter",
     "nr_luma": ("Noise reduction, RAW only: how much of the luminance noise (grain) a learned denoiser "
                 "takes out, 0 none to 100 all. 50-80 keeps a fine, natural grain. The first use on a "
