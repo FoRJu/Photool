@@ -8,7 +8,7 @@
 const SCALED = new Set([
   "exposure", "highlights", "lights", "darks", "shadows", "whites", "blacks", "compress",
   "contrast", "clarity", "vibrance", "saturation", "fade", "shadow_sat", "highlight_sat",
-  "vignette", "grain", "flat", "temperature", "tint",
+  "vignette", "grain", "halation", "bloom", "flat", "temperature", "tint",
 ]);
 const SCALED_PREFIXES = ["hue_", "sat_", "lum_", "bw_"];
 export const LOOK_CURVE_KEYS = ["curve", "curve_r", "curve_g", "curve_b"];

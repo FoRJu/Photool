@@ -205,6 +205,20 @@ class TestLooksOfYourOwn:
         assert saved["settings"] == {"exposure": 0.5, "contrast": 20}
         assert saved["sections"] == ["light", "curve"]
 
+    def test_a_glow_of_your_own_is_saved_and_saved_again(self, client):
+        glow = {"halation": 40, "halation_colour": -20, "bloom": 15, "glow_size": 10, "glow_threshold": -15,
+                "grain": 22, "contrast": 8}
+        res = client.post("/api/export/develop/presets", json={
+            "name": "My night", "sections": ["effects", "light"], "settings": glow})
+        assert res.status_code == 200, res.text
+        saved = next(p for p in res.json()["presets"] if p["name"] == "My night")
+        assert saved["settings"] == glow
+        res = client.post("/api/export/develop/presets", json={
+            "name": "My night, heavy", "sections": ["effects", "light"], "settings": {**glow, "halation": 80}})
+        assert res.status_code == 200, res.text
+        values = {p["name"]: p["settings"].get("halation") for p in res.json()["presets"]}
+        assert values["My night"] == 40 and values["My night, heavy"] == 80
+
     def test_a_look_of_only_its_frame_is_nothing_to_save(self, client):
         res = client.post("/api/export/develop/presets", json={"name": "Crop", "settings": {"angle": 2.0}})
         assert res.status_code == 400

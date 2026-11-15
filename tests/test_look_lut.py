@@ -86,6 +86,14 @@ def test_what_a_lut_cannot_hold_is_named_and_changes_nothing():
     assert numbers(text) == numbers(plain)
 
 
+def test_halation_and_bloom_are_left_out():
+    plain, _ = cube_of({"contrast": 20})
+    text, left_out = cube_of({"contrast": 20, "halation": 40, "bloom": 20, "glow_size": 10})
+    assert "Halation & bloom" in left_out
+    numbers = lambda t: [ln for ln in t.splitlines() if not ln.startswith("#")]  # noqa: E731
+    assert numbers(text) == numbers(plain)
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     (tmp_path / "lib").mkdir()

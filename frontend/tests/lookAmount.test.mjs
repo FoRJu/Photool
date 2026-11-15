@@ -48,3 +48,15 @@ test("a look is live while its keys read what it gives", () => {
   assert.ok(!lookIsLive({ contrast: 12, vibrance: 0, curve: null }, keys, values, 50, zero));
   assert.ok(lookIsLive({ contrast: 0, vibrance: 0, curve: null }, keys, values, 0, zero));
 });
+
+test("a glow scales with the amount, its size, threshold and colour do not", () => {
+  const values = { halation: 40, glow_size: 30, glow_threshold: -20, halation_colour: 25 };
+  assert.equal(scaleLook(values, 50).halation, 20);
+  assert.equal(scaleLook(values, 150).halation, 60);
+  for (const amount of [0, 50, 150]) {
+    const out = scaleLook(values, amount);
+    for (const key of ["glow_size", "glow_threshold", "halation_colour"]) {
+      assert.equal(out[key], values[key], `${key} at ${amount}`);
+    }
+  }
+});

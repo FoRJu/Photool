@@ -34,6 +34,7 @@ make the keepers look right, and share them.
   - depth read from the picture: a lens blur, and masks that reach a band of distance
   - double exposure: one photo laid over another in linear light, RAW or JPEG
   - spot healing, noise reduction (AI), sharpening, lens correction, upright
+  - film grain, a vignette, and halation and bloom: bright light that glows and bleeds as on film
   - virtual copies, presets, copy/paste and "match this look"
   - looks of your own: an amount from 0 to 150, a look for each camera, a look on a
     whole selection, and any look as a `.cube` LUT for a video editor or another app

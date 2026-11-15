@@ -235,7 +235,7 @@ const GROUPS = [
   {
     id: "effects",
     title: "Effects",
-    hint: "On the picture as cropped. Grain is the same grains every time, sized to the picture, so the preview, the loupe and the export agree.",
+    hint: "On the picture as cropped. Grain is the same grains every time, sized to the picture, so the preview, the loupe and the export agree. Halation and bloom are put on the light before it is toned, so Highlights and the curve shape them too.",
     sliders: [
       { key: "vignette", label: "Vignette", min: -100, max: 100, step: 1, format: signed,
         title: "Darken (left) or lighten (right) the corners of the picture as cropped." },
@@ -243,6 +243,16 @@ const GROUPS = [
         title: "Film grain, strongest in the mid-tones as on film. Check it at 1:1 with the loupe (L)." },
       { key: "grain_size", label: "Grain size", min: -100, max: 100, step: 1, format: signed,
         title: "0 is about a 35 mm film's grain; left finer, right coarser. Needs some grain." },
+      { key: "halation", label: "Halation", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+        title: "The red-orange fringe film gives round lamps and neon. 30 to 40 looks like film; 100 is heavy." },
+      { key: "halation_colour", label: "Halation colour", min: -100, max: 100, step: 1, format: signed,
+        title: "0 is film's red-orange; left deep red, right nearly neutral. Needs some halation." },
+      { key: "bloom", label: "Bloom", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+        title: "A wide, soft glow round bright light in its own colour, as a mist filter gives." },
+      { key: "glow_size", label: "Glow size", min: -100, max: 100, step: 1, format: signed,
+        title: "How far halation and bloom spread: 0 is about a 35 mm film's; left tighter, right wider. Needs halation or bloom." },
+      { key: "glow_threshold", label: "Glow threshold", min: -100, max: 100, step: 1, format: signed,
+        title: "How bright something must be to glow: left, windows and pale walls too; right, only the brightest lights. Needs halation or bloom." },
     ],
   },
 ];
@@ -482,6 +492,7 @@ const LIGHT_KEYS = ["exposure", "highlights", "lights", "darks", "shadows", "whi
 const LOOK_KEYS = [
   "contrast", "clarity", "vibrance", "saturation", "fade",
   ...SPLIT_KEYS, ...BW_KEYS, "grain", "grain_size", "vignette",
+  "halation", "halation_colour", "bloom", "glow_size", "glow_threshold",
 ];
 
 // What Copy can carry, in the panel's own sections. The tone is ticked to begin
@@ -501,7 +512,8 @@ const COPY_SECTIONS = [
   { id: "curve", label: "Tone curve", keys: CURVE_KEYS },
   { id: "mixer", label: "Colour mixer / B&W mix", keys: [...HSL_KEYS, ...BW_MIX_KEYS] },
   { id: "toning", label: "Fade & toning", keys: ["fade", ...SPLIT_KEYS] },
-  { id: "effects", label: "Effects", keys: ["vignette", "grain", "grain_size"] },
+  { id: "effects", label: "Effects", keys: ["vignette", "grain", "grain_size",
+    "halation", "halation_colour", "bloom", "glow_size", "glow_threshold"] },
   { id: "masks", label: "Gradients & brushes", keys: ["masks"] },
   { id: "transform", label: "Transform", keys: TRANSFORM_KEYS, framing: true },
   { id: "level", label: "Level", keys: ["angle"], framing: true },
@@ -577,6 +589,9 @@ const LOOKS = [
   { name: "Teal & orange", note: "Cinematic split",
     settings: { contrast: 20, vibrance: 20,
       shadow_hue: 195, shadow_sat: 35, highlight_hue: 35, highlight_sat: 30 } },
+  { name: "Night tungsten", note: "Lamps that glow red, cool shadows, some grain",
+    settings: { halation: 40, bloom: 15, grain: 22, grain_size: 10, contrast: 8, fade: 8,
+      shadow_hue: 205, shadow_sat: 20 } },
   { name: "B&W punchy", note: "Punchy monochrome",
     settings: { mono: 1, contrast: 25, clarity: 20 } },
   { name: "B&W film", note: "Yellow filter, fine grain, a soft edge",
