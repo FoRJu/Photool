@@ -101,15 +101,18 @@ class Style:
     """A named look, with what it was learned from."""
 
     __slots__ = ("id", "name", "look", "frames", "source", "created", "typical",
-                 "key", "settings", "folders", "improved")
+                 "key", "settings", "folders", "improved", "lut")
 
-    def __init__(self, id: str, name: str, look: CameraLook, frames: int = 0,
+    def __init__(self, id: str, name: str, look: Optional[CameraLook], frames: int = 0,
                  source: str = "", created: float = 0.0, typical: float = 0.45,
                  key: str = "", settings: str = "", folders: Sequence[str] = (),
-                 improved: Optional[dict] = None):
+                 improved: Optional[dict] = None, lut=None):
         self.id = id
         self.name = name
         self.look = look
+        # A film look imported as a .cube (adjust.film_lut.FilmLut) instead of a
+        # learned one: ``look`` is then None, and nothing is learned or improved.
+        self.lut = lut
         self.frames = frames
         self.source = source
         self.created = created
@@ -128,6 +131,8 @@ class Style:
 
     def summary(self) -> dict:
         return {"id": self.id, "name": self.name, "frames": self.frames,
+                "kind": "lut" if self.lut is not None else "learned",
+                "space": self.lut.space if self.lut is not None else "",
                 "source": self.source, "created": self.created,
                 "folders": len(self.folders), "improvable": bool(self.key),
                 "improved": self.improved, "has_previous": has_previous(self.id)}
@@ -172,6 +177,15 @@ def save(style: Style, samples: Sequence[FrameSamples] = ()) -> Path:
     look = style.look
     path = _DIR / f"{style.id}.npz"
     tmp = _DIR / f"{style.id}.tmp.npz"
+    if style.lut is not None:
+        np.savez_compressed(tmp, lut=style.lut.table, meta=np.array(json.dumps({
+            "id": style.id, "name": style.name, "kind": "lut", "space": style.lut.space,
+            "source": style.source, "created": style.created or time.time(), "typical": style.typical,
+        })))
+        tmp.replace(path)
+        with _LOCK:
+            _CACHE.pop(style.id, None)
+        return path
     arrays = dict(
         curve=np.asarray(look.curve, np.float32),
         matrix=np.asarray(look.matrix, np.float32),
@@ -212,6 +226,15 @@ def load(style_id: str) -> Optional[Style]:
     try:
         with np.load(path, allow_pickle=False) as data:
             meta = json.loads(str(data["meta"]))
+            if "lut" in data.files:
+                from adjust.film_lut import FilmLut
+
+                style = Style(style_id, meta.get("name") or style_id, None, 0, meta.get("source", ""),
+                              float(meta.get("created", 0.0)), float(meta.get("typical", LUT_TYPICAL)),
+                              lut=FilmLut(data["lut"], meta.get("space", "srgb")))
+                with _LOCK:
+                    _CACHE[style_id] = (mtime, style)
+                return style
             curve = data["curve"].astype(np.float32)
             hue = data["hue"].astype(np.float32)
             look = CameraLook(curve=curve, matrix=data["matrix"].astype(np.float32),
@@ -281,6 +304,36 @@ def rename(style_id: str, name: str) -> bool:
     # Re-save keeps the samples: read them back first.
     save(style, samples_of(style_id))
     return True
+
+
+# The middle brightness a film LUT is anchored to on a frame with no camera JPEG
+# of its own to match: about where a learned style's frames sit.
+LUT_TYPICAL = 0.42
+
+
+def _lut_name(filename: str) -> str:
+    """A name from a LUT's file name: "classic_chrome_DisplayP3.cube" is
+    "Classic Chrome"."""
+    stem = re.sub(r"\.cube$", "", Path(filename or "").name, flags=re.I)
+    stem = re.sub(r"[ _-]*(display ?p3|srgb|rec ?709|p3)$", "", stem, flags=re.I)
+    words = re.sub(r"[_]+", " ", stem).split()
+    return " ".join(w[:1].upper() + w[1:] for w in words)
+
+
+def import_lut(name: str, text: str, filename: str = "", space: Optional[str] = None) -> Style:
+    """Keep a .cube film look as a style (adjust.film_lut), under ``name`` or the
+    file's own title. ``ValueError`` with a sentence when the file is not usable."""
+    from adjust.film_lut import from_text
+
+    lut, title = from_text(text, filename, space)
+    name = (name or title or _lut_name(filename) or "Film LUT").strip()[:74]
+    if lut.space == "p3" and "p3" not in name.lower():
+        # The same film in two encodings is two styles: say which this one is.
+        name += " (P3)"
+    style = Style(slug(name), name, None, 0, source=f"Film LUT: {filename or name}",
+                  created=time.time(), typical=LUT_TYPICAL, lut=lut)
+    save(style)
+    return style
 
 
 def samples_of(style_id: str) -> list:
@@ -484,6 +537,10 @@ def anchor(rgb: np.ndarray, style: Style, own_look: Optional[CameraLook]) -> flo
         return 1.0
 
     def shown(stops: float) -> float:
+        if style.lut is not None:
+            from adjust.film_lut import render as lut_render
+
+            return float(np.mean(_levels(lut_render(probe, style.lut, 2.0 ** stops))))
         return float(np.mean(_levels(apply_look(probe * np.float32(2.0 ** stops), style.look, 1.0))))
 
     low, high = -ANCHOR_RANGE, ANCHOR_RANGE
@@ -502,5 +559,9 @@ def anchor(rgb: np.ndarray, style: Style, own_look: Optional[CameraLook]) -> flo
 
 def render(rgb: np.ndarray, style: Style, factor: float, exposure: float = 0.0) -> np.ndarray:
     """Linear light to display colour through a style, at the frame's anchor."""
+    if style.lut is not None:
+        from adjust.film_lut import render as lut_render
+
+        return lut_render(rgb, style.lut, factor)
     return apply_look(np.asarray(rgb, np.float32) * np.float32(factor), style.look, 1.0,
                       exposure=exposure)
