@@ -165,7 +165,7 @@ class TestPrefetch:
         _jpeg_is(monkeypatch, jpeg)
         engine.prefetch([dng], 1000, full=dng)
         engine._PREFETCH_THREAD.join(timeout=60)
-        key = (str(dng), 1000, dng.stat().st_mtime_ns, dng.stat().st_size)
+        key = (str(dng), 1000, dng.stat().st_mtime_ns, dng.stat().st_size, engine.negative_stamp(dng))
         assert key in engine._LINEAR_CACHE
         assert engine._FULL_CACHE
 
