@@ -6,14 +6,18 @@ kept. They are applied last, to the finished picture, so every path that draws
 an edit — the develop preview, the library thumbnails and the export — frames
 the photograph the same way without each of them knowing how.
 
-An edit stores three things:
+An edit stores four things, applied in this order:
 
+  turn, flip                  a quarter turn clockwise (0, 90, 180 or 270) and
+                              then a mirror left to right (1), for a frame the
+                              camera did not stand up, or stood up wrongly. Both
+                              are exact: no pixel is resampled.
   angle                       degrees to turn the picture clockwise to level it
                               (-45..45), about its centre.
   crop_x, crop_y, crop_w, crop_h
                               the kept rectangle as fractions of the picture
                               (0..1), measured on the *whole* frame after the
-                              turn. Fractions, not pixels, because the preview,
+                              quarter turn and the level. Fractions, not pixels, because the preview,
                               a thumbnail and a 24 MP export are different sizes
                               of the same picture.
 
@@ -22,6 +26,10 @@ black wedges, so the rectangle is always pulled back inside the part of the fram
 that is really picture: :func:`fit_box`. Levelling with no crop drawn keeps the
 largest rectangle of the original shape that fits, which is what every editor
 does and what a person levelling a horizon expects.
+
+Every function here that takes a ``width`` and ``height`` means the frame as the
+camera gave it, before any quarter turn: the frame masks, spots and faces are
+measured on.
 """
 
 import math
@@ -29,7 +37,8 @@ from typing import Optional
 
 from PIL import Image
 
-GEOMETRY_KEYS = ("angle", "crop_x", "crop_y", "crop_w", "crop_h")
+GEOMETRY_KEYS = ("turn", "flip", "angle", "crop_x", "crop_y", "crop_w", "crop_h")
+TURNS = (0, 90, 180, 270)
 
 MAX_ANGLE = 45.0
 # Below these a control is doing nothing.
@@ -55,6 +64,15 @@ def normalize_geometry(settings: Optional[dict]) -> dict:
     if not settings:
         return {}
     out: dict = {}
+
+    turn = _number(settings.get("turn"))
+    if turn is not None:
+        turn = int(round(turn / 90.0)) % 4 * 90
+        if turn:
+            out["turn"] = turn
+    flip = settings.get("flip")
+    if flip is True or _number(flip) == 1:
+        out["flip"] = 1
 
     angle = _number(settings.get("angle"))
     if angle is not None:
@@ -121,14 +139,100 @@ def fit_box(box: tuple, angle: float, width: int, height: int) -> tuple:
     return (0.5 - w * 0.005, 0.5 - h * 0.005, w * 0.01, h * 0.01)
 
 
-def box_of(settings: Optional[dict], width: int, height: int) -> tuple:
-    """The kept rectangle ``(x, y, w, h)`` in fractions, after fitting to the turn."""
+def turned_size(settings: Optional[dict], width: int, height: int) -> tuple:
+    """The frame's size once its quarter turn is applied."""
+    turn = normalize_geometry(settings).get("turn", 0)
+    return (height, width) if turn in (90, 270) else (width, height)
+
+
+def to_turned(geo: dict, sx: float, sy: float) -> tuple:
+    """A point of the frame (fractions) on the frame turned and mirrored."""
+    turn = geo.get("turn", 0)
+    if turn == 90:
+        sx, sy = 1.0 - sy, sx
+    elif turn == 180:
+        sx, sy = 1.0 - sx, 1.0 - sy
+    elif turn == 270:
+        sx, sy = sy, 1.0 - sx
+    if geo.get("flip"):
+        sx = 1.0 - sx
+    return sx, sy
+
+
+def from_turned(geo: dict, tx: float, ty: float) -> tuple:
+    """The way back of :func:`to_turned`."""
+    if geo.get("flip"):
+        tx = 1.0 - tx
+    turn = geo.get("turn", 0)
+    if turn == 90:
+        tx, ty = ty, 1.0 - tx
+    elif turn == 180:
+        tx, ty = 1.0 - tx, 1.0 - ty
+    elif turn == 270:
+        tx, ty = 1.0 - ty, tx
+    return tx, ty
+
+
+_TRANSPOSE = {90: Image.ROTATE_270, 180: Image.ROTATE_180, 270: Image.ROTATE_90}
+
+
+def turn_image(image: Image.Image, settings: Optional[dict]) -> Image.Image:
+    """The picture with the edit's quarter turn and mirror, and nothing else."""
     geo = normalize_geometry(settings)
+    turn = geo.get("turn", 0)
+    if turn:
+        image = image.transpose(_TRANSPOSE[turn])
+    if geo.get("flip"):
+        image = image.transpose(Image.FLIP_LEFT_RIGHT)
+    return image
+
+
+def turned_by(settings: Optional[dict], by: int = 0, mirror: bool = False) -> dict:
+    """The framing with its finished picture turned a further ``by`` degrees
+    clockwise (a multiple of 90), then mirrored when ``mirror``.
+
+    The crop and the level go with the picture, so the same part of it is kept
+    and a straightened horizon stays straight. Only the framing keys come back.
+    """
+    geo = normalize_geometry(settings)
+    turn, flip = geo.get("turn", 0), bool(geo.get("flip"))
+    angle = geo.get("angle", 0.0)
+    box = None
+    if "crop_x" in geo:
+        box = (geo["crop_x"], geo["crop_y"], geo["crop_w"], geo["crop_h"])
+    for _ in range(int(round(by / 90.0)) % 4):
+        # A further quarter clockwise of a mirrored picture is a quarter the
+        # other way under the mirror.
+        turn = (turn + (270 if flip else 90)) % 360
+        if box:
+            x, y, w, h = box
+            box = (1.0 - y - h, x, h, w)
+    if mirror:
+        flip = not flip
+        angle = -angle
+        if box:
+            x, y, w, h = box
+            box = (1.0 - x - w, y, w, h)
+    out = {"turn": turn, "flip": 1 if flip else 0, "angle": angle}
+    if box:
+        out.update(crop_x=box[0], crop_y=box[1], crop_w=box[2], crop_h=box[3])
+    return normalize_geometry(out)
+
+
+def _turned_box(geo: dict, width: int, height: int) -> tuple:
+    """The kept rectangle on the turned frame, and that frame's size."""
+    tw, th = turned_size(geo, width, height)
     box = (
         geo.get("crop_x", 0.0), geo.get("crop_y", 0.0),
         geo.get("crop_w", 1.0), geo.get("crop_h", 1.0),
     )
-    return fit_box(box, geo.get("angle", 0.0), width, height)
+    return fit_box(box, geo.get("angle", 0.0), tw, th), tw, th
+
+
+def box_of(settings: Optional[dict], width: int, height: int) -> tuple:
+    """The kept rectangle ``(x, y, w, h)`` in fractions of the turned frame,
+    after fitting to the level. ``width`` and ``height`` are the frame's own."""
+    return _turned_box(normalize_geometry(settings), width, height)[0]
 
 
 def apply_geometry(image: Image.Image, settings: Optional[dict]) -> Image.Image:
@@ -137,16 +241,17 @@ def apply_geometry(image: Image.Image, settings: Optional[dict]) -> Image.Image:
     if not geo:
         return image
     width, height = image.size
+    (x, y, w, h), tw, th = _turned_box(geo, width, height)
+    image = turn_image(image, geo)
     angle = geo.get("angle", 0.0)
     if angle:
         # PIL turns counter-clockwise; the stored angle is clockwise.
         image = image.rotate(-angle, resample=Image.BICUBIC, expand=False)
-    x, y, w, h = box_of(geo, width, height)
-    left = int(round(x * width))
-    top = int(round(y * height))
-    right = max(left + 1, min(width, int(round((x + w) * width))))
-    bottom = max(top + 1, min(height, int(round((y + h) * height))))
-    if (left, top, right, bottom) == (0, 0, width, height):
+    left = int(round(x * tw))
+    top = int(round(y * th))
+    right = max(left + 1, min(tw, int(round((x + w) * tw))))
+    bottom = max(top + 1, min(th, int(round((y + h) * th))))
+    if (left, top, right, bottom) == (0, 0, tw, th):
         return image
     return image.crop((left, top, right, bottom))
 
@@ -157,19 +262,20 @@ def source_point(settings: Optional[dict], u: float, v: float,
 
     ``(u, v)`` are fractions of the cropped picture; the result is fractions of
     the uncropped, unturned frame. A loupe looks at the source pixels, so a click
-    on a levelled, cropped preview has to be walked back through both steps.
+    on a levelled, cropped preview has to be walked back through every step.
     """
     geo = normalize_geometry(settings)
-    x, y, w, h = box_of(geo, width, height)
-    px = (x + max(0.0, min(1.0, u)) * w) * width
-    py = (y + max(0.0, min(1.0, v)) * h) * height
+    (x, y, w, h), tw, th = _turned_box(geo, width, height)
+    px = (x + max(0.0, min(1.0, u)) * w) * tw
+    py = (y + max(0.0, min(1.0, v)) * h) * th
     angle = geo.get("angle", 0.0)
     if angle:
-        cx, cy = width / 2.0, height / 2.0
+        cx, cy = tw / 2.0, th / 2.0
         cos, sin = math.cos(math.radians(angle)), math.sin(math.radians(angle))
         dx, dy = px - cx, py - cy
         px, py = cx + cos * dx + sin * dy, cy - sin * dx + cos * dy
-    return (max(0.0, min(1.0, px / width)), max(0.0, min(1.0, py / height)))
+    sx, sy = from_turned(geo, px / tw, py / th)
+    return (max(0.0, min(1.0, sx)), max(0.0, min(1.0, sy)))
 
 
 def shown_point(settings: Optional[dict], sx: float, sy: float,
@@ -178,15 +284,16 @@ def shown_point(settings: Optional[dict], sx: float, sy: float,
     way back of :func:`source_point`. Fractions of the cropped picture, outside
     0..1 when the crop left the point out."""
     geo = normalize_geometry(settings)
-    x, y, w, h = box_of(geo, width, height)
-    px, py = sx * width, sy * height
+    (x, y, w, h), tw, th = _turned_box(geo, width, height)
+    tx, ty = to_turned(geo, sx, sy)
+    px, py = tx * tw, ty * th
     angle = geo.get("angle", 0.0)
     if angle:
-        cx, cy = width / 2.0, height / 2.0
+        cx, cy = tw / 2.0, th / 2.0
         cos, sin = math.cos(math.radians(angle)), math.sin(math.radians(angle))
         dx, dy = px - cx, py - cy
         px, py = cx + cos * dx - sin * dy, cy + sin * dx + cos * dy
-    return ((px / width - x) / w, (py / height - y) / h)
+    return ((px / tw - x) / w, (py / th - y) / h)
 
 
 def _corners(box: tuple) -> list:
