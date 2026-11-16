@@ -1093,12 +1093,22 @@ const MASK_SLIDERS = [
     title: "The dark middle tones where the gradient reaches: hair, dark clothes." },
   { key: "shadows", label: "Shadows", min: -100, max: 100, step: 1, format: signed,
     title: "Open up (right) or deepen the dark end where the gradient reaches." },
-  { key: "temperature", label: "Temp", min: -100, max: 100, step: 1, format: signed,
-    title: "Cooler (left) or warmer where the gradient reaches." },
+  { key: "whites", label: "Whites", min: -100, max: 100, step: 1, format: signed,
+    title: "Set the white point where the mask reaches, as the Whites slider does: a clean white on a shirt." },
+  { key: "blacks", label: "Blacks", min: -100, max: 100, step: 1, format: signed,
+    title: "Set the black point where the mask reaches, as the Blacks slider does: a true black on a backdrop." },
+  { key: "temperature", label: "Temp", min: -200, max: 200, step: 1, format: signed,
+    title: "Cooler (left) or warmer where the mask reaches. ±100 is the Temp slider's reach; ±200 goes twice as far, for a face by a window in a tungsten room." },
+  { key: "tint", label: "Tint", min: -200, max: 200, step: 1, format: signed,
+    title: "Greener (left) or more magenta where the mask reaches: take out the green of tube lights or a stage's magenta wash. ±100 is the Tint slider's reach." },
+  { key: "hue", label: "Hue", min: -180, max: 180, step: 1, format: (v) => `${v > 0 ? "+" : ""}${v}°`,
+    title: "Turn the colours the mask reaches round the colour wheel, keeping their brightness: change the colour of a shirt. Greys stay grey." },
   { key: "saturation", label: "Saturation", min: -200, max: 200, step: 1, format: signed,
     title: "More or less colour where the gradient reaches, added to the Saturation slider's: with the picture at -100, +200 here is +100 where the gradient is whole." },
   { key: "clarity", label: "Clarity", min: -100, max: 100, step: 1, format: signed,
     title: "Mid-tone local contrast where the gradient reaches." },
+  { key: "sharpness", label: "Sharpness", min: -100, max: 100, step: 1, format: signed,
+    title: "More or less of the sharpening where the mask reaches: crisper eyes or a label, softer skin. +100 with Sharpening at 0 sharpens there as Sharpening 100 would." },
   { key: "blur", label: "Blur", min: 0, max: 100, step: 1, format: (v) => `${v}`,
     title: "Put what the mask reaches out of focus, as a lens would: invert a subject or people mask to blur the background, or soften a busy corner. Only what it reaches is spread, so a person left out of it does not glow into the blur." },
 ];
@@ -1120,6 +1130,11 @@ const SKIN_LOOKS = [
 // The masks whose people can have their skin retouched.
 const SKIN_KINDS = ["people", "faces", "object"];
 const MASK_KEYS = [...MASK_SLIDERS, ...SKIN_SLIDERS].map((d) => d.key);
+// Every control of a mask at once, as a share: shown first, resting at 100.
+const MASK_AMOUNT_DEF = { key: "amount", label: "Amount", min: 0, max: 200, step: 1, rest: 100, format: (v) => `${v}%`,
+  title: "Every control of this mask at once: 50% is half of each, 0% turns the mask off. The sliders keep the values you set." };
+const maskAmount = (m) => (m?.amount ?? 100);
+const amountNote = (m) => (maskAmount(m) !== 100 ? [`Amount ${maskAmount(m)}%`] : []);
 const FEATHER_DEF = { key: "feather", label: "Feather", min: 0, max: 100, step: 1, format: (v) => `${v}`,
   title: "How much of the ellipse the fade takes: 0 is a hard edge, 100 fades from the centre." };
 const ANGLE_DEF = { key: "angle", label: "Angle", min: -90, max: 90, step: 1, format: (v) => `${v}°`,
@@ -1170,7 +1185,7 @@ function frameGeometry(settings) {
 }
 
 function maskIsActive(m) {
-  return MASK_KEYS.some((k) => Number(m?.[k] || 0) !== 0);
+  return maskAmount(m) > 0 && MASK_KEYS.some((k) => Number(m?.[k] || 0) !== 0);
 }
 
 // The parts of people a people mask can name (backend adjust/parts.py), in the
@@ -1214,8 +1229,8 @@ function maskKind(m) {
 
 // A mask as the save form lists it: what it reaches and every control it moves.
 function maskSummary(m) {
-  const set = [...MASK_SLIDERS, ...SKIN_SLIDERS].filter((d) => Number(m[d.key] || 0) !== 0)
-    .map((d) => `${d.label} ${d.format(m[d.key])}`);
+  const set = [...amountNote(m), ...[...MASK_SLIDERS, ...SKIN_SLIDERS].filter((d) => Number(m[d.key] || 0) !== 0)
+    .map((d) => `${d.label} ${d.format(m[d.key])}`)];
   return `${maskKind(m)}${set.length ? ` · ${set.join(", ")}` : ""}`;
 }
 
@@ -2488,6 +2503,11 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
   onObjectFind, onObjectKeepFound }) {
   const m = selected >= 0 ? masks[selected] : null;
   const set = (key, value) => onChange(selected, { ...m, [key]: value });
+  // 100 is no Amount at all, as the backend keeps it.
+  const setAmount = (value) => {
+    const { amount: _was, ...rest } = m;
+    onChange(selected, Number(value) === 100 ? rest : { ...rest, amount: Number(value) });
+  };
   return (
     <div className="space-y-2" data-testid="mask-panel">
       <div className="flex flex-wrap gap-1">
@@ -2552,6 +2572,8 @@ function MaskPanel({ masks, selected, maskMode, brush, showShade, onShowShade, o
             </Controls>
           )}
           <Controls>
+            <Slider key="amount" def={MASK_AMOUNT_DEF} value={maskAmount(m)}
+              onChange={(key, value) => setAmount(value)} onReset={() => setAmount(100)} />
             {MASK_SLIDERS.map((def) => (
               <Slider key={def.key} def={def} value={Number(m[def.key]) || 0}
                 onChange={(key, value) => set(key, value)} onReset={() => set(def.key, 0)} />
@@ -2728,6 +2750,9 @@ function maskStep(before, after) {
   const strokes = (a.strokes || []).length, had = (b.strokes || []).length;
   if (strokes > had) return { label: `${name}: ${a.strokes[strokes - 1].erase ? "erase" : "brush"} stroke`, group: null };
   if (strokes < had) return { label: `${name}: ${strokes ? "stroke taken back" : "strokes cleared"}`, group: null };
+  if (maskAmount(a) !== maskAmount(b)) {
+    return { label: `${name}: Amount ${maskAmount(a)}%`, group: `masks:${i}:amount` };
+  }
   const moved = MASK_SLIDERS.find((d) => Number(a[d.key] || 0) !== Number(b[d.key] || 0));
   if (moved) return { label: `${name}: ${moved.label} ${moved.format(a[moved.key] || 0)}`, group: `masks:${i}:${moved.key}` };
   return { label: `${name}: moved`, group: `masks:${i}:shape` };
@@ -2850,7 +2875,7 @@ function controlState(def, value, onChange) {
   const stored = Number(value) || 0;
   const shown = def.invert ? def.max - stored : stored;
   const set = (v) => onChange(def.key, def.invert ? def.max - v : v);
-  return { shown, set, changed: !def.tool && stored !== 0 };
+  return { shown, set, changed: !def.tool && stored !== (def.rest ?? 0) };
 }
 
 // Where along the range a value sits, 0 to 1, and where the zero is (a signed
@@ -2907,7 +2932,7 @@ function LineSlider({ def, value, onChange, onReset }) {
   // An inverted control is stored as the distance from its default, so the
   // untouched state is absent from the edit, but shown from the other end.
   const shown = def.invert ? def.max - value : value;
-  const changed = !def.tool && Number(value) !== 0;
+  const changed = !def.tool && Number(value) !== (def.rest ?? 0);
   return (
     <label className="flex items-center gap-2 text-xs">
       <span

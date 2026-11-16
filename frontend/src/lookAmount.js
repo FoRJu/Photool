@@ -72,12 +72,13 @@ export function lookIsLive(settings, keys, values, amount, zero = {}, limits = {
 }
 
 // A mask's controls and their ranges (backend adjust/masks.py). Its kind, its
-// place (a range, a depth band, the areas of people it names) and whether it is
-// inverted are choices, kept at any amount.
+// place (a range, a depth band, the areas of people it names), whether it is
+// inverted and its own Amount are choices, kept at any amount.
 const MASK_LIMITS = {
   exposure: [-4, 4], saturation: [-200, 200], blur: [0, 100], smooth: [0, 100], even: [0, 100],
   contrast: [-100, 100], highlights: [-100, 100], lights: [-100, 100], darks: [-100, 100],
-  shadows: [-100, 100], temperature: [-100, 100], clarity: [-100, 100], texture: [-100, 100],
+  shadows: [-100, 100], whites: [-100, 100], blacks: [-100, 100], temperature: [-200, 200],
+  tint: [-200, 200], hue: [-180, 180], clarity: [-100, 100], sharpness: [-100, 100], texture: [-100, 100],
 };
 export const MASK_CONTROL_KEYS = Object.keys(MASK_LIMITS);
 
@@ -107,5 +108,6 @@ export function lookMasksLive(masks, name, lookMasks, amount) {
   const want = scaleMasks(lookMasks, amount);
   if (mine.length !== want.length) return false;
   return mine.every((m, i) => m.kind === want[i].kind && !!m.invert === !!want[i].invert
+    && (m.amount ?? 100) === (want[i].amount ?? 100)
     && MASK_CONTROL_KEYS.every((k) => Math.abs((Number(m[k]) || 0) - (Number(want[i][k]) || 0)) < 1e-9));
 }
