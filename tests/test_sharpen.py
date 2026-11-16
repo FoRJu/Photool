@@ -102,6 +102,18 @@ class TestWhatItDoes:
         assert texture(masked) < 0.3 * texture(open_)
         assert _contrast_across(masked, 48) > _contrast_across(enc, 48)
 
+    def test_an_amount_map_sharpens_each_pixel_by_its_own_amount(self):
+        # The masks' sharpness (adjust.render): a map in place of the one amount.
+        enc = _edge()
+        flat = sharpen(enc, {'sharpen': 60}, amount_map=np.full(enc.shape[:2], 60.0, np.float32))
+        assert np.allclose(flat, sharpen(enc, {'sharpen': 60}), atol=1e-6)
+        assert sharpen(enc, {}, amount_map=np.zeros(enc.shape[:2], np.float32)) is enc
+        half = np.zeros(enc.shape[:2], np.float32)
+        half[:24] = 100.0                      # the top half only, with no global amount
+        out = sharpen(enc, {}, amount_map=half)
+        assert _contrast_across(out[:24], 48) > _contrast_across(enc[:24], 48)
+        assert np.array_equal(out[24:], enc[24:])
+
     def test_the_output_stays_in_range(self):
         out = sharpen(_edge(low=0.0, high=1.0), {"sharpen": 150, "sharpen_detail": 75})
         assert out.min() >= 0.0 and out.max() <= 1.0

@@ -71,13 +71,21 @@ frame's width (``rx``) and height (``ry``).
 
 The controls are the ones a mask is for, on the global sliders' scales:
 exposure in stops (±4), saturation on -200..200 (it adds to the global
-slider's, so it can undo a picture at -100 and go as far again), and
-contrast, highlights, shadows, temperature and clarity on -100..100. They are performed where the global
-controls are (adjust.render): exposure and temperature in linear light,
-contrast, highlights and shadows as a change of the tone curve on the frame's
-base, clarity on its detail, saturation on the finished colour, each scaled per
-pixel by the mask's weight. So a mask's +1 EV is the same stop as the
-exposure slider's, where the mask is whole.
+slider's, so it can undo a picture at -100 and go as far again), temperature
+and tint on -200..200 (±100 is the global slider's reach, ±200 twice as many
+stops again), hue in degrees (-180..180), and contrast, highlights, lights,
+darks, shadows, whites, blacks, clarity and sharpness on -100..100. They are
+performed where the global controls are (adjust.render): exposure, temperature
+and tint in linear light, the tone controls as a change of the tone curve on the
+frame's base, clarity on its detail, hue and saturation on the finished colour,
+sharpness as more or less of the edit's sharpening, each scaled per pixel by the
+mask's weight. So a mask's +1 EV is the same stop as the exposure slider's,
+where the mask is whole.
+
+``amount`` (0..200, 100 when absent) is every control of the mask at that
+share: not a control of its own but a way to ease the whole mask at once. The
+controls keep the values they were set to; ``effective`` is the mask as it is
+rendered.
 
 A mask with every control at zero is kept: it is drawn, and its controls are
 about to be moved. It changes no pixel.
@@ -94,8 +102,9 @@ from typing import Optional
 import numpy as np
 
 # The controls a mask carries, and their ranges.
-MASK_SLIDERS = ("exposure", "contrast", "highlights", "lights", "darks", "shadows", "temperature",
-                "saturation", "clarity", "smooth", "even", "texture", "blur")
+MASK_SLIDERS = ("exposure", "contrast", "highlights", "lights", "darks", "shadows", "whites", "blacks",
+                "temperature", "tint", "hue", "saturation", "clarity", "sharpness",
+                "smooth", "even", "texture", "blur")
 # Blur, 0..100, puts what the mask reaches out of focus as a lens would (adjust.defocus).
 # Skin, on the people a mask reaches (adjust.skin): smooth and even 0..100,
 # texture -100..100.
@@ -104,6 +113,12 @@ MAX_MASK_EXPOSURE = 4.0
 # Saturation adds to the global slider's (adjust.render), so a gradient reaches
 # twice as far: +200 over a picture at -100 is +100 where it is whole.
 MAX_MASK_SATURATION = 200.0
+# Temperature and tint: ±100 is the global slider's gain, ±200 twice its stops,
+# enough for a face by a window in a tungsten room.
+MAX_MASK_WB = 200.0
+MAX_MASK_HUE = 180.0
+# Amount, the share of every control: 100 is the mask as set.
+MAX_MASK_AMOUNT = 200
 MAX_MASKS = 16
 # The longest name of the look a mask came from.
 MAX_LOOK_NAME = 80
@@ -285,21 +300,53 @@ def normalize_mask(mask) -> Optional[dict]:
     if sec:
         out["section"] = sec
     for key in MASK_SLIDERS:
-        if key == "exposure":
-            value = round(_num(mask.get(key), -MAX_MASK_EXPOSURE, MAX_MASK_EXPOSURE, 0.0), 3)
-        elif key == "saturation":
-            value = int(round(_num(mask.get(key), -MAX_MASK_SATURATION, MAX_MASK_SATURATION, 0.0)))
-        elif key in ("smooth", "even", "blur"):
-            value = int(round(_num(mask.get(key), 0.0, 100.0, 0.0)))
-        else:
-            value = int(round(_num(mask.get(key), -100.0, 100.0, 0.0)))
+        low, high = control_range(key)
+        value = _num(mask.get(key), low, high, 0.0)
+        value = round(value, 3) if key == "exposure" else int(round(value))
         if value:
             out[key] = value
+    amount = int(round(_num(mask.get("amount"), 0.0, MAX_MASK_AMOUNT, 100.0)))
+    if amount != 100:
+        out["amount"] = amount
     look = mask.get("look")
     if isinstance(look, str):
         look = "".join(c for c in " ".join(look.split()) if c.isprintable())[:MAX_LOOK_NAME].strip()
         if look:
             out["look"] = look
+    return out
+
+
+def control_range(key: str) -> tuple:
+    """The (low, high) a mask's control is kept in."""
+    if key == "exposure":
+        return -MAX_MASK_EXPOSURE, MAX_MASK_EXPOSURE
+    if key == "saturation":
+        return -MAX_MASK_SATURATION, MAX_MASK_SATURATION
+    if key in ("temperature", "tint"):
+        return -MAX_MASK_WB, MAX_MASK_WB
+    if key == "hue":
+        return -MAX_MASK_HUE, MAX_MASK_HUE
+    if key in ("smooth", "even", "blur"):
+        return 0.0, 100.0
+    return -100.0, 100.0
+
+
+def effective(mask: dict) -> dict:
+    """The mask as it is rendered: every control at its ``amount``'s share,
+    within its range, and ``amount`` itself gone. A mask at 100 is returned as
+    it is, so an edit that never moved Amount renders exactly as before.
+
+    The values are not rounded: half of a temperature of 15 is 7.5."""
+    if "amount" not in mask:
+        return mask
+    share = mask["amount"] / 100.0
+    out = {k: v for k, v in mask.items() if k != "amount" and k not in MASK_SLIDERS}
+    for key in MASK_SLIDERS:
+        if mask.get(key):
+            low, high = control_range(key)
+            value = min(high, max(low, mask[key] * share))
+            if value:
+                out[key] = value
     return out
 
 
@@ -419,10 +466,10 @@ def normalize_masks(masks) -> Optional[list]:
 
 
 def active(masks: Optional[list]) -> list:
-    """The masks that change something: a control moved, and somewhere to
-    act (a brush with nothing painted reaches no pixel; inverted, it reaches
-    every one)."""
-    return [m for m in masks or []
+    """The masks that change something, as they are rendered (``effective``):
+    a control moved, with an amount above 0, and somewhere to act (a brush with
+    nothing painted reaches no pixel; inverted, it reaches every one)."""
+    return [m for m in (effective(m) for m in masks or [])
             if any(k in m for k in MASK_SLIDERS)
             and (m["kind"] != "brush" or m.get("invert")
                  or any(not s.get("erase") for s in m.get("strokes", ())))]

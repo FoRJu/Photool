@@ -735,17 +735,55 @@ def _hue_rgb(hue: float) -> np.ndarray:
     return np.array(table[int(h) % 6], dtype=np.float32)
 
 
-def _apply_look(enc: np.ndarray, s: dict, local_saturation: Optional[np.ndarray] = None) -> np.ndarray:
+def _apply_look(enc: np.ndarray, s: dict, local_saturation: Optional[np.ndarray] = None,
+                local_hue: Optional[np.ndarray] = None) -> np.ndarray:
     """Vibrance, saturation, fade and split toning on display-encoded colour.
 
     ``local_saturation`` is the gradients' saturation over these pixels, (H, W)
     on the slider's scale divided by 100: added to the edit's own, so the
     global slider sets the base and a gradient moves it from there (the whole
     picture grey, one shirt still red), rather than one scaling the other.
+
+    ``local_hue`` is the masks' hue over these pixels, (H, W) in degrees: the
+    colour is turned round the wheel there first, so the saturation then works
+    on the turned colour.
     """
+    if local_hue is not None:
+        enc = in_strips(_turn_hue, enc, local_hue)
     if local_saturation is None:
         return in_strips(lambda strip: _look_of(strip, s), enc)
     return in_strips(lambda strip, local: _look_of(strip, s, local[..., None]), enc, local_saturation)
+
+
+_SQRT3 = math.sqrt(3.0)
+
+
+def _turn_hue(enc: np.ndarray, degrees: np.ndarray) -> np.ndarray:
+    """``enc`` turned round the grey axis by ``degrees`` at each pixel, its
+    brightness kept: at 120 a pure red becomes a green as bright as that red.
+
+    A turn about grey leaves grey itself where it was, so a white shirt stays
+    white whatever the mask's hue. A pixel at 0 degrees is left exactly as it
+    was."""
+    theta = np.radians(degrees.astype(np.float32))[..., None]
+    c, s = np.cos(theta), np.sin(theta)
+    grey = enc.mean(axis=2, keepdims=True)
+    d = enc - grey
+    r, g, b = d[..., 0:1], d[..., 1:2], d[..., 2:3]
+    # Rodrigues: d turned about (1, 1, 1) / sqrt(3), to which d is at right angles.
+    across = np.concatenate([b - g, r - b, g - r], axis=2) / np.float32(_SQRT3)
+    out = grey + c * d + s * across
+    # Back to the brightness it had; a colour that then falls outside 0..1 (a
+    # red turned to a green that bright cannot be) loses colour, not brightness.
+    y = (enc @ LUMA)[..., None]
+    out = out + (y - (out @ LUMA)[..., None])
+    low, high = out.min(axis=2, keepdims=True), out.max(axis=2, keepdims=True)
+    k = np.ones_like(y)
+    k = np.where(low < 0.0, np.minimum(k, y / np.maximum(y - low, 1e-6)), k)
+    k = np.where(high > 1.0, np.minimum(k, (1.0 - y) / np.maximum(high - y, 1e-6)), k)
+    out = y + (out - y) * k
+    out = np.where(theta != 0.0, out, enc)
+    return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
 def _look_of(enc: np.ndarray, s: dict, local_saturation=0.0) -> np.ndarray:
@@ -1062,7 +1100,31 @@ _TONAL_KEYS = ("highlights", "lights", "darks", "shadows", "whites", "blacks", "
 _LIGHT_AND_TONE_KEYS = ("exposure", "temperature", "tint", "wb_kelvin", "wb_tint", "flat", "style", "style_fade",
                         "masks") + _TONAL_KEYS
 # A gradient's controls that act through the tone curve on the base.
-_MASK_TONE_KEYS = ("contrast", "highlights", "lights", "darks", "shadows")
+_MASK_TONE_KEYS = ("contrast", "highlights", "lights", "darks", "shadows", "whites", "blacks")
+# A mask's controls that act after the light and tone (on the finished colour,
+# and the sharpening), so moving them does not redo those stages.
+_MASK_LATER_KEYS = ("saturation", "hue", "sharpness")
+
+
+def _mask_white_balance(temperature: float, tint: float) -> np.ndarray:
+    """A mask's temperature and tint as a log2 gain on red, green and blue.
+
+    Within ±100 each is the global slider's own gain (adjust.develop.point_of),
+    so a mask saved before the range was widened renders as it did. Past 100 the
+    stops carry on in a straight line: ±200 is exactly twice the stops of ±100.
+    """
+    log_gain = None
+    for name, value in (("temperature", temperature), ("tint", tint)):
+        if not value:
+            continue
+        inside = max(-100.0, min(100.0, value))
+        local = point_of({name: inside}) or {}
+        part = np.log2(np.array([local.get("wb_r", 1.0), local.get("wb_g", 1.0),
+                                 local.get("wb_b", 1.0)], dtype=np.float32))
+        if abs(value) > 100.0:
+            part = part * np.float32(abs(value) / 100.0)
+        log_gain = part if log_gain is None else log_gain + part
+    return np.zeros(3, dtype=np.float32) if log_gain is None else log_gain
 
 
 def mask_reach(frame: LinearFrame, m: dict) -> Optional[np.ndarray]:
@@ -1132,8 +1194,8 @@ def _light_and_tone(frame: LinearFrame, clean: dict, change: Optional[dict]) -> 
     curve, the mixer or a grain slider redoes only what comes after, and the
     camera look is worked out once until a light or tone control moves.
     """
-    # A gradient's saturation acts later, with the look (_mask_saturation).
-    key = (tuple((k, [{n: v for n, v in m.items() if n != "saturation"} for m in clean[k]]
+    # A gradient's saturation, hue and sharpness act later (_mask_map).
+    key = (tuple((k, [{n: v for n, v in m.items() if n not in _MASK_LATER_KEYS} for m in clean[k]]
                   if k == "masks" else clean[k]) for k in _LIGHT_AND_TONE_KEYS if k in clean),
            tuple(sorted(change.items())) if change else None)
     cached = frame._toned
@@ -1155,16 +1217,15 @@ def _light_and_tone(frame: LinearFrame, clean: dict, change: Optional[dict]) -> 
 
     # Gradients (adjust.masks): each control scaled by the gradient's weight at
     # every pixel, in the stage where its global slider acts. Exposure is a map
-    # of stops added to the edit's own; temperature a per-pixel white balance.
+    # of stops added to the edit's own; temperature and tint a per-pixel white
+    # balance, in log gain, so the weight scales stops.
     layers = _mask_layers(frame, clean.get("masks"))
     ev_map = ev
     for mask, w in layers:
         if mask.get("exposure"):
             ev_map = ev_map + w * np.float32(mask["exposure"])
-        if mask.get("temperature"):
-            local = point_of({"temperature": mask["temperature"]}) or {}
-            log_gain = np.log2(np.array([local.get("wb_r", 1.0), local.get("wb_g", 1.0),
-                                         local.get("wb_b", 1.0)], dtype=np.float32))
+        if mask.get("temperature") or mask.get("tint"):
+            log_gain = _mask_white_balance(mask.get("temperature", 0), mask.get("tint", 0))
             rgb = rgb * np.exp2(w[..., None] * log_gain)
     mask_tone = [(m, w) for m, w in layers
                  if any(m.get(k) for k in _MASK_TONE_KEYS) or m.get("clarity")]
@@ -1216,17 +1277,24 @@ def _light_and_tone(frame: LinearFrame, clean: dict, change: Optional[dict]) -> 
     return enc.copy()
 
 
-def _mask_saturation(frame: LinearFrame, masks: Optional[list]) -> Optional[np.ndarray]:
-    """The gradients' saturation over the frame, (H, W) on the slider's scale
-    divided by 100, or ``None`` when none of them moves it."""
-    if not any(m.get("saturation") for m in masks or ()):
+def _mask_map(frame: LinearFrame, masks: Optional[list], key: str, per: float = 1.0) -> Optional[np.ndarray]:
+    """One control of the masks over the frame, (H, W): each mask's value
+    divided by ``per`` and scaled by its weight, summed. ``None`` when none of
+    them moves it."""
+    if not any(m.get(key) for m in masks or ()):
         return None
     out = None
     for mask, w in _mask_layers(frame, masks):
-        if mask.get("saturation"):
-            part = w * np.float32(mask["saturation"] / 100.0)
+        if mask.get(key):
+            part = w * np.float32(mask[key] / per)
             out = part if out is None else out + part
     return out
+
+
+def _mask_saturation(frame: LinearFrame, masks: Optional[list]) -> Optional[np.ndarray]:
+    """The gradients' saturation over the frame, (H, W) on the slider's scale
+    divided by 100, or ``None`` when none of them moves it."""
+    return _mask_map(frame, masks, "saturation", 100.0)
 
 
 def develop_frame(
@@ -1253,11 +1321,14 @@ def develop_frame(
         clean.pop("wb_kelvin")
         clean.pop("wb_tint", None)
     if "masks" in clean:
-        from adjust.masks import active
+        from adjust.masks import active, effective
 
         # A gradient that has been drawn but changes nothing is no edit yet.
         if not active(clean["masks"]):
             del clean["masks"]
+        elif any("amount" in m for m in clean["masks"]):
+            # Each mask at its Amount, for every stage after this one.
+            clean["masks"] = [effective(m) for m in clean["masks"]]
     if "nr_luma" in clean or "nr_color" in clean:
         # Before everything, the spots included: they are healed from clean pixels.
         frame = noise_reduced(frame, clean.pop("nr_luma", 0), clean.pop("nr_color", 0), noise_wait)
@@ -1339,16 +1410,24 @@ def develop_frame(
         enc = _apply_mixer(enc, clean)
 
     local_saturation = _mask_saturation(frame, clean.get("masks"))
-    if local_saturation is not None or any(key in clean for key in
-                                           ("vibrance", "saturation", "fade", "shadow_sat", "highlight_sat")):
-        enc = _apply_look(enc, clean, local_saturation)
+    # A mask's hue turns the colour it reaches; a grey picture has none to turn.
+    local_hue = None if mono else _mask_map(frame, clean.get("masks"), "hue")
+    if local_saturation is not None or local_hue is not None or any(
+            key in clean for key in ("vibrance", "saturation", "fade", "shadow_sat", "highlight_sat")):
+        enc = _apply_look(enc, clean, local_saturation, local_hue)
 
-    if "sharpen" in clean:
+    local_sharpness = _mask_map(frame, clean.get("masks"), "sharpness")
+    if "sharpen" in clean or local_sharpness is not None:
         # Last on the colour, before framing and grain: it sharpens the picture
-        # as finished, and the grain laid on after is not sharpened with it.
+        # as finished, and the grain laid on after is not sharpened with it. A
+        # mask's sharpness adds to the edit's amount where it reaches, so a mask
+        # can sharpen eyes on a picture that is not sharpened at all.
         from adjust.sharpen import sharpen
 
-        enc = sharpen(enc, clean, frame.scale)
+        amount = None
+        if local_sharpness is not None:
+            amount = np.maximum(np.float32(clean.get("sharpen", 0)) + local_sharpness, np.float32(0.0))
+        enc = sharpen(enc, clean, frame.scale, amount)
 
     if finished_second is not None:
         # After the sharpening, which the second has had by its own edit, and before the

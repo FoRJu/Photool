@@ -52,8 +52,10 @@ _EPS = 1e-5
 
 
 def wanted(masks: Optional[list]) -> list:
-    """The masks that retouch skin."""
-    return [m for m in masks or [] if any(m.get(k) for k in SKIN_SLIDERS)]
+    """The masks that retouch skin, each at its Amount (adjust.masks.effective)."""
+    from adjust.masks import effective
+
+    return [m for m in (effective(m) for m in masks or []) if any(m.get(k) for k in SKIN_SLIDERS)]
 
 
 def retouched(frame, masks: list, reach):
@@ -199,5 +201,5 @@ def _region(rgb: np.ndarray, weight: np.ndarray, face: float, mask: dict) -> np.
 
 # The other controls a mask carries, which do not change what the retouch does
 # and so are not part of what it is kept by.
-_OTHER_SLIDERS = ("exposure", "contrast", "highlights", "lights", "darks", "shadows", "temperature",
-                  "saturation", "clarity", "blur")
+_OTHER_SLIDERS = ("exposure", "contrast", "highlights", "lights", "darks", "shadows", "whites", "blacks",
+                  "temperature", "tint", "hue", "saturation", "clarity", "sharpness", "blur")
