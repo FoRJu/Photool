@@ -234,12 +234,24 @@ def card_available() -> bool:
     onnxruntime has a card to run it on that has not failed already."""
     if _card_failed or recognizer_file(_recognizer) == RECOGNIZER_MODEL:
         return False
+    return _has_card()
+
+
+# Whether onnxruntime has a card, asked once: importing it the first time takes a
+# second, and the answer cannot change while the app runs.
+_card_known: Optional[tuple] = None
+
+
+def _has_card() -> bool:
+    global _card_known
     try:
         import onnxruntime as ort
     except ImportError:
         return False
-    providers = ort.get_available_providers()
-    return "DmlExecutionProvider" in providers or "CUDAExecutionProvider" in providers
+    if _card_known is None or _card_known[0] is not ort:
+        providers = ort.get_available_providers()
+        _card_known = (ort, "DmlExecutionProvider" in providers or "CUDAExecutionProvider" in providers)
+    return _card_known[1]
 
 
 def _card_describe(path: str, blob: np.ndarray) -> Optional[np.ndarray]:
