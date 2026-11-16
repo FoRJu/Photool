@@ -70,3 +70,42 @@ export function lookIsLive(settings, keys, values, amount, zero = {}, limits = {
   const scaled = scaleLook(values, amount, limits);
   return keys.every((k) => sameValue(k, settings?.[k], k in scaled ? scaled[k] : zero[k]));
 }
+
+// A mask's controls and their ranges (backend adjust/masks.py). Its kind, its
+// place (a range, a depth band, the areas of people it names) and whether it is
+// inverted are choices, kept at any amount.
+const MASK_LIMITS = {
+  exposure: [-4, 4], saturation: [-200, 200], blur: [0, 100], smooth: [0, 100], even: [0, 100],
+  contrast: [-100, 100], highlights: [-100, 100], lights: [-100, 100], darks: [-100, 100],
+  shadows: [-100, 100], temperature: [-100, 100], clarity: [-100, 100], texture: [-100, 100],
+};
+export const MASK_CONTROL_KEYS = Object.keys(MASK_LIMITS);
+
+/** A look's ``masks`` at ``amount`` (0..150): every control scaled and clamped
+ * to its range, exposure in 0.05 steps. A control that comes to nothing is left
+ * out; the mask itself is kept, so it stays in the list to be turned up again. */
+export function scaleMasks(masks, amount) {
+  const a = clamp(Number(amount) || 0, 0, 150);
+  return (masks || []).map((m) => {
+    if (a === 100) return { ...m };
+    const out = { ...m };
+    for (const [key, [lo, hi]] of Object.entries(MASK_LIMITS)) {
+      if (typeof m[key] !== "number") continue;
+      const raw = clamp((m[key] * a) / 100, lo, hi);
+      let next = key === "exposure" ? Math.round(raw * 20) / 20 : Math.round(raw);
+      if (Object.is(next, -0)) next = 0;
+      if (next === 0) delete out[key]; else out[key] = next;
+    }
+    return out;
+  });
+}
+
+/** Whether the masks put on by the look named ``name`` are still the look's
+ * ``masks`` at ``amount``: as many, of the same kinds, each control as given. */
+export function lookMasksLive(masks, name, lookMasks, amount) {
+  const mine = (masks || []).filter((m) => m.look === name);
+  const want = scaleMasks(lookMasks, amount);
+  if (mine.length !== want.length) return false;
+  return mine.every((m, i) => m.kind === want[i].kind && !!m.invert === !!want[i].invert
+    && MASK_CONTROL_KEYS.every((k) => Math.abs((Number(m[k]) || 0) - (Number(want[i][k]) || 0)) < 1e-9));
+}

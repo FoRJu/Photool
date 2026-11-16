@@ -1,6 +1,6 @@
 import { Component, Fragment, useState, useEffect, useCallback, useRef, useMemo } from "react";
 
-import DevelopView, { keysOfSections, lookSections } from "./DevelopView.jsx";
+import DevelopView, { keysOfSections, lookSections, lookMasksOf } from "./DevelopView.jsx";
 import LookOnSelection, { EACH_CAMERAS } from "./LookOnSelection.jsx";
 import DoubleExposureDialog from "./DoubleExposureDialog.jsx";
 import SameMomentDialog, { shiftLabel } from "./SameMomentDialog.jsx";
@@ -5211,15 +5211,22 @@ function PhotoolApp({ access }) {
     try {
       for (const [name, filepaths] of groups) {
         const look = presets.find((x) => x.name === name);
+        // Its masks, each marked with the look's name, go on beside each photo's
+        // own and take the place of an earlier look's (the server's merge).
+        const masks = lookMasksOf(look);
+        const keys = [...keysOfSections(lookSections(look)), ...(masks.length ? ["masks"] : [])];
+        const { masks: _stored, ...settings } = look.settings || {}; // eslint-disable-line no-unused-vars
         const res = await fetch(`${API}/photos/edit/batch`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...look.settings, filepaths, keys: keysOfSections(lookSections(look)), paste_as: "copied" }),
+          body: JSON.stringify({ ...settings, ...(masks.length ? { masks } : {}), filepaths, keys, paste_as: "copied" }),
         });
         const out = await res.json();
         if (!res.ok) { setPickMessage(out.detail || `“${name}” was not put on`); break; }
         for (const [fp, stored] of Object.entries(out.edits || {})) handleEditSaved(fp, stored);
         Object.assign(previous, out.previous || {});
-        done.push(`“${name}” on ${out.copied.length} photo${out.copied.length === 1 ? "" : "s"}`);
+        const short = Object.keys(out.masks_left_out || {}).length;
+        done.push(`“${name}” on ${out.copied.length} photo${out.copied.length === 1 ? "" : "s"}`
+          + (short ? ` (${short} had no room for all its masks)` : ""));
       }
       if (done.length) {
         setPickMessage(`Put ${done.join(", ")}` + (left ? ` · ${left} left: no look for their camera` : ""));

@@ -224,6 +224,60 @@ class TestLooksOfYourOwn:
         assert res.status_code == 400
 
 
+class TestLooksWithMasks:
+    SKY = {"kind": "sky", "exposure": -0.5, "highlights": -30}
+    BRUSH = {"kind": "brush", "exposure": 1, "strokes": [{"points": [[0.5, 0.5]], "size": 0.05}]}
+    ONE = {"kind": "faces", "person": 2, "exposure": 0.5}
+
+    def _save(self, client, name, sections, settings):
+        res = client.post("/api/export/develop/presets", json={
+            "name": name, "sections": sections, "settings": settings})
+        assert res.status_code == 200, res.text
+        return next(p for p in res.json()["presets"] if p["name"] == name)
+
+    def test_the_masks_that_find_their_place_are_kept_when_ticked(self, client):
+        sky = {**self.SKY, "section": {"x1": 0, "y1": 0, "x2": 0.5, "y2": 0.5, "feather": 0}}
+        saved = self._save(client, "Sky drama", ["light", "masks"],
+                           {"contrast": 20, "masks": [sky, self.BRUSH, self.ONE]})
+        assert saved["settings"] == {"contrast": 20, "masks": [{**self.SKY, "invert": False, "look": "Sky drama"}]}
+        assert saved["sections"] == ["light", "masks"]
+
+    def test_without_the_section_the_masks_are_left_out(self, client):
+        saved = self._save(client, "Plain", ["light"], {"contrast": 20, "masks": [self.SKY]})
+        assert saved["settings"] == {"contrast": 20}
+
+    def test_a_look_of_masks_alone_is_a_look(self, client):
+        saved = self._save(client, "Only sky", ["masks"], {"masks": [self.SKY]})
+        assert saved["settings"]["masks"] == [{**self.SKY, "invert": False, "look": "Only sky"}]
+        # None that can travel: the section goes, and there is nothing to save.
+        res = client.post("/api/export/develop/presets", json={
+            "name": "Brush", "sections": ["masks"], "settings": {"masks": [self.BRUSH]}})
+        assert res.status_code == 400
+        saved = self._save(client, "Brush and light", ["light", "masks"], {"contrast": 5, "masks": [self.BRUSH]})
+        assert saved["settings"] == {"contrast": 5} and saved["sections"] == ["light"]
+
+    def test_the_lut_names_the_masks_it_leaves_out(self, client):
+        self._save(client, "Sky and tone", ["light", "masks"], {"contrast": 20, "masks": [self.SKY]})
+        res = client.get("/api/export/develop/presets/Sky%20and%20tone/lut?size=17")
+        assert res.status_code == 200, res.text
+        assert res.headers["x-lut-left-out"] == "Masks"
+        self._save(client, "Sky only", ["masks"], {"masks": [self.SKY]})
+        res = client.get("/api/export/develop/presets/Sky%20only/lut?size=17")
+        assert res.status_code == 400 and "Masks" in res.json()["detail"]
+
+    def test_a_look_on_a_selection_adds_its_masks_beside_each_photos_own(self, client):
+        own = {"kind": "radial", "cx": 0.5, "cy": 0.5, "rx": 0.2, "ry": 0.2, "exposure": 1.0}
+        _edit(client, contrast=30, masks=[own, {**self.SKY, "look": "Earlier"}])
+        look = self._save(client, "Sky drama", ["masks"], {"masks": [self.SKY]})
+        res = client.post("/api/photos/edit/batch", json={
+            **look["settings"], "filepaths": [PHOTO], "keys": ["masks"], "paste_as": "copied"})
+        assert res.status_code == 200, res.text
+        assert res.json()["masks_left_out"] == {}
+        now = client.get("/api/photos/edit", params={"filepath": PHOTO}).json()["settings"]
+        assert now["contrast"] == 30
+        assert [m.get("look") for m in now["masks"]] == [None, "Sky drama"]
+
+
 class TestALookForACamera:
     def _looks(self, client):
         for name, contrast in (("Night", 20), ("Day", 5)):

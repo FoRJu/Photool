@@ -59,6 +59,9 @@ LEFT_OUT = (
     ("Halation & bloom", HALATION_KEYS),
     ("Vignette", ("vignette",)),
     ("Grain", ("grain", "grain_size")),
+    # A look's masks find a subject, a sky or a distance on each photo: a place
+    # in the picture, which a colour in, colour out table has none of.
+    ("Masks", ("masks",)),
 )
 _LOOK_STEP_KEYS = ("vibrance", "saturation", "fade", "shadow_sat", "highlight_sat")
 

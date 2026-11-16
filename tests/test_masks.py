@@ -11,7 +11,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from adjust.develop import from_crs, normalize, to_crs  # noqa: E402
-from adjust.masks import normalize_mask, normalize_masks, weight  # noqa: E402
+from adjust.masks import normalize_mask, normalize_masks, portable, weight  # noqa: E402
 from adjust.render import LUMA, LinearFrame, develop_frame, region_frame  # noqa: E402
 
 TOP_DOWN = {"kind": "linear", "x1": 0.5, "y1": 0.0, "x2": 0.5, "y2": 0.5}
@@ -409,3 +409,47 @@ class TestSegment:
         m = segment.matte(LinearFrame(rgb), "sky")
         top, bottom = m[: m.shape[0] // 3].mean(), m[-m.shape[0] // 3:].mean()
         assert top > 0.8 and top - bottom > 0.3      # a made-up land is not a real one
+
+
+class TestPortable:
+    """The masks a look may carry: those that find their place on each photo."""
+
+    def test_masks_found_on_each_frame_travel_with_their_place_and_controls(self):
+        rng = {"kind": "luminance", "lo": 40, "hi": 100, "smooth": 30}
+        for mask in ({"kind": "sky", "exposure": -0.5, "range": rng},
+                     {"kind": "subject", "invert": True, "blur": 35},
+                     {"kind": "people", "areas": ["face_skin", "body_skin"], "smooth": 25},
+                     {"kind": "faces", "exposure": 0.2},
+                     {"kind": "depth", "near": 40, "far": 0, "soft": 30, "exposure": 0.25},
+                     {**TOP_DOWN, "exposure": -1},
+                     {"kind": "radial", "cx": 0.5, "cy": 0.5, "rx": 0.2, "ry": 0.2, "exposure": 1}):
+            assert portable(mask) == normalize_mask(mask), mask["kind"]
+
+    def test_what_belongs_to_one_frame_stays(self):
+        brush = {"kind": "brush", "exposure": 1, "strokes": [{"points": [[0.5, 0.5]], "size": 0.05}]}
+        obj = {"kind": "object", "matte": "a" * 32, "exposure": 1, "parts": [{"box": [0, 0, 0.5, 0.5]}]}
+        one = {"kind": "faces", "person": 2, "exposure": 0.5}
+        assert portable(brush) is None and portable(obj) is None and portable(one) is None
+        assert portable({"kind": "sky"}) is None                 # changes nothing
+        assert portable({"kind": "nonsense", "exposure": 1}) is None
+
+    def test_strokes_and_a_section_are_left_behind(self):
+        mask = {"kind": "sky", "exposure": -0.5, "invert": True,
+                "strokes": [{"points": [[0.5, 0.5]], "size": 0.05, "erase": True}],
+                "section": {"x1": 0.1, "y1": 0.1, "x2": 0.6, "y2": 0.6, "feather": 10}}
+        assert portable(mask) == {"kind": "sky", "invert": True, "exposure": -0.5}
+
+    def test_the_look_a_mask_came_from_survives_normalize_and_the_sidecar(self):
+        mask = {"kind": "sky", "exposure": -0.5, "look": "  Stage	night  "}
+        assert normalize_mask(mask)["look"] == "Stage night"
+        assert len(normalize_mask({**mask, "look": "x" * 200})["look"]) == 80
+        assert "look" not in normalize_mask({**mask, "look": 3})
+        clean = normalize({"masks": [mask, {"kind": "subject", "exposure": 1}]})
+        assert from_crs(to_crs(clean)) == clean
+        assert portable(clean["masks"][0])["look"] == "Stage night"
+
+    def test_the_look_a_mask_came_from_changes_no_pixel(self):
+        frame = LinearFrame(np.full((40, 60, 3), 0.09, np.float32))
+        plain = {"masks": [{**TOP_DOWN, "exposure": 1.0}]}
+        tagged = {"masks": [{**TOP_DOWN, "exposure": 1.0, "look": "Sky drama"}]}
+        assert np.array_equal(develop_frame(frame, normalize(plain)), develop_frame(frame, normalize(tagged)))

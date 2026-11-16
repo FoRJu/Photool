@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scaleLook, lookIsLive } from "../src/lookAmount.js";
+import { scaleLook, lookIsLive, scaleMasks, lookMasksLive } from "../src/lookAmount.js";
 
 test("at 100 the values come back as they went in", () => {
   const values = { contrast: 20, exposure: 0.33, mono: 1, style: "s1", style_fade: 20,
@@ -59,4 +59,36 @@ test("a glow scales with the amount, its size, threshold and colour do not", () 
       assert.equal(out[key], values[key], `${key} at ${amount}`);
     }
   }
+});
+
+test("a look's masks scale with it, their place kept", () => {
+  const sky = { kind: "sky", look: "Sky drama", exposure: -0.5, highlights: -30, saturation: 15,
+    range: { kind: "luminance", lo: 40, hi: 100, smooth: 30 } };
+  const depth = { kind: "depth", near: 40, far: 0, soft: 30, invert: true, exposure: 0.25 };
+  const people = { kind: "people", areas: ["face_skin", "body_skin"], smooth: 25, even: 20 };
+  assert.deepEqual(scaleMasks([sky], 100), [sky]);
+  const [half] = scaleMasks([sky], 50);
+  assert.deepEqual(half, { ...sky, exposure: -0.25, highlights: -15, saturation: 8 });
+  const [d] = scaleMasks([depth], 50);
+  assert.equal(d.exposure, 0.15);           // 0.125, in 0.05 steps
+  assert.deepEqual([d.near, d.far, d.soft, d.invert], [40, 0, 30, true]);
+  const [p] = scaleMasks([people], 150);
+  assert.deepEqual(p.areas, ["face_skin", "body_skin"]);
+  assert.deepEqual([p.smooth, p.even], [38, 30]);
+});
+
+test("a mask's controls are clamped to their own ranges", () => {
+  const [m] = scaleMasks([{ kind: "subject", exposure: 3.5, saturation: 180, blur: 90, contrast: 90 }], 150);
+  assert.deepEqual([m.exposure, m.saturation, m.blur, m.contrast], [4, 200, 100, 100]);
+  const [zero] = scaleMasks([{ kind: "subject", invert: true, blur: 35, exposure: -0.2 }], 0);
+  assert.deepEqual(zero, { kind: "subject", invert: true });
+});
+
+test("a look's masks are live while they read what it gives", () => {
+  const look = [{ kind: "sky", look: "L", exposure: -0.5 }];
+  const own = { kind: "linear", exposure: 1 };
+  assert.equal(lookMasksLive([own, ...scaleMasks(look, 60)], "L", look, 60), true);
+  assert.equal(lookMasksLive([own, ...scaleMasks(look, 60)], "L", look, 100), false);
+  assert.equal(lookMasksLive([own], "L", look, 100), false);
+  assert.equal(lookMasksLive([own, { ...look[0], exposure: -1 }], "L", look, 100), false);
 });

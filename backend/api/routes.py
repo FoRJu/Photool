@@ -2946,17 +2946,32 @@ async def save_develop_preset(req: SavePresetRequest, request: Request):
     back into the sliders, so one holding a value no slider can reach would show
     up as a control the user cannot drag back to where it was. What belongs to
     the frame it was made on is left out: the crop and level, the spots, and the
-    masks, which are drawn on that frame (an object mask is its very picture).
+    masks that are drawn on that frame (a brush, an object, which is its very
+    picture, one person). When the look carries the ``masks`` section, the masks
+    that find their place on each photo (a subject, a sky, people, faces, a
+    distance, a gradient) are kept, less their strokes and section
+    (adjust.masks.portable); a look of masks alone is a look.
     """
     from adjust.develop import MASKS_KEY, OWN_KEYS, normalize
+    from adjust.masks import portable
 
     name = (req.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="A preset needs a name")
-    settings = {k: v for k, v in normalize(req.settings).items() if k not in OWN_KEYS and k != MASKS_KEY}
+    sections = [s for s in req.sections if isinstance(s, str) and 0 < len(s) <= 32][:24]
+    clean = normalize(req.settings)
+    settings = {k: v for k, v in clean.items() if k not in OWN_KEYS and k != MASKS_KEY}
+    if "masks" in sections:
+        masks = [m for m in (portable(m) for m in clean.get(MASKS_KEY) or ()) if m]
+        if masks:
+            # Each says the look it comes from, so wherever the look is put on
+            # (Develop, the grid, a camera's own look, an agent) its masks
+            # take the place of an earlier look's (catalog.service._carried).
+            settings[MASKS_KEY] = [{**m, "look": name[:80]} for m in masks]
+        else:
+            sections = [s for s in sections if s != "masks"]
     if not settings:
         raise HTTPException(status_code=400, detail="There is no edit to save")
-    sections = [s for s in req.sections if isinstance(s, str) and 0 < len(s) <= 32][:24]
     catalog = _get_catalog(request)
     catalog.db.save_develop_preset(name[:80], settings, sections)
     return {"ok": True, "name": name, "presets": catalog.db.list_develop_presets()}
