@@ -244,7 +244,9 @@ function editKey(photo) {
   const keys = edit ? Object.keys(edit).filter((k) => Number(edit[k]) !== 0).sort() : [];
   // A photo with copies always says which version it shows: the browser keeps
   // pictures by address, and the main edit and a copy must never share one.
-  const which = cover || (photo && photo.copies) ? `c${cover}` : "";
+  const which = (cover || (photo && photo.copies) ? `c${cover}` : "")
+    // A negative's description changes its picture with no edit (Negative.jsx).
+    + (photo && photo.negative ? `n${photo.negative}` : "");
   if (!keys.length) return which;
   let h = 5381;
   for (const ch of keys.map((k) => `${k}=${JSON.stringify(edit[k])}`).join(";")) {
@@ -5621,6 +5623,7 @@ function PhotoolApp({ access }) {
             photos={photos.filter((p) => !isVideo(p)).map((p) => ({
               filepath: p.filepath, filename: p.filename, folder: p.folder, camera: p.camera,
             }))}
+            picked={[...picked]}
             onClose={closeDevelop}
             onNavigate={(filepath) => { setDevelopVersion(0); setDevelopFile(filepath); }}
             onSaved={handleEditSaved}

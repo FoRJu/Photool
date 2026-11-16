@@ -61,7 +61,9 @@ most other makes' RAW files through LibRaw (NEF, ARW, ORF, RW2, RAF, PEF). The
 camera-look learning works best on cameras that write RAW+JPEG.
 
 **Film scans:** TIFF and PSD from a film scanner, read at their full 16 bits a
-channel (or 32-bit float) and developed in linear light like a RAW.
+channel (or 32-bit float) and developed in linear light like a RAW. A scanned
+negative, colour or black and white, is turned back into the scene, its film base
+found from the border, the picture or a click, and given to the rest of the roll.
 
 ## Platforms
 

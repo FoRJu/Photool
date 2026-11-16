@@ -1,5 +1,6 @@
 import DoubleExposureDialog from "./DoubleExposureDialog.jsx";
 import WhiteBalance from "./WhiteBalance.jsx";
+import Negative, { negativeStamp } from "./Negative.jsx";
 import BlurOutline from "./BlurOutline.jsx";
 import BlurFocusPicture from "./BlurFocusPicture.jsx";
 import Vectorscope, { scopeOfBitmap } from "./Vectorscope.jsx";
@@ -82,6 +83,13 @@ const GROUPS = [
         format: (v) => `${v}`,
         title: "Fade the style back towards this camera's own look. 0 is the whole style." },
     ],
+  },
+  {
+    id: "film",
+    title: "Film negative",
+    hint: "For a scanned negative: turn it back into the scene it recorded. Being a negative belongs to the photograph, not to its edit, so Reset, copy and looks leave it alone.",
+    // Drawn by Negative.jsx; it has no sliders of the edit's own.
+    sliders: [],
   },
   {
     id: "wb",
@@ -1974,10 +1982,10 @@ function keepFolds(open) {
 
 // The panel's sections in the order they come, and what each is called where
 // they are arranged. The order and the ones left out are kept on this device.
-const PANEL_ORDER = ["frame", "profile", "wb", "light", "presence", "looks", "curve", "mixer", "toning",
+const PANEL_ORDER = ["frame", "profile", "film", "wb", "light", "presence", "looks", "curve", "mixer", "toning",
   "masks", "blur", "second", "sharpen", "noise", "effects"];
 const PANEL_NAMES = {
-  frame: "Frame", profile: "Profile", wb: "White balance", light: "Light", presence: "Presence",
+  frame: "Frame", profile: "Profile", film: "Film negative", wb: "White balance", light: "Light", presence: "Presence",
   looks: "Looks", curve: "Tone curve", mixer: "Colour mixer / B&W mix", toning: "Fade & toning",
   masks: "Masks", blur: "Lens blur", second: "Second exposure", sharpen: "Sharpening", noise: "Noise reduction", effects: "Effects",
 };
@@ -3584,7 +3592,7 @@ function useShortScreen() {
   return short;
 }
 
-export default function DevelopView({ filepath, startVersion = 0, photos, onClose, onNavigate, onOpenCopy, onSaved }) {
+export default function DevelopView({ filepath, startVersion = 0, photos, picked, onClose, onNavigate, onOpenCopy, onSaved }) {
   const [settings, setSettings] = useState(() => ZERO);
   const short = useShortScreen();
   const [topOpen, setTopOpen] = useState(() => {
@@ -3796,6 +3804,16 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
     const timer = setTimeout(() => setFadeFrom(null), 1300);
     return () => { clearTimeout(timer); URL.revokeObjectURL(fadeFrom); };
   }, [fadeFrom]);
+
+  // A negative described, changed or cleared (Negative.jsx): its decode is another
+  // picture, so the preview, the loupe and the scope are drawn again, and each
+  // photo's thumbnail asked for afresh. The edit and its history are not touched.
+  const negativeChanged = useCallback((changed) => {
+    for (const [path, d] of Object.entries(changed || {})) {
+      onSaved?.(path, undefined, { negative: negativeStamp(d) });
+    }
+    if (filepath in (changed || {})) setLookRefresh((n) => n + 1);
+  }, [filepath, onSaved]);
 
   const relearnLook = useCallback(async () => {
     try {
@@ -4109,7 +4127,7 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
       }
     }, 250);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [loupe, settings, showOriginal, cropMode, loading, filepath, loupeZoom]);
+  }, [loupe, settings, showOriginal, cropMode, loading, filepath, loupeZoom, lookRefresh]);
 
   const placeLoupe = useCallback((point) => {
     lastLoupe = point;
@@ -4144,6 +4162,11 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
   const whitePick = useRef(null);
   const [pickingWhite, setPickingWhite] = useState(false);
   useEffect(() => { setPickingWhite(false); }, [filepath]);
+  // And while a negative's film base is being picked (Negative.jsx): the scan is
+  // shown as it is then, since that is where the border can be told from the picture.
+  const negativePick = useRef(null);
+  const [pickingNegative, setPickingNegative] = useState(false);
+  useEffect(() => { setPickingNegative(false); }, [filepath]);
   // And while what the lens blur keeps sharp is being outlined (BlurOutline.jsx).
   const outlinePick = useRef(null);
   const [pickingOutline, setPickingOutline] = useState(false);
@@ -4155,6 +4178,7 @@ export default function DevelopView({ filepath, startVersion = 0, photos, onClos
     const u = (e.clientX - rect.left) / rect.width;
     const v = (e.clientY - rect.top) / rect.height;
     if (u < 0 || u > 1 || v < 0 || v > 1) return;
+    if (negativePick.current) { negativePick.current(u, v); return; }
     if (whitePick.current) { whitePick.current(u, v); return; }
     if (outlinePick.current) { outlinePick.current(u, v); return; }
     if (focusPick.current) { focusPick.current(u, v); return; }
@@ -5599,7 +5623,9 @@ ${known.license}
   // The preview on screen is only usable if it was drawn for the same mode: a
   // cropped picture under the crop box would put the box on the wrong pixels.
   const previewReady = preview && (previewFull === fullView || !framed);
-  const shown = cameraJpeg && cameraJpegUrl?.file === filepath ? cameraJpegUrl.url
+  const shown = pickingNegative
+    ? `${API}/thumb/${filepath.split("/").map(encodeURIComponent).join("/")}?size=preview&camera=1`
+    : cameraJpeg && cameraJpegUrl?.file === filepath ? cameraJpegUrl.url
     : showOriginal || !previewReady ? originalShown : preview;
   shownRef.current = shown;
   const current = photos?.[position];
@@ -5757,7 +5783,7 @@ ${known.license}
           <div className="text-[10px] text-neutral-500 -mt-1" data-testid="blur-note">{blurNote}</div>
         )}
         {id === "blur" && blurOn && (
-          <button onClick={() => { setPickingFocus(!pickingFocus); if (!pickingFocus) { setPickingWhite(false); setPickingOutline(false); } }}
+          <button onClick={() => { setPickingFocus(!pickingFocus); if (!pickingFocus) { setPickingWhite(false); setPickingOutline(false); setPickingNegative(false); } }}
             data-testid="blur-pick"
             title="Click what should be sharp, and the focus goes to its distance."
             className={`text-[11px] px-2 py-0.5 rounded border ${pickingFocus ? "border-amber-400 text-amber-300"
@@ -5768,7 +5794,7 @@ ${known.license}
         {id === "blur" && blurOn && (
           <BlurOutline filepath={filepath} settings={settings} onApply={applyGroup}
             picking={pickingOutline}
-            setPicking={(on) => { setPickingOutline(on); if (on) { setPickingFocus(false); setPickingWhite(false); } }}
+            setPicking={(on) => { setPickingOutline(on); if (on) { setPickingFocus(false); setPickingWhite(false); setPickingNegative(false); } }}
             pickRef={outlinePick} objectModel={lastObjectModel}
             pickBody={(u, v) => ({ filepath, u, v, size: PREVIEW_SIZE, settings: activeOnly(settingsRef.current),
               ...frameGeometry(settingsRef.current) })} />
@@ -5783,10 +5809,18 @@ ${known.license}
             {NOISE_NOTES[noiseState]}
           </div>
         )}
+        {id === "film" && (
+          <Negative filepath={filepath} photos={photos} picked={picked}
+            picking={pickingNegative}
+            setPicking={(on) => { setPickingNegative(on); if (on) { setPickingWhite(false); setPickingFocus(false); setPickingOutline(false); } }}
+            pickRef={negativePick}
+            pickBody={(u, v) => ({ filepath, u, v, size: PREVIEW_SIZE, settings: {} })}
+            onChanged={negativeChanged} />
+        )}
         {id === "wb" && (
           <WhiteBalance filepath={filepath} settings={settings} onChange={change} onApply={applyGroup}
             picking={pickingWhite}
-            setPicking={(on) => { setPickingWhite(on); if (on) { setPickingFocus(false); setPickingOutline(false); } }}
+            setPicking={(on) => { setPickingWhite(on); if (on) { setPickingFocus(false); setPickingOutline(false); setPickingNegative(false); } }}
             pickRef={whitePick}
             pickBody={(u, v) => ({ filepath, u, v, size: PREVIEW_SIZE, settings: activeOnly(settingsRef.current),
               ...frameGeometry(settingsRef.current) })} />
@@ -5891,6 +5925,7 @@ ${known.license}
           </Fold>
     ),
     profile: section("profile"),
+    film: section("film"),
     wb: section("wb"),
     light: section("light"),
     presence: section("presence"),
@@ -6122,7 +6157,8 @@ Number(settings.mono) ? (
                 transformOrigin: "0 0" }}
               onClick={onPictureClick}
               onPointerMove={onPictureMove} onPointerLeave={() => setProbe(null)}
-              title={fullView ? undefined : pickingWhite ? "Click something that should be grey"
+              title={fullView ? undefined : pickingNegative ? "Click unexposed film: the border, or the gap between two frames"
+                : pickingWhite ? "Click something that should be grey"
                 : pickingOutline ? "Click what should be sharp, to outline it"
                 : pickingFocus ? "Click what should be sharp" : "Click to look at this spot at 1:1"}>
               <img ref={imgRef} src={shown} alt="" draggable={false}
