@@ -969,10 +969,23 @@ smooth tone. The extensions must be in `import_extensions` (see the setup guide)
   in); uncompressed, LZW or deflate; either byte order; BigTIFF. Only the first
   page is read; a scanner's thumbnail page after it is ignored. The Orientation
   tag is honoured. A 16-bit grey TIFF with alpha is read at 8 bits only.
-- **PSD and PSB**: only the merged picture, grey or RGB, 8, 16 or 32 bits. Save
-  from Photoshop with **Maximize compatibility** on: a layered file saved without
-  it holds only a white page saying so, and that page is what Photool shows.
-  Layers are not read.
+- **PSD and PSB**: grey or RGB, 8, 16 or 32 bits. A file saved with **Maximize
+  compatibility** holds a merged picture, and that is read. One saved without it
+  holds only a white page in its place, and says so: its picture is then rebuilt
+  from the layers, as Photoshop showed it (`export/psd_layers.py`):
+  - pixel layers (a smart object's too) in Normal, Multiply, Screen, Overlay,
+    Soft Light, Hard Light, Darken, Lighten, Linear Dodge, Color Dodge, Color
+    Burn and Difference, with transparency, opacity, fill and layer masks;
+    clipped layers;
+  - Levels, Curves, Invert and Hue/Saturation (master hue, saturation and
+    lightness) adjustment layers, through their opacity and masks;
+  - groups, pass-through or not; hidden layers and groups are left out.
+
+  Other adjustments (Color Balance, Brightness/Contrast, Selective Color…), fill
+  layers, layer effects and vector masks are skipped, and `serve.log` names the
+  file and what was skipped. If no layer can be read the file has no picture,
+  never the white page. Rebuilding takes a few seconds for a preview and ten or
+  so for a full-size export of a 300 MB file.
 - **Not read** at full depth: CMYK, Lab, palette and 1-bit files. They are
   read by Pillow at 8 bits where it can, and otherwise get the placeholder.
 
@@ -983,9 +996,10 @@ follows (within 0.15 of 1.0 is linear); with none, a float file is linear and an
 integer one gamma-encoded; a 32-bit PSD is always linear. Gamma-encoded values
 are decoded with the app's own display curve, as a JPEG's are.
 
-**Colour is not converted.** A profile's primaries are not used: a scan in
-ProPhoto or Adobe RGB is read as if its colours were sRGB's, as every JPEG with
-a profile is. It looks a little flat in saturation; the edit is there for that.
+**Colour.** A matrix profile's primaries are honoured: a scan in ProPhoto or Adobe
+RGB is converted to sRGB's primaries (and ProPhoto's gamma 1.8 decoded as such),
+then read as a JPEG of it would be. Colours outside sRGB are clipped. A profile
+built from tables, without a matrix, is read as if its colours were sRGB's.
 
 A large scan is opened at a reduced size for the preview (a 100-megapixel scan
 is never built at full size for it), and at full size for an export.

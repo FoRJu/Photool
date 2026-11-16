@@ -6,8 +6,10 @@ The picture is a ramp, different in each channel, with values that differ only i
 their low byte, so a read that went through 8 bits is caught.
 """
 
+import io
 import struct
 import sys
+import zlib
 from pathlib import Path
 
 import cv2
@@ -106,8 +108,13 @@ def tiff_by_hand(path: Path, arr: np.ndarray, orientation=None, icc=None, extra=
     return path
 
 
-def matrix_profile(gamma: float) -> bytes:
-    """A minimal ICC v2 RGB display profile: sRGB's primaries, one gamma for all three."""
+SRGB_PRIMARIES = ((0.4361, 0.2225, 0.0139), (0.3851, 0.7169, 0.0971), (0.1431, 0.0606, 0.7141))
+PROPHOTO_PRIMARIES = ((0.7977, 0.2880, 0.0), (0.1352, 0.7119, 0.0), (0.0313, 0.0001, 0.8249))
+
+
+def matrix_profile(gamma: float, primaries=SRGB_PRIMARIES) -> bytes:
+    """A minimal ICC v2 RGB display profile: sRGB's primaries (or ``primaries``, the
+    D50 XYZ of red, green and blue), one gamma for all three."""
     def s15(v):
         return struct.pack(">i", int(round(v * 65536)))
 
@@ -121,9 +128,9 @@ def matrix_profile(gamma: float) -> bytes:
     tags = [
         (b"desc", desc),
         (b"wtpt", xyz(0.9642, 1.0, 0.8249)),
-        (b"rXYZ", xyz(0.4361, 0.2225, 0.0139)),
-        (b"gXYZ", xyz(0.3851, 0.7169, 0.0971)),
-        (b"bXYZ", xyz(0.1431, 0.0606, 0.7141)),
+        (b"rXYZ", xyz(*primaries[0])),
+        (b"gXYZ", xyz(*primaries[1])),
+        (b"bXYZ", xyz(*primaries[2])),
         (b"rTRC", curve), (b"gTRC", curve), (b"bTRC", curve),
     ]
     offset = 128 + 4 + 12 * len(tags)
@@ -400,6 +407,230 @@ class TestPsd:
         path = write_psd(tmp_path / "s.psd", ramp16().transpose(2, 0, 1), 16, compression=1)
         img = scans.read_8bit(path, 150)
         assert img.mode == "RGB" and max(img.size) == 150
+
+
+# ── Layered PSD, saved without "Maximize compatibility" ──────────────
+
+def zip_predicted(plane: np.ndarray) -> bytes:
+    """A channel as Photoshop's ZIP with prediction: each row delta-coded."""
+    native = plane.astype(plane.dtype.newbyteorder("="))
+    delta = np.diff(native, axis=1, prepend=np.zeros((native.shape[0], 1), native.dtype))
+    return zlib.compress(delta.astype(plane.dtype.newbyteorder(">")).tobytes())
+
+
+def channel_bytes(plane: np.ndarray, depth: int) -> bytes:
+    """One layer channel: ZIP with prediction at 16 bits, PackBits at 8."""
+    if depth == 16:
+        return struct.pack(">H", 3) + zip_predicted(plane.astype(">u2"))
+    rows = [packbits(plane[r].astype(np.uint8).tobytes()) for r in range(plane.shape[0])]
+    return struct.pack(">H", 1) + b"".join(struct.pack(">H", len(r)) for r in rows) + b"".join(rows)
+
+
+def layer(name, rect=(0, 0, 0, 0), channels=None, blend=b"norm", opacity=255, hidden=False,
+          keys=None, mask=None):
+    """A layer for write_layered_psd: ``channels`` {id: plane over ``rect``};
+    ``mask`` (rect, default 0..255, plane or None)."""
+    return dict(name=name, rect=rect, channels=channels or {}, blend=blend, opacity=opacity,
+                hidden=hidden, keys=keys or {}, mask=mask)
+
+
+def write_layered_psd(path: Path, w: int, h: int, depth: int, layers: list, merged=False,
+                      icc: bytes = None) -> Path:
+    """An RGB PSD of ``layers`` (bottom first) whose merged picture is a white page,
+    flagged as such (resource 1057) unless ``merged``. 16-bit layers go in Lr16."""
+    records, data = b"", b""
+    for L in layers:
+        chans = dict(L["channels"])
+        if L["mask"] is not None and L["mask"][2] is not None:
+            chans[-2] = L["mask"][2]
+        blobs = {cid: channel_bytes(plane, depth) for cid, plane in chans.items()}
+        if L["keys"] and not chans:
+            # An adjustment layer: its channels hold nothing.
+            blobs = {cid: struct.pack(">H", 0) for cid in (-1, 0, 1, 2)}
+        rec = struct.pack(">4i", *L["rect"]) + struct.pack(">H", len(blobs))
+        rec += b"".join(struct.pack(">hI", cid, len(b)) for cid, b in blobs.items())
+        flags = 8 | (2 if L["hidden"] else 0)
+        rec += b"8BIM" + L["blend"] + struct.pack(">BBBB", L["opacity"], 0, flags, 0)
+        mask = b""
+        if L["mask"] is not None:
+            mask = struct.pack(">4iBB", *L["mask"][0], L["mask"][1], 0) + b"\0\0"
+        name = L["name"].encode("latin-1")
+        pascal = bytes([len(name)]) + name
+        pascal += b"\0" * ((4 - len(pascal) % 4) % 4)
+        extra = struct.pack(">I", len(mask)) + mask + struct.pack(">I", 0) + pascal
+        for key, value in L["keys"].items():
+            value += b"\0" * ((4 - len(value) % 4) % 4)
+            extra += b"8BIM" + key + struct.pack(">I", len(value)) + value
+        records += rec + struct.pack(">I", len(extra)) + extra
+        data += b"".join(blobs.values())
+    block = struct.pack(">h", len(layers)) + records + data
+    block += b"\0" * (len(block) % 2)
+    if depth == 16:
+        section = struct.pack(">I", 0) + struct.pack(">I", 0) + b"8BIMLr16" + struct.pack(">I", len(block)) + block
+    else:
+        section = struct.pack(">I", len(block)) + block + struct.pack(">I", 0)
+
+    out = bytearray(b"8BPS" + struct.pack(">H", 1) + b"\0" * 6 + struct.pack(">HIIHH", 3, h, w, depth, 3))
+    out += struct.pack(">I", 0)
+    res = b"8BIM" + struct.pack(">H", 1057) + b"\0\0" + struct.pack(">I", 5) + struct.pack(">IB", 1, int(merged)) + b"\0"
+    if icc is not None:
+        res += b"8BIM" + struct.pack(">H", 1039) + b"\0\0" + struct.pack(">I", len(icc)) + icc + b"\0" * (len(icc) % 2)
+    out += struct.pack(">I", len(res)) + res
+    out += struct.pack(">I", len(section)) + section
+    white = np.full((3, h, w), 255 if depth == 8 else 65535, ">u1" if depth == 8 else ">u2")
+    out += struct.pack(">H", 0) + white.tobytes()
+    path.write_bytes(bytes(out))
+    return path
+
+
+def levels_data(red=(0, 255), composite_gamma=100) -> bytes:
+    """Levels: the red channel's input range, the composite's gamma (x100)."""
+    identity = struct.pack(">5H", 0, 255, 0, 255, 100)
+    records = struct.pack(">5H", 0, 255, 0, 255, composite_gamma)
+    records += struct.pack(">5H", red[0], red[1], 0, 255, 100) + identity * 27
+    return struct.pack(">H", 2) + records
+
+
+def curves_data(points) -> bytes:
+    """Curves on the composite only: ``points`` as (input, output)."""
+    body = struct.pack(">H", len(points)) + b"".join(struct.pack(">2H", o, i) for i, o in points)
+    return b"\0" + struct.pack(">HI", 1, 1) + body
+
+
+def natural_spline_3(points, x):
+    """A natural cubic spline through three points, written out: the curve Photoshop
+    draws through them."""
+    (x0, y0), (x1, y1), (x2, y2) = points
+    h0, h1 = x1 - x0, x2 - x1
+    m1 = 6 * ((y2 - y1) / h1 - (y1 - y0) / h0) / (2 * (h0 + h1))
+    left = x <= x1
+    a = np.where(left, (x1 - x) / h0, (x2 - x) / h1)
+    b = 1 - a
+    hh = np.where(left, h0, h1)
+    ya, yb = np.where(left, y0, y1), np.where(left, y1, y2)
+    ma, mb = np.where(left, 0.0, m1), np.where(left, m1, 0.0)
+    return a * ya + b * yb + ((a ** 3 - a) * ma + (b ** 3 - b) * mb) * hh * hh / 6
+
+
+class TestLayeredPsd:
+    """Saved without "Maximize compatibility": the merged picture is a white page and
+    the picture is rebuilt from the layers."""
+
+    W, H = 160, 100
+
+    def background(self):
+        values = ramp16(self.W, self.H)
+        return values, {c: values[..., c] for c in range(3)}
+
+    def test_adjustments_masks_and_blends(self, tmp_path):
+        values, planes = self.background()
+        W, H = self.W, self.H
+        patch = np.full((40, 60), 20000, np.uint16)
+        patch_alpha = np.full((40, 60), 65535, np.uint16)
+        patch_alpha[:, 30:] = 0                      # the right half is transparent
+        curve = [(0, 0), (128, 90), (255, 255)]
+        left = np.full((H, W // 2), 65535, np.uint16)  # mask: the curve on the left only
+        path = write_layered_psd(tmp_path / "layered.psd", W, H, 16, [
+            layer("Background", (0, 0, H, W), planes),
+            layer("Levels", keys={b"levl": levels_data(red=(30, 200))}, mask=((0, 0, 0, 0), 255, None)),
+            layer("Patch", (10, 20, 50, 80), {-1: patch_alpha, 0: patch, 1: patch, 2: patch}, opacity=128),
+            layer("Dodge", (0, 0, H, W), {0: np.full((H, W), 45000, np.uint16),
+                                          1: np.full((H, W), 45000, np.uint16),
+                                          2: np.full((H, W), 45000, np.uint16)}, blend=b"over"),
+            layer("Curves", keys={b"curv": curves_data(curve)},
+                  mask=((0, 0, H, W // 2), 0, left)),
+            layer("Off", keys={b"nvrt": b""}, hidden=True),
+            layer("Brightness", keys={b"brit": b"\0" * 8}),
+        ])
+        assert scans.size_of(path) == (W, H)
+
+        # The same, step by step, on the encoded values.
+        x = values / 65535.0
+        x[..., 0] = np.clip((x[..., 0] * 255 - 30) / 170, 0, 1)
+        k = np.zeros((H, W))
+        k[10:50, 20:50] = 128 / 255
+        x = x + (20000 / 65535 - x) * k[..., None]
+        s = 45000 / 65535
+        x = np.where(x <= 0.5, 2 * x * s, 1 - 2 * (1 - x) * (1 - s))
+        curved = np.clip(natural_spline_3(curve, x * 255), 0, 255) / 255
+        x[:, :W // 2] = curved[:, :W // 2]
+
+        rgb = scans.read_linear(path)
+        assert rgb.shape == (H, W, 3)
+        np.testing.assert_allclose(rgb, decode(x), atol=2e-3)
+        assert distinct(rgb[..., 2]) > 256
+
+        # Reduced for a preview, and in 8 bits for a thumbnail: never the white page.
+        small = scans.read_linear(path, 20)
+        assert max(small.shape[:2]) == 40
+        img = np.asarray(scans.read_8bit(path, 80))
+        assert img.mean() < 200
+
+    def test_groups_and_layer_without_background(self, tmp_path):
+        values, planes = self.background()
+        W, H = self.W, self.H
+        divider = layer("</Layer group>", keys={b"lsct": struct.pack(">I", 3)})
+        group = layer("Group", keys={b"lsct": struct.pack(">I", 1) + b"8BIMpass"}, opacity=128)
+        hidden_group = layer("Hidden", keys={b"lsct": struct.pack(">I", 1) + b"8BIMpass"}, hidden=True)
+        path = write_layered_psd(tmp_path / "groups.psd", W, H, 16, [
+            layer("Background", (0, 0, H, W), planes),
+            divider,
+            layer("Darker", keys={b"levl": levels_data(composite_gamma=50)}),
+            group,
+            dict(divider),
+            layer("Invert", keys={b"nvrt": b""}),
+            hidden_group,
+        ])
+        x = values / 65535.0
+        x = x + (x ** 2.0 - x) * (128 / 255)   # the group at half opacity
+        np.testing.assert_allclose(scans.read_linear(path), decode(x), atol=2e-3)
+
+        # An 8-bit layer over nothing, half transparent: flattened on white.
+        alpha = np.full((H, W), 128, np.uint8)
+        grey = np.full((H, W), 40, np.uint8)
+        path8 = write_layered_psd(tmp_path / "eight.psd", W, H, 8, [
+            layer("Layer 1", (0, 0, H, W), {-1: alpha, 0: grey, 1: grey, 2: grey}),
+        ])
+        a = 128 / 255
+        expected = decode(np.full((H, W, 3), 40 / 255 * a + (1 - a)))
+        np.testing.assert_allclose(scans.read_linear(path8), expected, atol=1e-3)
+
+    def test_a_real_merged_picture_is_used(self, tmp_path):
+        _, planes = self.background()
+        path = write_layered_psd(tmp_path / "merged.psd", self.W, self.H, 16,
+                                 [layer("Background", (0, 0, self.H, self.W), planes)], merged=True)
+        # The merged picture (white) is what the file says is real.
+        assert scans.read_linear(path).min() > 0.99
+
+    def test_no_layers_and_no_merged_picture_is_no_picture(self, tmp_path):
+        path = write_layered_psd(tmp_path / "empty.psd", self.W, self.H, 16, [])
+        assert scans.read_linear(path) is None
+        assert scans.read_8bit(path) is None   # not Pillow's white page either
+
+
+# ── Colour profiles with other primaries ─────────────────────────────
+
+class TestProfiles:
+    def test_prophoto_is_turned_into_srgb(self, tmp_path):
+        from PIL import ImageCms
+
+        values = (ramp16() >> 8).astype(np.uint8)
+        icc = matrix_profile(1.8, PROPHOTO_PRIMARIES)
+        path = tiff_by_hand(tmp_path / "prophoto.tif", values, icc=icc)
+        rgb = scans.read_linear(path)
+        # What LittleCMS makes of it in sRGB, read as a JPEG is.
+        srgb = ImageCms.profileToProfile(Image.fromarray(values), ImageCms.ImageCmsProfile(
+            io.BytesIO(icc)), ImageCms.createProfile("sRGB"))
+        expected = decode(np.asarray(srgb) / 255.0)
+        assert np.abs(rgb - expected).mean() < 0.01
+        assert np.abs(rgb - expected).max() < 0.06
+        # and it is not the values read as if they were sRGB's
+        assert np.abs(decode(values / 255.0) - expected).mean() > 0.02
+
+    def test_srgb_primaries_change_nothing(self, tmp_path):
+        values = ramp16()
+        path = tiff_by_hand(tmp_path / "srgb.tif", values, icc=matrix_profile(2.2))
+        np.testing.assert_allclose(scans.read_linear(path), decode(values / 65535.0), atol=1e-6)
 
 
 def test_is_scan():
