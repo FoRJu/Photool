@@ -6,7 +6,7 @@ import BlurFocusPicture from "./BlurFocusPicture.jsx";
 import Vectorscope, { scopeOfBitmap } from "./Vectorscope.jsx";
 import LookTools from "./LookTools.jsx";
 import FilmLutImport from "./FilmLutImport.jsx";
-import { scaleLook, lookIsLive } from "./lookAmount.js";
+import { scaleLook, lookIsLive, scaleMasks, lookMasksLive } from "./lookAmount.js";
 import { recall, remember } from "./remembered.js";
 import { editKey, makeDoubleExposure, sameEdit, secondOf, secondOfRow, versionThumb, versionsOf } from "./doubleExposure.js";
 import { useState, useEffect, useCallback, useRef, useMemo, useId, createContext, useContext } from "react";
@@ -562,17 +562,43 @@ const COPY_SECTIONS = [
   { id: "spots", label: "Spots", keys: ["spots"], framing: true },
 ];
 const TONE_SECTIONS = COPY_SECTIONS.filter((s) => !s.framing).map((s) => s.id);
-// What a look of your own can carry: the tone sections. Never the masks, which
-// are drawn on the frame they were made on.
+// What a look of your own can carry: the tone sections, whose sliders it sets,
+// and (LOOK_MASKS) the masks that find their place on each photo.
 const LOOK_SECTIONS = COPY_SECTIONS.filter((s) => !s.framing && s.id !== "masks" && s.id !== "blur");
 export const keysOfSections = (ids) => LOOK_SECTIONS.filter((s) => ids.includes(s.id)).flatMap((s) => s.keys);
 // A look saved before looks said what they carry carries every tone section.
 export const lookSections = (preset) => (preset.sections?.length ? preset.sections : LOOK_SECTIONS.map((s) => s.id));
-// A saved look as the develop view puts it on: the keys it owns, and its values for them.
+// A look's masks do not replace the photo's: they go on beside its own, in place
+// of those an earlier look put on, each marked with the look it came from.
+export const LOOK_MASKS = { id: "masks", label: "Masks that find their place" };
+// The masks a look can carry (backend adjust/masks.py portable): those a model
+// finds afresh on every frame, and the gradients, placed by the frame's shape.
+// A brush is painted on one frame, an object pointed at on one, and "Person 2"
+// is someone in this photo: they stay with their photo.
+const TRAVELLING_KINDS = ["linear", "radial", "subject", "sky", "people", "faces", "depth"];
+// Of those, the ones ticked to begin with: a gradient may suit this frame only.
+const FOUND_KINDS = ["subject", "sky", "people", "faces", "depth"];
+const travels = (m) => TRAVELLING_KINDS.includes(m?.kind) && !m.person && maskIsActive(m);
+// A look's masks as it puts them on: without what was drawn on its own frame.
+function asLookMasks(masks, name) {
+  return (masks || []).map(({ strokes, section, ...m }) => ({ ...m, look: name })); // eslint-disable-line no-unused-vars
+}
+// The look's masks, when it carries them.
+export const lookMasksOf = (preset) => (lookSections(preset).includes(LOOK_MASKS.id)
+  ? asLookMasks(preset.settings?.masks, preset.name) : []);
+// A saved look as the develop view puts it on: the keys it owns, its values for
+// them, and its masks, which are merged rather than set.
 function lookOfPreset(preset) {
   const keys = keysOfSections(lookSections(preset));
   const values = Object.fromEntries(Object.entries(preset.settings || {}).filter(([k]) => keys.includes(k)));
-  return { name: preset.name, keys, values, own: true };
+  return { name: preset.name, keys, values, own: true, masks: lookMasksOf(preset) };
+}
+// The photo's masks with a look's put on: its own first, then the look's, in
+// place of any an earlier look put on; as many as a photo holds.
+const MAX_MASKS = 16;
+function withLookMasks(masks, add) {
+  const own = (masks || []).filter((m) => !m.look);
+  return { masks: [...own, ...add].slice(0, MAX_MASKS), left: Math.max(0, own.length + add.length - MAX_MASKS) };
 }
 // Tied to where things are in the frame: not put on a frame turned the other way.
 const PLACED_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "spots"];
@@ -643,6 +669,24 @@ const LOOKS = [
     settings: { mono: 1, fade: 25, contrast: -10, grain: 25, grain_size: 30 } },
   { name: "B&W sepia", note: "Warm-toned print",
     settings: { mono: 1, contrast: 10, ...BW_TONES[1].tone, vignette: -10 } },
+];
+
+// Looks that set only masks, found on each photo: the sliders are left alone, so
+// one sits on top of a look above ("Warm film" and "Sky drama").
+const SCENE_LOOKS = [
+  { name: "Subject pop", note: "The subject a little brighter and crisper, the background a little darker and quieter",
+    masks: [{ kind: "subject", exposure: 0.25, clarity: 10 },
+      { kind: "subject", invert: true, exposure: -0.35, saturation: -10 }] },
+  { name: "Soft background", note: "The background out of focus and a little darker, as a wide-open lens would have it",
+    masks: [{ kind: "subject", invert: true, blur: 35, exposure: -0.2 }] },
+  { name: "Sky drama", note: "A deeper, richer sky with its clouds brought out",
+    masks: [{ kind: "sky", exposure: -0.5, highlights: -30, contrast: 20, clarity: 15, saturation: 15 }] },
+  { name: "Portrait glow", note: "Smoother, even skin, lit faces, and the rest of the frame a little darker",
+    masks: [{ kind: "people", areas: ["face_skin", "body_skin"], smooth: 25, even: 20 },
+      { kind: "faces", exposure: 0.2 },
+      { kind: "people", invert: true, exposure: -0.25 }] },
+  { name: "Depth fade", note: "The distance going pale and cool, as air makes it",
+    masks: [{ kind: "depth", near: 40, far: 0, soft: 30, exposure: 0.25, contrast: -25, saturation: -20, temperature: -15 }] },
 ];
 
 function asSettings(stored) {
@@ -1149,6 +1193,12 @@ const FACE_AREAS = ["face_skin", "eyes", "brows", "lips", "teeth"];
 function maskName(m, i) {
   const set = [...MASK_SLIDERS, ...SKIN_SLIDERS].filter((d) => Number(m[d.key] || 0) !== 0)
     .map((d) => `${d.label} ${d.format(m[d.key])}`);
+  const from = m.look ? ` · from “${m.look}”` : "";
+  return `${maskKind(m)} ${i + 1}${from}${set.length ? ` · ${set.slice(0, 2).join(", ")}${set.length > 2 ? "…" : ""}` : ""}`;
+}
+
+// What a mask reaches, said briefly: "Sky", "All but people", "Face skin, Body skin".
+function maskKind(m) {
   const names = MASK_NAMES[m.kind];
   const faceAll = FACE_AREAS.every((a) => m.areas?.includes(a));
   const named = faceAll ? ["Face", ...m.areas.filter((a) => !FACE_AREAS.includes(a)).map((a) => AREA_LABEL[a])]
@@ -1159,7 +1209,14 @@ function maskName(m, i) {
   const who = (m.person ? ` (person ${m.person})` : "")
     + (m.range ? ` · ${m.range.kind === "color" ? "colour" : "brightness"} range` : "")
     + (m.section ? " · section" : "");
-  return `${kind}${who} ${i + 1}${set.length ? ` · ${set.slice(0, 2).join(", ")}${set.length > 2 ? "…" : ""}` : ""}`;
+  return `${kind}${who}`;
+}
+
+// A mask as the save form lists it: what it reaches and every control it moves.
+function maskSummary(m) {
+  const set = [...MASK_SLIDERS, ...SKIN_SLIDERS].filter((d) => Number(m[d.key] || 0) !== 0)
+    .map((d) => `${d.label} ${d.format(m[d.key])}`);
+  return `${maskKind(m)}${set.length ? ` · ${set.join(", ")}` : ""}`;
 }
 
 // A new gradient where it is most often wanted: a linear one from the top (a
@@ -5179,11 +5236,23 @@ ${known.license}
   useEffect(() => { loadPresets(); }, [loadPresets]);
 
   // A look, built in or your own, sets the keys it owns and leaves the rest; it
-  // starts at its full amount.
-  const applyLook = useCallback((name, keys, values, own) => {
-    applyGroup(keys, values, own ? `Look “${name}”` : name);
+  // starts at its full amount. Its masks, when it has them, go on beside the
+  // photo's own, in place of those an earlier look put on.
+  const applyLook = useCallback((name, keys, values, own, masks = []) => {
+    const label = own ? `Look “${name}”` : name;
+    let left = 0;
+    if (masks.length) {
+      const merged = withLookMasks(settingsRef.current.masks, masks);
+      left = merged.left;
+      setMaskSel(-1);
+      applyGroup(keys, { ...values, masks: merged.masks }, label);
+    } else {
+      applyGroup(keys, values, label);
+    }
+    if (left) setNote(`${label} · ${left} of its masks left out: a photo holds ${MAX_MASKS}`);
     if (own) setActivePreset(name);
-    setActiveLook({ name, keys, values, own });
+    // The masks that went on are the look's here, for its Amount.
+    setActiveLook({ name, keys, values, own, masks: masks.slice(0, masks.length - left) });
     setLookAmount(100);
   }, [applyGroup]);
 
@@ -5191,8 +5260,8 @@ ${known.license}
   const applyPreset = useCallback((name) => {
     const found = presets.find((p) => p.name === name);
     if (!found) return;
-    const { keys, values } = lookOfPreset(found);
-    applyLook(name, keys, values, true);
+    const { keys, values, masks } = lookOfPreset(found);
+    applyLook(name, keys, values, true, masks);
   }, [presets, applyLook]);
 
   // Dragging the Amount: the look's keys at the new amount, saved once and one
@@ -5203,6 +5272,13 @@ ${known.license}
     const next = { ...settingsRef.current };
     for (const key of look.keys) next[key] = ZERO[key];
     Object.assign(next, scaleLook(look.values, amount, LOOK_LIMITS));
+    // Its masks too, in their places in the list, so the one being looked at
+    // stays chosen; those the person took out stay out.
+    if (look.masks?.length) {
+      const scaled = scaleMasks(look.masks, amount);
+      let k = 0;
+      next.masks = (next.masks || []).map((m) => (m.look === look.name && k < scaled.length ? scaled[k++] : m));
+    }
     settingsRef.current = next;
     setSettings(next);
     setLookAmount(amount);
@@ -5231,22 +5307,28 @@ ${known.license}
   // Saving a look: its name and the sections it carries, ticked to begin with
   // where this edit has changes.
   const [lookTicks, setLookTicks] = useState(null);       // null: not saving one
+  // Of this frame's masks that can travel, by their place in its list, those ticked.
+  const [maskTicks, setMaskTicks] = useState([]);
   const startLook = useCallback(() => {
     const edit = activeOnly(settingsRef.current, false);
     setLookTicks(LOOK_SECTIONS.filter((sec) => sec.keys.some((k) => k in edit)).map((sec) => sec.id));
+    setMaskTicks((settingsRef.current.masks || []).flatMap((m, i) => (travels(m) && FOUND_KINDS.includes(m.kind) ? [i] : [])));
     setPresetName("");
   }, []);
   const savePreset = useCallback(async () => {
     const name = presetName.trim();
-    if (!name || !lookTicks?.length) return;
+    const frameMasks = settingsRef.current.masks || [];
+    const masks = maskTicks.filter((i) => travels(frameMasks[i])).map((i) => frameMasks[i]);
+    if (!name || (!lookTicks?.length && !masks.length)) return;
     const keys = keysOfSections(lookTicks);
     const edit = activeOnly(settingsRef.current, false);
     const settings = Object.fromEntries(Object.entries(edit).filter(([k]) => keys.includes(k)));
+    if (masks.length) settings.masks = asLookMasks(masks, name);
     if (!Object.keys(settings).length) { setNote("Nothing is changed in those sections"); return; }
     const res = await fetch(`${API}/export/develop/presets`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, settings, sections: lookTicks }),
+      body: JSON.stringify({ name, settings, sections: [...lookTicks, ...(masks.length ? [LOOK_MASKS.id] : [])] }),
     });
     if (!res.ok) { setNote("Could not save the look"); return; }
     const data = await res.json();
@@ -5255,7 +5337,7 @@ ${known.license}
     setPresetName("");
     setLookTicks(null);
     setNote(`Saved the look “${name}”`);
-  }, [presetName, lookTicks]);
+  }, [presetName, lookTicks, maskTicks]);
 
   const deletePreset = useCallback(async (name) => {
     if (!window.confirm(`Forget the look “${name}”? Photos it was put on keep their edit.`)) return;
@@ -5707,7 +5789,8 @@ ${known.license}
   const toneEdited = isToneEdited(settings);
   // The look is live while every key it owns reads what it gives at its amount.
   // After an undo or redo the amount is the step's own, or the look's full one.
-  const lookAt = (amount) => lookIsLive(settings, activeLook.keys, activeLook.values, amount, ZERO, LOOK_LIMITS);
+  const lookAt = (amount) => lookIsLive(settings, activeLook.keys, activeLook.values, amount, ZERO, LOOK_LIMITS)
+    && (!activeLook.masks?.length || lookMasksLive(settings.masks, activeLook.name, activeLook.masks, amount));
   const stepNow = history.entries[history.index];
   const lookShown = !activeLook ? null
     : lookAt(lookAmount) ? lookAmount
@@ -5717,8 +5800,9 @@ ${known.license}
   // A frame opened with one of your looks on it, as saved, has its tools too:
   // the look is found from the frame rather than from the click that put it on.
   if (lookShown == null && presets.length && toneEdited) {
-    const found = presets.map(lookOfPreset).find((l) => l.keys.length
-      && lookIsLive(settings, l.keys, l.values, 100, ZERO, LOOK_LIMITS));
+    const found = presets.map(lookOfPreset).find((l) => (l.keys.length || l.masks.length)
+      && lookIsLive(settings, l.keys, l.values, 100, ZERO, LOOK_LIMITS)
+      && (!l.masks.length || lookMasksLive(settings.masks, l.name, l.masks, 100)));
     if (found && found.name !== activeLook?.name) setActiveLook(found);
   }
   const camerasLook = camera ? presets.find((p) => p.camera === camera) || null : null;
@@ -6033,6 +6117,16 @@ ${known.license}
                 </button>
               ))}
             </div>
+            <div className="text-[11px] text-neutral-500">Built in · finds the subject, sky, people and distance on each photo</div>
+            <div className="flex flex-wrap gap-1" data-testid="scene-looks">
+              {SCENE_LOOKS.map((r) => (
+                <button key={r.name} title={`${r.note}. Sets only masks, so it can go on top of a look above.`}
+                  onClick={() => applyLook(r.name, [], {}, false, asLookMasks(r.masks, r.name))}
+                  className="text-[11px] px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500">
+                  {r.name}
+                </button>
+              ))}
+            </div>
             {presets.length > 0 && (
               <>
                 <div className="text-[11px] text-neutral-500">Yours</div>
@@ -6040,7 +6134,8 @@ ${known.license}
                   {[...presets].sort((a, b) => (b === camerasLook) - (a === camerasLook)).map((p) => (
                     <span key={p.name} className="inline-flex">
                       <button onClick={() => applyPreset(p.name)}
-                        title={`Sets ${sectionNames(LOOK_SECTIONS.filter((sec) => lookSections(p).includes(sec.id))).join(" + ")}`}
+                        title={`Sets ${[...sectionNames(LOOK_SECTIONS.filter((sec) => lookSections(p).includes(sec.id))),
+                          ...(lookMasksOf(p).length ? [LOOK_MASKS.label.toLowerCase()] : [])].join(" + ")}`}
                         className={`text-[11px] px-2 py-0.5 rounded-l border ${activePreset === p.name
                           ? "border-amber-500 text-amber-300" : "border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500"}`}>
                         {p === camerasLook ? `★ ${p.name}` : p.name}
@@ -6074,7 +6169,7 @@ ${known.license}
                   placeholder="Name it" data-testid="look-name"
                   onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") savePreset(); if (e.key === "Escape") setLookTicks(null); }}
                   className="w-full bg-neutral-900 border border-neutral-800 rounded px-2 py-1 text-xs" />
-                <div className="text-[10px] text-neutral-500">What it carries (never crop, spots or masks)</div>
+                <div className="text-[10px] text-neutral-500">What it carries (never crop or spots; brushes and objects stay with their photo)</div>
                 <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
                   {LOOK_SECTIONS.map((sec) => (
                     <label key={sec.id} className="flex items-center gap-1.5 text-[11px] text-neutral-300 cursor-pointer">
@@ -6086,9 +6181,26 @@ ${known.license}
                     </label>
                   ))}
                 </div>
+                {(settings.masks || []).some(travels) && (
+                  <div className="space-y-0.5" data-testid="look-save-masks">
+                    <div className="text-[10px] text-neutral-500"
+                      title="Found afresh on each photo the look is put on, beside that photo's own masks. A gradient goes where it was on this frame.">
+                      {LOOK_MASKS.label}
+                    </div>
+                    {(settings.masks || []).map((m, i) => travels(m) && (
+                      <label key={i} className="flex items-start gap-1.5 text-[11px] text-neutral-300 cursor-pointer">
+                        <input type="checkbox" className="accent-amber-400 mt-0.5" checked={maskTicks.includes(i)}
+                          onChange={(e) => setMaskTicks((now) => (e.target.checked
+                            ? [...now.filter((x) => x !== i), i].sort((a, b) => a - b) : now.filter((x) => x !== i)))} />
+                        <span className="min-w-0">{maskSummary(asLookMasks([m], "")[0])}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
                 <div className="flex justify-end gap-2">
                   <button onClick={() => setLookTicks(null)} className="text-xs text-neutral-500 hover:text-white">Cancel</button>
-                  <button onClick={savePreset} disabled={!presetName.trim() || !lookTicks.length} data-testid="look-save-go"
+                  <button onClick={savePreset} data-testid="look-save-go"
+                    disabled={!presetName.trim() || (!lookTicks.length && !maskTicks.some((i) => travels(settings.masks?.[i])))}
                     className="text-xs px-2 py-0.5 rounded border border-amber-600/70 text-amber-300 hover:text-amber-200 disabled:opacity-40">Save</button>
                 </div>
               </div>
