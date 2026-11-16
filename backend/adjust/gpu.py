@@ -63,6 +63,11 @@ def open_large() -> None:
         _large_open = True
 
 
+def large_open() -> bool:
+    """Whether a large model holds the card now. Called with :data:`LOCK` held."""
+    return _large_open
+
+
 def make_room() -> None:
     """Another model is about to open: a large one goes, and opens again when it is wanted."""
     with LOCK:

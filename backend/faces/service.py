@@ -91,14 +91,24 @@ logger = logging.getLogger(__name__)
 RENDER_CHUNK = 24
 
 # How many frames are looked at at once. This is what decides how many cores a
-# scan uses: both models run on one thread inside OpenCV, so a serial pass held
-# 0.99 of a core no matter that the machine has twenty. Measured over 96 frames
-# of a real folder (65 ms of detection each): two threads 1.6x, four 1.9x, six
-# 2.0x, and past eight it stops improving and starts costing — sixteen threads
-# were slower than eight while burning ten cores. The ceiling is not the core
-# count but the part of each frame that has to hold the GIL, so this is capped
-# rather than scaled to the machine.
+# scan uses: each model runs on one thread inside OpenCV, so a serial pass held
+# about one core no matter that the machine has twenty. Measured on 32 frames of
+# a real folder at the scan's 2000 px (196 faces):
+#
+#   describing on the CPU:   8 workers 327 ms a frame on 6.9 cores, 4 workers 433 ms
+#   describing on the card:  4 workers 120 ms a frame on 3.0 cores, 8 workers 126 ms on 5.0
+#
+# With the card only detection is left on the CPU, and that stops scaling at
+# four (separate processes did no better, so it is the machine, not the GIL).
+# Without it, describing is most of the work and eight still pays.
+FACE_WORKERS_WITH_CARD = min(os.cpu_count() or 4, 4)
 FACE_WORKERS = min(os.cpu_count() or 4, 8)
+
+
+def _face_workers() -> int:
+    from faces.detect import card_available
+
+    return FACE_WORKERS_WITH_CARD if card_available() else FACE_WORKERS
 
 
 class _Stopped(Exception):
@@ -237,7 +247,7 @@ def scan_folder(
         return find_faces(image, min_px=min_group_px)
 
     with ThreadPoolExecutor(
-        max_workers=FACE_WORKERS, thread_name_prefix="faces"
+        max_workers=_face_workers(), thread_name_prefix="faces"
     ) as pool:
         for start in range(0, len(todo), RENDER_CHUNK):
             if should_stop and should_stop():
