@@ -81,6 +81,22 @@ folder_pattern: "{year}/{year}-{month}-{day}"
   or `Untitled`. Only a card that appears somewhere unusual needs
   `sd_mount_paths`.
 
+- **Film scans.** TIFF (`.tif`, `.tiff`) and Photoshop (`.psd`) files are
+  listed when their extensions are in `import_extensions`. A new
+  `config.yaml` made from `config.example.yaml` has them; one made before
+  needs them added by hand:
+
+  ```yaml
+  import_extensions:
+    # … what is there already …
+    - ".tif"
+    - ".tiff"
+    - ".psd"
+  ```
+
+  Add `".psb"` too for Photoshop's large-document format. See "Film scans" in
+  the guide for what is read.
+
 Photool keeps its catalog (ratings, edits, faces) and thumbnail cache in
 `<library_root>/.photomanager/`. To keep them on another drive, set `db_path` and
 `thumbnail_cache`. Every other setting is explained in `config.example.yaml`.

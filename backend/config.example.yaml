@@ -55,6 +55,11 @@ import_extensions:
   - ".rw2"
   - ".raf"
   - ".pef"
+  # Film scans: TIFF and PSD, read at their full depth (16 bits a channel). Add
+  # ".psb" for Photoshop's large-document format.
+  - ".tif"
+  - ".tiff"
+  - ".psd"
 
 # How to handle files that already exist at the destination.
 # Options: skip | rename | overwrite

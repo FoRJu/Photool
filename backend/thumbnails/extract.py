@@ -541,8 +541,17 @@ def _source_jpeg(source: Path) -> Optional[bytes]:
         logger.info(f"No embedded JPEG in {source.name}, falling back to rawpy")
         return _decode_raw_with_rawpy(source)
 
-    if suffix in (".tif", ".tiff"):
-        return _read_standard_image(source)
+    from export import scans
+
+    if scans.is_scan(source):
+        # Read at its full depth and shown as the file holds it: this is what gives
+        # a 16-bit grey TIFF and a 16-bit PSD a thumbnail at all.
+        img = scans.read_8bit(source, 2400)
+        if img is None:
+            return None
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=92)
+        return buf.getvalue()
 
     from config import is_video
 

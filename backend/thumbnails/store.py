@@ -290,6 +290,12 @@ class ThumbnailStore:
         """
         stat = source.stat()
         ident = f"{_THUMBNAIL_CACHE_VERSION}:{source}:{stat.st_mtime_ns}:{stat.st_size}"
+        from export import scans
+
+        if scans.is_scan(source) and scans.READER_VERSION > 1:
+            # A TIFF's or PSD's picture changed with the reader: only theirs are
+            # made again, not every thumbnail in the library.
+            ident += f":scan{scans.READER_VERSION}"
         if variant:
             ident += f":{variant}"
         return hashlib.sha256(ident.encode()).hexdigest()
