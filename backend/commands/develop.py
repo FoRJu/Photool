@@ -140,7 +140,8 @@ _MASKS_MEANING = (
     "whole frame and feather 0-100 (the share of the section's shorter side its edges fade in over, so 100 "
     "fades from the middle); outside the section the mask reaches nothing, strokes and invert included. A "
     "section of the whole frame with feather 0 limits nothing, but is kept: it is a section switched on. "
-    "Replacing the list replaces every gradient and brush")
+    "Replacing the list replaces every gradient and brush. A mask may carry look, the name of the look it came "
+    "from: pasted, masks that all carry look go on beside the photo's own and replace those an earlier look put on")
 
 
 _SECOND_MEANING = ("A second exposure laid over this frame in linear light: an object with path (relative to the "
@@ -356,7 +357,8 @@ def upright_command(ctx: CommandContext, params: UprightParams):
 @command("develop.paste", params=PasteParams, writes=True)
 def paste(ctx: CommandContext, params: PasteParams):
     """Put one edit on many photos at once, replacing theirs. Each photo keeps its own
-    crop and straighten. ``paste_as`` can also adjust each photo towards ``source``;
+    crop and straighten. A preset's masks (develop.presets) are added to each photo's own,
+    replacing only masks an earlier look put on. ``paste_as`` can also adjust each photo towards ``source``;
     ``notes`` says what was done to each."""
     from adjust.develop import normalize
     from export.paste_match import adjuster, faces_from
@@ -374,7 +376,9 @@ def paste(ctx: CommandContext, params: PasteParams):
 @command("develop.presets")
 def presets(ctx: CommandContext, params):
     """The saved edit presets, by name, with their settings. Apply one with develop.paste
-    or develop.set."""
+    or develop.set. A preset's masks (a subject, sky, people, faces, depth or gradient, each
+    marked with the look's name) find their place on each photo, and develop.paste puts them
+    on beside the photo's own masks, in place of an earlier look's."""
     return {"presets": ctx.catalog.db.list_develop_presets()}
 
 

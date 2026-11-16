@@ -1153,13 +1153,28 @@ class CatalogService:
         own = self.photo_edit(filepath)
         merged = {k: v for k, v in own.items() if k not in keys}
         merged.update({k: v for k, v in settings.items() if k in keys})
-        if "masks" in keys and (settings.get("masks") or own.get("masks")):
+        incoming = settings.get("masks") or []
+        if "masks" in keys and incoming and all(m.get("look") for m in incoming):
+            # A look's masks find their place on each photo: they go on beside
+            # the photo's own, and take the place of those an earlier look put
+            # on. The photo's own come first, so when there are more than a
+            # photo holds, the look's are the ones left out.
+            merged["masks"] = [m for m in own.get("masks") or () if not m.get("look")] + list(incoming)
+        elif "masks" in keys and (incoming or own.get("masks")):
             # An object mask is a selection of one frame's pixels (adjust.objects),
             # like its spots: the frame keeps its own, and another's is not put on it.
-            masks = [m for m in settings.get("masks") or () if m.get("kind") != "object"]
+            masks = [m for m in incoming if m.get("kind") != "object"]
             masks += [m for m in own.get("masks") or () if m.get("kind") == "object"]
             merged["masks"] = masks
         return normalize(merged)
+
+    @staticmethod
+    def look_masks_left_out(settings: dict, edit: dict) -> int:
+        """How many of a look's masks did not fit on a photo (adjust.masks.MAX_MASKS)."""
+        incoming = settings.get("masks") or []
+        if not incoming or not all(m.get("look") for m in incoming):
+            return 0
+        return max(0, len(incoming) - sum(1 for m in edit.get("masks") or () if m.get("look")))
 
     @staticmethod
     def _carry_keys(keys) -> frozenset:
@@ -1183,7 +1198,8 @@ class CatalogService:
                adjust=None) -> dict:
         """Put ``settings``' ``keys`` on every target. What each had before comes
         back as ``previous``, so the paste can be taken back (:meth:`restore_edits`),
-        and what each has now as ``edits``.
+        and what each has now as ``edits``. A look's masks that did not fit on a
+        photo are counted in ``masks_left_out``.
 
         A crop or spots are not put on a frame turned the other way from
         ``source``: those targets keep their own, and are listed as such.
@@ -1199,7 +1215,7 @@ class CatalogService:
         carry = self._carry_keys(keys)
         placed = carry & set(self._PLACED_KEYS)
         turned = self._turned([source, *targets]) if placed and source else {}
-        written, previous, now, kept_framing, notes = [], {}, {}, [], {}
+        written, previous, now, kept_framing, notes, left_out = [], {}, {}, [], {}, {}
         for path in targets:
             if self.db.get_photo(path) is None or is_video(path):
                 continue                # a video is never developed
@@ -1214,10 +1230,12 @@ class CatalogService:
                 edit = normalize(edit)
                 if note:
                     notes[path] = note
+            if "masks" in keys_here and self.look_masks_left_out(clean, edit):
+                left_out[path] = self.look_masks_left_out(clean, edit)
             now[path] = self.set_photo_edit(path, edit)
             written.append(path)
         return {"copied": written, "previous": previous, "edits": now, "kept_framing": kept_framing,
-                "settings": clean, "notes": notes}
+                "settings": clean, "notes": notes, "masks_left_out": left_out}
 
     def apply_edit_to_burst(self, source: str, settings: Optional[dict], keys=None, adjust=None) -> dict:
         """Put one frame's edit on that frame and on the rest of its burst.

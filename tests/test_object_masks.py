@@ -355,3 +355,38 @@ class TestRoutes:
         other = {"kind": "radial", "cx": 0.5, "cy": 0.5, "rx": 0.2, "ry": 0.2, "exposure": -1.0}
         carried = client.app.state.catalog._carried(PHOTO, normalize({"masks": [other, theirs]}))
         assert [(m["kind"], m.get("matte")) for m in carried["masks"]] == [("radial", None), ("object", "a" * 32)]
+
+
+    def test_a_looks_masks_replace_an_earlier_looks_and_keep_the_photos_own(self, client):
+        from test_develop_routes import _edit
+
+        obj = {"kind": "object", "matte": "a" * 32, "exposure": 1.0, "parts": [{"box": [0, 0, 0.5, 0.5]}]}
+        own = {"kind": "radial", "cx": 0.5, "cy": 0.5, "rx": 0.2, "ry": 0.2, "exposure": -1.0}
+        earlier = {"kind": "subject", "exposure": 0.5, "look": "Earlier"}
+        _edit(client, masks=[obj, earlier, own])
+        sky = {"kind": "sky", "exposure": -0.5, "look": "Sky drama"}
+        carried = client.app.state.catalog._carried(PHOTO, normalize({"masks": [sky]}))
+        assert [(m["kind"], m.get("look")) for m in carried["masks"]] == [
+            ("object", None), ("radial", None), ("sky", "Sky drama")]
+
+    def test_a_plain_paste_still_replaces_all_but_object_masks(self, client):
+        from test_develop_routes import _edit
+
+        obj = {"kind": "object", "matte": "a" * 32, "exposure": 1.0, "parts": [{"box": [0, 0, 0.5, 0.5]}]}
+        _edit(client, masks=[obj, {"kind": "subject", "exposure": 0.5, "look": "Earlier"}])
+        # One mask of the paste has no look: it is a paste of Gradients & brushes.
+        paste = [{"kind": "sky", "exposure": -0.5, "look": "Sky drama"}, {"kind": "faces", "exposure": 0.3}]
+        carried = client.app.state.catalog._carried(PHOTO, normalize({"masks": paste}))
+        assert [m["kind"] for m in carried["masks"]] == ["sky", "faces", "object"]
+
+    def test_a_looks_masks_that_do_not_fit_are_left_out(self, client):
+        from test_develop_routes import _edit
+
+        own = [{"kind": "radial", "cx": 0.5, "cy": 0.5, "rx": 0.2, "ry": 0.2, "exposure": 0.1 * (i + 1)}
+               for i in range(14)]
+        _edit(client, masks=own)
+        look = [{"kind": k, "exposure": -0.5, "look": "Many"} for k in ("sky", "subject", "faces")]
+        out = client.app.state.catalog.apply_edit_to_many([PHOTO], {"masks": look}, ["masks"])
+        masks = out["edits"][PHOTO]["masks"]
+        assert len(masks) == 16 and [m["kind"] for m in masks[14:]] == ["sky", "subject"]
+        assert out["masks_left_out"] == {PHOTO: 1}

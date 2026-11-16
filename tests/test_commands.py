@@ -162,6 +162,18 @@ class TestDeveloping:
         assert call(client, "develop.get", filepath=OTHER)["settings"] == {"vibrance": 20}
 
 
+    def test_paste_a_preset_that_carries_masks(self, client):
+        own = {"kind": "radial", "cx": 0.5, "cy": 0.5, "rx": 0.2, "ry": 0.2, "exposure": 1.0}
+        call(client, "develop.set", filepath=OTHER, settings={"masks": [own]})
+        assert client.post("/api/export/develop/presets", json={
+            "name": "Sky drama", "sections": ["masks"],
+            "settings": {"masks": [{"kind": "sky", "exposure": -0.5}]}}).status_code == 200
+        preset = next(p for p in call(client, "develop.presets")["presets"] if p["name"] == "Sky drama")
+        for _ in range(2):                       # a second time replaces, never doubles
+            call(client, "develop.paste", filepaths=[OTHER], settings=preset["settings"])
+        masks = call(client, "develop.get", filepath=OTHER)["settings"]["masks"]
+        assert [(m["kind"], m.get("look")) for m in masks] == [("radial", None), ("sky", "Sky drama")]
+
 class TestExporting:
     def test_basket_then_export(self, client, tmp_path):
         assert call(client, "basket.add", filepaths=[PHOTO])["count"] == 1

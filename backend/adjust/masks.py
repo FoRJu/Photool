@@ -81,6 +81,10 @@ exposure slider's, where the mask is whole.
 
 A mask with every control at zero is kept: it is drawn, and its controls are
 about to be moved. It changes no pixel.
+
+A mask put on by a look carries ``look``, the look's name: it changes nothing in
+the picture, but says where the mask came from, so putting on the next look
+replaces it rather than adding to it.
 """
 
 import json
@@ -101,6 +105,8 @@ MAX_MASK_EXPOSURE = 4.0
 # twice as far: +200 over a picture at -100 is +100 where it is whole.
 MAX_MASK_SATURATION = 200.0
 MAX_MASKS = 16
+# The longest name of the look a mask came from.
+MAX_LOOK_NAME = 80
 KINDS = ("linear", "radial", "brush", "subject", "sky", "people", "faces", "object", "depth")
 # The kinds a model selects (adjust.segment.KINDS; not imported, so this module
 # needs no OpenCV).
@@ -289,7 +295,31 @@ def normalize_mask(mask) -> Optional[dict]:
             value = int(round(_num(mask.get(key), -100.0, 100.0, 0.0)))
         if value:
             out[key] = value
+    look = mask.get("look")
+    if isinstance(look, str):
+        look = "".join(c for c in " ".join(look.split()) if c.isprintable())[:MAX_LOOK_NAME].strip()
+        if look:
+            out["look"] = look
     return out
+
+
+# The kinds a look may carry: each finds its place afresh on every frame, or (a
+# gradient) is placed by the frame's shape alone. A brush is painted on one
+# frame and an object pointed at on one, so they stay with their photo.
+PORTABLE = ("linear", "radial") + CHOSEN + ("depth",)
+
+
+def portable(mask) -> Optional[dict]:
+    """The mask as a look may carry it to other photos, or ``None`` when it
+    cannot travel: a brush, an object, one person ("Person 2"), or a mask that
+    changes nothing. Strokes and a section are dropped, being drawn on this
+    frame; its range, inversion, areas, depth band and controls are kept."""
+    m = normalize_mask(mask)
+    if m is None or m["kind"] not in PORTABLE or m.get("person"):
+        return None
+    m.pop("strokes", None)
+    m.pop("section", None)
+    return m if active([m]) else None
 
 
 def normalize_range(rng) -> Optional[dict]:
