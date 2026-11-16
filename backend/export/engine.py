@@ -148,6 +148,14 @@ def _load_image(source: Path, max_resolution: int = 0) -> Optional[Image.Image]:
     ext = source.suffix.lower()
     if ext in _RAW_EXTENSIONS:
         return _load_raw(source, max_resolution)
+    from export import scans
+
+    if scans.is_scan(source):
+        # A film scan at its full depth, encoded to 8 bits only at the end; what
+        # the scan reader cannot read goes to Pillow below, as before.
+        img = scans.read_8bit(source, max_resolution)
+        if img is not None:
+            return img
     try:
         img = Image.open(source)
         img.load()
@@ -523,6 +531,15 @@ def _load_linear(source: Path, max_resolution: int = 0):
         if rgb is not None:
             return rgb
         # A RAW the linear path cannot read still gets the 8-bit decoder.
+    from export import scans
+
+    if scans.is_scan(source):
+        # A film scan at every bit it holds (16 bits a channel, or float). Its longer
+        # side may be up to about four times max_resolution: callers finish the
+        # resize in linear light, as they do for a RAW.
+        rgb = scans.read_linear(source, max_resolution)
+        if rgb is not None:
+            return rgb
     img = _load_image(source, max_resolution)
     if img is None:
         return None
@@ -1957,8 +1974,13 @@ def _source_long_side(source: Path) -> Optional[int]:
             with rawpy.imread(str(source)) as raw:
                 side = max(raw.sizes.width, raw.sizes.height)
         else:
-            with Image.open(source) as img:
-                side = max(img.size)
+            from export import scans
+
+            size = scans.size_of(source) if scans.is_scan(source) else None
+            if size is None:
+                with Image.open(source) as img:
+                    size = img.size
+            side = max(size)
     except Exception:
         side = None
     with _PREVIEW_LOCK:

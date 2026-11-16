@@ -32,10 +32,12 @@ class Config:
     # RAWs go through it too, for an older camera from the drawer. Videos (a
     # GoPro's, a DJI Pocket's) are copied off the card with the photographs and
     # shown beside them, to be watched and culled (see ``VIDEO_EXTENSIONS``).
+    # TIFF and PSD are film scans, read at their full depth (see export.scans);
+    # ".psb" is read too when added.
     import_extensions: list[str] = field(
         default_factory=lambda: [".cr3", ".cr2", ".dng", ".jpg", ".jpeg",
                                  ".nef", ".arw", ".orf", ".rw2", ".raf", ".pef",
-                                 ".mp4", ".mov"]
+                                 ".mp4", ".mov", ".tif", ".tiff", ".psd"]
     )
 
     # What to do with duplicates: skip | rename | overwrite

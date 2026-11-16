@@ -957,6 +957,39 @@ Raw; how close a LUT comes to a Fujifilm camera's own JPEG has not been measured
 here. And the LUTs are someone else's work under their own licence (abpy's are
 CC BY-NC-SA 4.0): Photool ships none and keeps a copy only of what you import.
 
+## Film scans
+
+A scanned negative or slide comes as a TIFF or a PSD, usually 16 bits a channel.
+Photool reads it at every bit it holds (`export/scans.py`) and develops it in
+linear light, as it does a RAW: a dense scan pulled three stops down keeps its
+smooth tone. The extensions must be in `import_extensions` (see the setup guide).
+
+- **TIFF**: 8 or 16 bits or 32-bit float; grey or RGB; with alpha, or with an
+  infrared dust channel as a fourth sample (it is not used, and not multiplied
+  in); uncompressed, LZW or deflate; either byte order; BigTIFF. Only the first
+  page is read; a scanner's thumbnail page after it is ignored. The Orientation
+  tag is honoured. A 16-bit grey TIFF with alpha is read at 8 bits only.
+- **PSD and PSB**: only the merged picture, grey or RGB, 8, 16 or 32 bits. Save
+  from Photoshop with **Maximize compatibility** on: a layered file saved without
+  it holds only a white page saying so, and that page is what Photool shows.
+  Layers are not read.
+- **Not read** at full depth: CMYK, Lab, palette and 1-bit files. They are
+  read by Pillow at 8 bits where it can, and otherwise get the placeholder.
+
+**Linear or gamma-encoded.** Most scanner software, and anything saved from
+Photoshop, writes gamma-encoded values; a "raw" scan (gamma 1.0) writes linear
+ones. Photool decides per file: with an ICC profile, by the gamma its grey ramp
+follows (within 0.15 of 1.0 is linear); with none, a float file is linear and an
+integer one gamma-encoded; a 32-bit PSD is always linear. Gamma-encoded values
+are decoded with the app's own display curve, as a JPEG's are.
+
+**Colour is not converted.** A profile's primaries are not used: a scan in
+ProPhoto or Adobe RGB is read as if its colours were sRGB's, as every JPEG with
+a profile is. It looks a little flat in saturation; the edit is there for that.
+
+A large scan is opened at a reduced size for the preview (a 100-megapixel scan
+is never built at full size for it), and at full size for an export.
+
 ## Culling a burst
 
 A school concert produces forty frames of the same three seconds. Choosing between
