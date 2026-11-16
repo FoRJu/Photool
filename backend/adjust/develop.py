@@ -999,11 +999,13 @@ def to_crs(settings: Optional[dict]) -> dict:
     return out
 
 
-# Crop and level. This app's own attributes carry the exact numbers (the box is
+# Quarter turn, mirror, crop and level. This app's own attributes carry the exact numbers (the box is
 # measured on the turned frame, which is not how Lightroom measures it). When
 # there is no turn the same rectangle is also written under Lightroom's names,
 # where the two coordinate systems agree, so the crop shows in Lightroom too.
 _GEOMETRY_CRS = {
+    "turn": "crs:PhotoolTurn",
+    "flip": "crs:PhotoolFlip",
     "angle": "crs:PhotoolAngle",
     "crop_x": "crs:PhotoolCropX",
     "crop_y": "crs:PhotoolCropY",
@@ -1021,7 +1023,9 @@ def _geometry_to_crs(clean: dict) -> dict:
     for key, name in _GEOMETRY_CRS.items():
         if key in clean:
             out[name] = f"{clean[key]:g}"
-    if "crop_x" in clean and "angle" not in clean:
+    # Lightroom measures its crop on the frame before a turn of its own, so a
+    # turned or mirrored crop is written only under this app's names.
+    if "crop_x" in clean and not any(k in clean for k in ("angle", "turn", "flip")):
         x, y = clean["crop_x"], clean["crop_y"]
         out["crs:HasCrop"] = "True"
         out["crs:CropLeft"] = f"{x:.6f}"

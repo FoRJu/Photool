@@ -1262,6 +1262,29 @@ class CatalogService:
             restored.append(filepath)
         return restored
 
+    def turn_photos(self, filepaths: list[str], by: int = 0, mirror: bool = False) -> dict:
+        """Turn each photograph's finished picture a further ``by`` degrees
+        clockwise (a multiple of 90), and mirror it when ``mirror``: the grid's
+        turn left and right. The crop and level go with it (adjust.geometry).
+        What each had before comes back as ``previous``, for an undo
+        (:meth:`restore_edits`), and what each has now as ``edits``."""
+        from adjust.geometry import GEOMETRY_KEYS, turned_by
+
+        previous, edits = {}, {}
+        for filepath in filepaths:
+            if self.db.get_photo(filepath) is None or is_video(filepath):
+                continue
+            own = self.photo_edit(filepath)
+            merged = {k: v for k, v in own.items() if k not in GEOMETRY_KEYS}
+            merged.update(turned_by(own, by, mirror))
+            previous[filepath] = own
+            if merged:
+                edits[filepath] = self.set_photo_edit(filepath, merged)
+            else:
+                self.clear_photo_edit(filepath)
+                edits[filepath] = {}
+        return {"previous": previous, "edits": edits}
+
     # ── Quality hints ────────────────────────────────────────────
 
     def folder_hints(self, folder: str, **filters) -> dict:
