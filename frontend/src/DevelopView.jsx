@@ -399,7 +399,7 @@ const KEYS = [...ALL_SLIDERS.map((s) => s.key), ...HSL_KEYS, ...BW_KEYS, "lens_p
 // leave each frame's own crop and level alone, because a crop is a composition
 // and fits only the frame it was drawn on. Copy carries them only when ticked
 // (COPY_SECTIONS), for frames made from a camera that did not move.
-const GEOM_KEYS = ["angle", "crop_x", "crop_y", "crop_w", "crop_h"];
+const GEOM_KEYS = ["turn", "flip", "angle", "crop_x", "crop_y", "crop_w", "crop_h"];
 // What belongs to one frame and is not carried to another by presets, nor
 // undone by Reset: its framing and the spots removed from it.
 const TRANSFORM_KEYS = ["tf_vertical", "tf_horizontal", "tf_aspect"];
@@ -419,6 +419,9 @@ const ZERO = {
   second: null,
   // The outline lens blur ends at (BlurOutline.jsx), a frame's own, or null.
   blur_outline: null,
+  // A quarter turn clockwise (0, 90, 180, 270) and a mirror, before the level and
+  // the crop, which are measured on the picture they give (adjust/geometry.py).
+  turn: 0, flip: 0,
   angle: 0, crop_x: null, crop_y: null, crop_w: null, crop_h: null,
 };
 
@@ -475,6 +478,36 @@ function fitBox(box, angle, W, H) {
 
 const FULL_BOX = { x: 0, y: 0, w: 1, h: 1 };
 
+// The frame's size once its quarter turn is on: what the crop is measured on.
+const turnedDims = (dims, turn) => (turn === 90 || turn === 270 ? { w: dims.h, h: dims.w } : dims);
+
+// Mirrors adjust.geometry.turned_by: the framing with the finished picture turned
+// a further ``by`` degrees clockwise, then mirrored. The crop and the level go
+// with the picture, so the same part of it is kept.
+function turnedBy(settings, by, mirror = false) {
+  let turn = Number(settings.turn) || 0;
+  let flip = !!Number(settings.flip);
+  let angle = Number(settings.angle) || 0;
+  let box = boxOf(settings);
+  const quarters = (((Math.round(by / 90)) % 4) + 4) % 4;
+  for (let i = 0; i < quarters; i += 1) {
+    // A further quarter clockwise of a mirrored picture is a quarter the other
+    // way under the mirror.
+    turn = (turn + (flip ? 270 : 90)) % 360;
+    if (box) box = { x: 1 - box.y - box.h, y: box.x, w: box.h, h: box.w };
+  }
+  if (mirror) {
+    flip = !flip;
+    angle = -angle;
+    if (box) box = { ...box, x: 1 - box.x - box.w };
+  }
+  return {
+    turn, flip: flip ? 1 : 0, angle,
+    crop_x: box ? box.x : null, crop_y: box ? box.y : null,
+    crop_w: box ? box.w : null, crop_h: box ? box.h : null,
+  };
+}
+
 function boxOf(settings) {
   const { crop_x: x, crop_y: y, crop_w: w, crop_h: h } = settings;
   return [x, y, w, h].every((v) => typeof v === "number") ? { x, y, w, h } : null;
@@ -524,7 +557,7 @@ const COPY_SECTIONS = [
     "halation", "halation_colour", "bloom", "glow_size", "glow_threshold"] },
   { id: "masks", label: "Gradients & brushes", keys: ["masks"] },
   { id: "transform", label: "Transform", keys: TRANSFORM_KEYS, framing: true },
-  { id: "level", label: "Level", keys: ["angle"], framing: true },
+  { id: "level", label: "Level & turn", keys: ["turn", "flip", "angle"], framing: true },
   { id: "crop", label: "Crop", keys: ["crop_x", "crop_y", "crop_w", "crop_h"], framing: true },
   { id: "spots", label: "Spots", keys: ["spots"], framing: true },
 ];
@@ -625,6 +658,8 @@ function asSettings(stored) {
   next.second = stored?.second?.path ? { ...stored.second } : null;
   next.blur_outline = stored?.blur_outline?.matte ? { ...stored.blur_outline } : null;
   next.angle = Number(stored?.angle) || 0;
+  next.turn = [90, 180, 270].includes(Number(stored?.turn)) ? Number(stored.turn) : 0;
+  next.flip = Number(stored?.flip) === 1 ? 1 : 0;
   const box = boxOf(stored || {});
   if (box) Object.assign(next, { crop_x: box.x, crop_y: box.y, crop_w: box.w, crop_h: box.h });
   return next;
@@ -640,7 +675,11 @@ function withFramingOf(tone, own) {
 }
 
 function hasFraming(settings) {
-  return Number(settings.angle) !== 0 || boxOf(settings) !== null;
+  return Number(settings.angle) !== 0 || boxOf(settings) !== null || isTurned(settings);
+}
+
+function isTurned(settings) {
+  return Number(settings.turn) !== 0 || Number(settings.flip) !== 0;
 }
 
 function isEdited(settings) {
@@ -653,7 +692,8 @@ function isToneEdited(settings) {
 }
 
 // Only the controls that are doing something, so the server stores an edit and
-// not a page of zeros.
+// not a page of zeros. ``withFraming`` "turn" keeps the quarter turn and the
+// mirror but not the level and crop: the picture the crop is drawn on.
 function activeOnly(settings, withFraming = true) {
   const out = Object.fromEntries(KEYS.filter((k) => Number(settings[k]) !== 0).map((k) => [k, settings[k]]));
   for (const key of CURVE_KEYS) if (curveEdited(settings[key])) out[key] = settings[key];
@@ -665,6 +705,10 @@ function activeOnly(settings, withFraming = true) {
   if (settings.second) out.second = settings.second;
   if (settings.blur_outline && Number(settings.lens_blur) !== 0) out.blur_outline = settings.blur_outline;
   if (withFraming) {
+    if (Number(settings.turn)) out.turn = Number(settings.turn);
+    if (Number(settings.flip)) out.flip = 1;
+  }
+  if (withFraming === true) {
     if (Number(settings.angle) !== 0) out.angle = settings.angle;
     const box = boxOf(settings);
     if (box) Object.assign(out, { crop_x: box.x, crop_y: box.y, crop_w: box.w, crop_h: box.h });
@@ -3677,10 +3721,14 @@ export default function DevelopView({ filepath, startVersion = 0, photos, picked
   const brushRef = useRef(brush);
   brushRef.current = brush;
   const fullView = cropMode || maskMode || spotMode;
+  // Which uncropped picture is on screen: "crop" turned as the edit says (the
+  // crop is drawn on it), "full" the frame as the camera gave it (masks and
+  // spots are drawn on that), "" the finished picture.
+  const fullKind = cropMode ? "crop" : fullView ? "full" : "";
   const [aspect, setAspect] = useState("free");
   const [draft, setDraft] = useState(null);          // the box while it is being dragged
   const [frameDims, setFrameDims] = useState({ w: 3, h: 2 });
-  const [previewFull, setPreviewFull] = useState(false); // the preview on screen is uncropped
+  const [previewFull, setPreviewFull] = useState(""); // the preview on screen is uncropped: fullKind
   const [geoOriginal, setGeoOriginal] = useState({ key: "", url: null });
   const [version, setVersion] = useState(startVersion);         // 0 is the photo's own edit, 1.. its copies
   const [copies, setCopies] = useState([]);          // virtual copies of this frame
@@ -4030,9 +4078,9 @@ export default function DevelopView({ filepath, startVersion = 0, photos, picked
     // While the crop is being drawn the whole frame is shown, so the box has
     // something to be drawn on; the framing is applied the moment it is done.
     previewNext.current = {
-      full: fullView,
+      full: fullKind,
       body: {
-        adjustment: isEdited(settings) ? activeOnly(settings, !fullView) : {},
+        adjustment: isEdited(settings) ? activeOnly(settings, cropMode ? "turn" : !fullView) : {},
         // While the hand is still moving, a draft (a quarter of the pixels, so
         // about a quarter of the time) keeps the picture up with it.
         draft: held.current,
@@ -4042,7 +4090,7 @@ export default function DevelopView({ filepath, startVersion = 0, photos, picked
     if (previewTimer.current) clearTimeout(previewTimer.current);
     previewTimer.current = setTimeout(drawPreviews, 40);
     return undefined;
-  }, [settings, loading, fullView, lookRefresh, drawPreviews]);
+  }, [settings, loading, fullView, fullKind, cropMode, lookRefresh, drawPreviews]);
 
   // Letting go draws the last draft again at full size.
   useEffect(() => {
@@ -4954,7 +5002,8 @@ ${known.license}
     if (!def || def.ratio === null) return;
     const base = boxOf(settingsRef.current) || FULL_BOX;
     const angle = Number(settingsRef.current.angle) || 0;
-    const box = fitBox(boxOfRatio(def.ratio, base, frameDims.w, frameDims.h), angle, frameDims.w, frameDims.h);
+    const d = turnedDims(frameDims, Number(settingsRef.current.turn) || 0);
+    const box = fitBox(boxOfRatio(def.ratio, base, d.w, d.h), angle, d.w, d.h);
     commitBox(box);
   }, [commitBox, frameDims, enterCrop]);
 
@@ -4962,7 +5011,8 @@ ${known.license}
     const angle = Math.max(-45, Math.min(45, Number(value) || 0));
     enterCrop();
     const box = boxOf(settingsRef.current) || FULL_BOX;
-    const fitted = fitBox(box, angle, frameDims.w, frameDims.h);
+    const d = turnedDims(frameDims, Number(settingsRef.current.turn) || 0);
+    const fitted = fitBox(box, angle, d.w, d.h);
     commitFraming({
       angle,
       crop_x: fitted.x, crop_y: fitted.y, crop_w: fitted.w, crop_h: fitted.h,
@@ -4973,8 +5023,14 @@ ${known.license}
     setAspect("free");
     applySettings({
       ...settingsRef.current,
-      angle: 0, crop_x: null, crop_y: null, crop_w: null, crop_h: null,
-    }, "Crop and level removed");
+      turn: 0, flip: 0, angle: 0, crop_x: null, crop_y: null, crop_w: null, crop_h: null,
+    }, "Crop, level and turn removed");
+  }, [applySettings]);
+
+  // Turn the finished picture a quarter, or mirror it; crop and level go with it.
+  const turnPicture = useCallback((by, mirror = false) => {
+    applySettings({ ...settingsRef.current, ...turnedBy(settingsRef.current, by, mirror) },
+      mirror ? "Mirrored" : by > 0 ? "Turned right" : "Turned left");
   }, [applySettings]);
 
   // A rescue or a look sets its own group and leaves the rest as it was.
@@ -5002,10 +5058,19 @@ ${known.license}
       const found = res.ok ? await res.json() : null;
       if (!found) { setUpright({ busy: null, note: "Could not read this photo" }); return; }
       if (!found.found) { setUpright({ busy: null, note: `Left as it is: ${found.reason}.` }); return; }
+      // It measures the frame as the camera gave it. A turn keeps a clockwise
+      // tilt clockwise; a mirror makes it the other way.
+      const flipped = Number(settingsRef.current.flip) === 1;
+      const level = flipped ? -found.angle : found.angle;
+      const sideways = [90, 270].includes(Number(settingsRef.current.turn));
+      if (mode === "vertical" && sideways) {
+        setUpright({ busy: null, note: "Left as it is: on a frame turned a quarter, the camera's verticals are the picture's horizontals. Use Level, or the Vertical slider." });
+        return;
+      }
       if (mode === "vertical") {
-        applyGroup(["tf_vertical", "angle"], { tf_vertical: found.tf_vertical, angle: found.angle }, "Upright: verticals");
+        applyGroup(["tf_vertical", "angle"], { tf_vertical: found.tf_vertical, angle: level }, "Upright: verticals");
       } else {
-        applyGroup(["angle"], { angle: found.angle }, "Upright: level");
+        applyGroup(["angle"], { angle: level }, "Upright: level");
       }
       setUpright({ busy: null, note: `From ${found.lines} lines.` });
     } catch {
@@ -5212,7 +5277,10 @@ ${known.license}
     if (!sections.length) { setNote("Nothing is ticked to copy"); return; }
     if (!keys.some((k) => k in active)) { setNote("None of what is ticked is set on this frame"); return; }
     copyEdit({
-      settings: active, keys, source: filepath, landscape: frameDims.w >= frameDims.h,
+      settings: active, keys, source: filepath, landscape: (() => {
+        const d = turnedDims(frameDims, Number(settingsRef.current.turn) || 0);
+        return d.w >= d.h;
+      })(),
       sections: sectionNames(sections),
     });
     setNote(`Copied ${sectionNames(sections).join(" + ")}. Ctrl+V on another frame, or Paste edit on a selection in the grid`);
@@ -5223,14 +5291,17 @@ ${known.license}
     const copied = copiedEdit();
     if (!copied) { setNote("Nothing copied yet"); return; }
     const current = settingsRef.current;
-    const turned = (frameDims.w >= frameDims.h) !== copied.landscape;
+    const ownDims = turnedDims(frameDims, Number(current.turn) || 0);
+    const turned = (ownDims.w >= ownDims.h) !== copied.landscape;
     const keys = turned ? copied.keys.filter((k) => !PLACED_KEYS.includes(k)) : copied.keys;
     const next = { ...current };
     for (const key of keys) next[key] = key in copied.settings ? copied.settings[key] : ZERO[key];
-    // A level on its own turns this frame's own crop, which has to stay on picture.
+    // A level (or a turn) on its own moves this frame's own crop, which has to
+    // stay on picture.
     const own = boxOf(current);
     if (keys.includes("angle") && !keys.includes("crop_x") && own) {
-      const fitted = fitBox(own, Number(next.angle) || 0, frameDims.w, frameDims.h);
+      const d = turnedDims(frameDims, Number(next.turn) || 0);
+      const fitted = fitBox(own, Number(next.angle) || 0, d.w, d.h);
       Object.assign(next, { crop_x: fitted.x, crop_y: fitted.y, crop_w: fitted.w, crop_h: fitted.h });
     }
     setActivePreset("");
@@ -5561,13 +5632,16 @@ ${known.license}
         // D opens this view, so D closes it: the same key goes there and back.
         case "d": case "D": if (!e.repeat) onClose(); break;
         // The brush's size, as in Lightroom.
+        // Otherwise they turn the picture a quarter left and right.
         case "[":
           if (maskMode) setBrush({ size: Math.max(0.0005, brushRef.current.size / 1.2) });
           else if (spotMode) setSpotSize((v) => Math.max(SPOT_SIZE.min, v / 1.2));
+          else if (!e.repeat) turnPicture(-90);
           break;
         case "]":
           if (maskMode) setBrush({ size: Math.min(0.25, brushRef.current.size * 1.2) });
           else if (spotMode) setSpotSize((v) => Math.min(SPOT_SIZE.max, v * 1.2));
+          else if (!e.repeat) turnPicture(90);
           break;
         // Q for spots, as in Lightroom.
         case "q": case "Q": toggleSpots(); break;
@@ -5596,7 +5670,7 @@ ${known.license}
   }, [onClose, copySettings, pasteSettings, step, reset, runAuto, applyToBurst,
     cropMode, endCrop, startCrop, maskMode, endMasks, loupe, placeLoupe, version, setBrush, undo, redo,
     zoomAbout, maskSel, objectNextGuess, showKeys,
-    spotMode, spotSel, toggleSpots, removeSpot]);
+    spotMode, spotSel, toggleSpots, removeSpot, turnPicture]);
 
   // Object URLs are the one thing here that leaks if it is forgotten. A save
   // still waiting on its debounce is sent now: closing the view or stepping to
@@ -5622,7 +5696,7 @@ ${known.license}
       : (preview && !previewFull ? preview : original);
   // The preview on screen is only usable if it was drawn for the same mode: a
   // cropped picture under the crop box would put the box on the wrong pixels.
-  const previewReady = preview && (previewFull === fullView || !framed);
+  const previewReady = preview && (previewFull === fullKind || !framed);
   const shown = pickingNegative
     ? `${API}/thumb/${filepath.split("/").map(encodeURIComponent).join("/")}?size=preview&camera=1`
     : cameraJpeg && cameraJpegUrl?.file === filepath ? cameraJpegUrl.url
@@ -5649,18 +5723,24 @@ ${known.license}
   }
   const camerasLook = camera ? presets.find((p) => p.camera === camera) || null : null;
   const angle = Number(settings.angle) || 0;
+  const turn = Number(settings.turn) || 0;
+  const flip = Number(settings.flip) || 0;
+  // The frame the crop is drawn on: the camera's, turned as the edit says.
+  const cropDims = turnedDims(frameDims, turn);
   const activeAspect = ASPECTS.find((a) => a.id === aspect);
   const ratioFrac = activeAspect && activeAspect.ratio
-    ? ((activeAspect.ratio === "orig" ? frameDims.w / frameDims.h : activeAspect.ratio) * frameDims.h) / frameDims.w
+    ? ((activeAspect.ratio === "orig" ? cropDims.w / cropDims.h : activeAspect.ratio) * cropDims.h) / cropDims.w
     : null;
   const box = draft || boxOf(settings) || FULL_BOX;
-  const shape = (box.w * frameDims.w) / (box.h * frameDims.h);
+  const shape = (box.w * cropDims.w) / (box.h * cropDims.h);
   const spotCount = (settings.spots || []).length;
   const frameSummary = (() => {
     const kept = boxOf(settings);
-    const ratio = kept && (kept.w * frameDims.w) / (kept.h * frameDims.h);
+    const ratio = kept && (kept.w * cropDims.w) / (kept.h * cropDims.h);
     const named = kept && ASPECTS.find((a) => typeof a.ratio === "number" && Math.abs(a.ratio - ratio) < 0.01);
     return [
+      turn !== 0 && `turned ${turn === 270 ? "left" : turn === 90 ? "right" : "180°"}`,
+      flip !== 0 && "mirrored",
       kept && `crop ${named ? named.label : `${ratio.toFixed(2)}:1`}`,
       angle !== 0 && `level ${angle > 0 ? "+" : ""}${angle}°`,
       Number(settings.lens_profile) === 1 && "lens corrected",
@@ -5882,10 +5962,10 @@ ${known.license}
                 title="Back to the picture as framed (Esc)">done</button>
             )}>
             <Part title="Crop & level" testid="part-crop"
-              hint="Crop to a shape (C) and straighten the horizon. Nothing is cut from the file; the crop is part of the edit."
+              hint="Crop to a shape (C), turn a sideways frame upright ([ and ]) and straighten the horizon. Nothing is cut from the file; the crop is part of the edit."
               extra={framed && (
                 <button onClick={resetFraming} className="text-[10px] text-neutral-600 hover:text-neutral-300"
-                  title="Back to the whole frame, unturned">remove</button>
+                  title="Back to the whole frame, as the camera stood it">remove</button>
               )}>
               <div className="flex flex-wrap gap-1">
                 {ASPECTS.map((a) => (
@@ -5896,6 +5976,16 @@ ${known.license}
                     {a.label}
                   </button>
                 ))}
+              </div>
+              <div className="flex items-center gap-1 text-xs" data-testid="turn-buttons">
+                <span className={`w-20 shrink-0 select-none ${turn || flip ? "text-amber-300" : "text-neutral-400"}`}
+                  title="A quarter turn, for a frame the camera did not stand up. The crop and level go with the picture.">Turn</span>
+                <button onClick={() => turnPicture(-90)} title="Turn left a quarter ([)" data-testid="turn-left"
+                  className="px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500">⟲ Left</button>
+                <button onClick={() => turnPicture(90)} title="Turn right a quarter (])" data-testid="turn-right"
+                  className="px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500">⟳ Right</button>
+                <button onClick={() => turnPicture(0, true)} title="Mirror left to right" data-testid="turn-mirror"
+                  className={`px-2 py-0.5 rounded border ${flip ? "border-amber-500 text-amber-400" : "border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500"}`}>⇋ Mirror</button>
               </div>
               <label className="flex items-center gap-2 text-xs">
                 <span className={`w-20 shrink-0 select-none ${angle ? "text-amber-300" : "text-neutral-400"}`}
@@ -6182,7 +6272,7 @@ Number(settings.mono) ? (
                 </div>
               )}
               {cropMode && (
-                <CropOverlay box={box} ratio={ratioFrac} angle={angle} dims={frameDims}
+                <CropOverlay box={box} ratio={ratioFrac} angle={angle} dims={cropDims}
                   onDraft={setDraft}
                   onCommit={(final) => { setDraft(null); commitBox(final); }} />
               )}

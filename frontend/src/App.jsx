@@ -1214,7 +1214,7 @@ function ReferenceBadge({ filepath }) {
 }
 
 function SelectionBar({ photos, selected, tags, busy, message, selecting, onEdit, onBasket, onCollage, onSelectAll, onClear,
-  copied, onPaste, onUndoPaste, onMatch, onDouble, onSameMoment, onLook }) {
+  copied, onPaste, onUndoPaste, onMatch, onDouble, onSameMoment, onLook, onTurn }) {
   const pasteMode = usePasteAs();
   const reference = useMatchReference();
   const [tagDraft, setTagDraft] = useState("");
@@ -1281,6 +1281,15 @@ function SelectionBar({ photos, selected, tags, busy, message, selecting, onEdit
             ? `Paste ${copied.sections.join(" + ")} from ${copied.source.split("/").pop()} onto the selected photos. The rest of each photo's edit stays its own.`
             : "Copy an edit in the develop view first (open a photo, press D, then Ctrl+C)"}
           className={`${btn} text-amber-200`}>⧉ Paste edit</button>
+        {/* A quarter turn for frames the camera did not stand up: crop and level go with it. */}
+        {onTurn && (
+          <span className="flex items-center gap-1">
+            <button disabled={off} onClick={() => onTurn(-90)} data-testid="turn-left-grid" className={btn}
+              title="Turn the selected photos a quarter left. Their crop and level go with them; Undo takes it back.">⟲</button>
+            <button disabled={off} onClick={() => onTurn(90)} data-testid="turn-right-grid" className={btn}
+              title="Turn the selected photos a quarter right. Their crop and level go with them; Undo takes it back.">⟳</button>
+          </span>
+        )}
         {/* How the paste adjusts each photo: the same choice as the develop view's
             Paste menu (editClipboard.js). */}
         <select disabled={off || !copied} value={pasteMode} onChange={(e) => keepPasteAs(e.target.value)}
@@ -5232,6 +5241,28 @@ function PhotoolApp({ access }) {
       + (relit.length ? ` · the light itself changed on ${relit.slice(0, 4).join(", ")}${relit.length > 4 ? ", …" : ""}: check those` : ""));
   }, [handleEditSaved]);
 
+  // A quarter turn on every selected photo (backend /photos/turn), taken back by
+  // the same Undo as a paste.
+  const turnPicked = useCallback(async (by) => {
+    const filepaths = photos.filter((p) => picked.has(p.filepath)).map((p) => p.filepath);
+    if (!filepaths.length) return;
+    setPickBusy(true);
+    setPickMessage("");
+    setPasteUndo(null);
+    try {
+      const res = await fetch(`${API}/photos/turn`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filepaths, by }),
+      });
+      const out = await res.json();
+      if (!res.ok) { setPickMessage(out.detail || "Could not turn them"); return; }
+      for (const [fp, stored] of Object.entries(out.edits || {})) handleEditSaved(fp, stored);
+      const n = Object.keys(out.edits || {}).length;
+      setPickMessage(`Turned ${n} photo${n === 1 ? "" : "s"} ${by < 0 ? "left" : "right"}`);
+      setPasteUndo(out.previous || null);
+    } catch { setPickMessage("The backend is not reachable"); } finally { setPickBusy(false); }
+  }, [photos, picked, handleEditSaved]);
+
   const undoPaste = useCallback(async () => {
     if (!pasteUndo) return;
     setPickBusy(true);
@@ -5244,7 +5275,7 @@ function PhotoolApp({ access }) {
       for (const [fp, stored] of Object.entries(pasteUndo)) handleEditSaved(fp, stored);
       const n = Object.keys(pasteUndo).length;
       setPasteUndo(null);
-      setPickMessage(`Paste taken back from ${n} photo${n === 1 ? "" : "s"}`);
+      setPickMessage(`Taken back from ${n} photo${n === 1 ? "" : "s"}`);
     } catch { setPickMessage("The backend is not reachable"); } finally { setPickBusy(false); }
   }, [pasteUndo, handleEditSaved]);
 
@@ -6018,6 +6049,7 @@ function PhotoolApp({ access }) {
             onSelectAll={() => setPicked(new Set(photos.map((p) => p.filepath)))} onClear={clearPicked}
             copied={clipboard} onPaste={pastePicked} onUndoPaste={pasteUndo ? undoPaste : null}
             onLook={lookPicked}
+            onTurn={turnPicked}
             onMatch={() => setMatching(true)}
             onDouble={() => {
               // In the order they were selected: the first is the one that keeps the copy.
