@@ -17,21 +17,27 @@ not read here: the caller falls back to Pillow at 8 bits, and failing that to th
 placeholder. A 16-bit grey file with alpha is read by OpenCV only at 8 bits: it gets
 the 8-bit road (``read_8bit``) and not the linear one.
 
-**PSD and PSB**: the merged picture only, as Photoshop writes it when the file is
-saved with "Maximize compatibility". Grey or RGB, 8, 16 or 32 bits, raw or PackBits.
-Layers, CMYK, Lab, indexed, duotone and bitmap files are not read (``None``). A
+**PSD and PSB**: the merged picture, as Photoshop writes it when the file is saved
+with "Maximize compatibility". Grey or RGB, 8, 16 or 32 bits, raw or PackBits. A
 layered file saved without compatibility has only a white page with a notice as its
-merged picture, and that is what is shown: nothing in the file says so.
+merged picture, and says so in its version resource (1057): its picture is then
+rebuilt from its layers (export.psd_layers), and if that cannot be done the file has
+no picture, rather than the white page. CMYK, Lab, indexed, duotone and bitmap files
+are not read (``None``).
 
 **The tone of the values.** A scan is either gamma-encoded (most scanner software,
 anything from Photoshop) or linear (a "raw" scan, gamma 1.0). With an ICC profile, a
 grey ramp is pushed through it and the profile's gamma fitted: within 0.15 of 1.0 the
-values are used as they are, otherwise they are decoded with the app's own display
-curve, as every JPEG is. With no profile, a float file is linear and an integer file
-display-encoded. A 32-bit PSD is linear float whatever its profile says (Photoshop's
-32-bit mode). The profile's *primaries* are not used: a wide-gamut scan (ProPhoto,
-Adobe RGB) is read as if its primaries were the display's, as every JPEG with a
-profile is read today. Colour management is not done here.
+values are used as they are; near the display's 2.2 they are decoded with the app's
+own display curve, as every JPEG is; otherwise (ProPhoto's 1.8) with the fitted
+gamma. With no profile, a float file is linear and an integer file display-encoded.
+A 32-bit PSD is linear float whatever its profile says (Photoshop's 32-bit mode).
+
+**The colours.** A matrix profile's primaries (rXYZ, gXYZ, bXYZ) are honoured: a
+ProPhoto or Adobe RGB scan is turned into the app's sRGB/Rec. 709 primaries, and
+what lies outside them is clipped at zero. Without its primaries a scan was flat and
+leaned red. A profile made of tables (no matrix) is read as if its primaries were
+sRGB's.
 """
 
 import hashlib
@@ -50,13 +56,24 @@ logger = logging.getLogger(__name__)
 
 SCAN_EXTENSIONS = {".tif", ".tiff", ".psd", ".psb"}
 
+# Raised when the picture a scan gives changes, so that thumbnails made from the old
+# one are made again (thumbnails.store keys a scan's thumbnails by it). 2: layered
+# PSDs rebuilt from their layers, profiles' primaries honoured.
+READER_VERSION = 2
+
 # A decode is reduced by OpenCV (or a PSD's planes shrunk) by the largest of these
 # factors that still leaves twice what was asked for: the rule _load_raw follows for
 # a half-size RAW. A medium-format scan is 60 to 120 megapixels; a preview must not
 # build that as float32.
 _REDUCTIONS = (8, 4, 2)
-# A profile whose fitted gamma is this close to 1.0 is taken as linear.
+# A profile whose fitted gamma is this close to 1.0 is taken as linear, and one this
+# close to the display's 2.2 is decoded with the app's display curve.
 _LINEAR_SLACK = 0.15
+_DISPLAY_GAMMA, _DISPLAY_SLACK = 2.2, 0.2
+# Bradford-adapted XYZ (D50, as every ICC profile's matrix is) to linear sRGB.
+_SRGB_FROM_D50 = np.array([[3.1338561, -1.6168667, -0.4906146],
+                           [-0.9787684, 1.9161415, 0.0334540],
+                           [0.0719453, -0.2289914, 1.4052427]])
 
 _TONE_BY_PROFILE: dict = {}
 _TONE_LOCK = threading.Lock()
@@ -204,7 +221,8 @@ def _psd_layout(path: Path) -> Optional[dict]:
             if sig != b"8BPS" or version not in (1, 2):
                 return None
             info = {"version": version, "channels": channels, "height": height,
-                    "width": width, "depth": depth, "mode": mode, "icc": None}
+                    "width": width, "depth": depth, "mode": mode, "icc": None,
+                    "merged": True}
             (n,) = struct.unpack(">I", f.read(4))
             f.seek(n, 1)
             (n,) = struct.unpack(">I", f.read(4))
@@ -219,9 +237,17 @@ def _psd_layout(path: Path) -> Optional[dict]:
                 if rid == 1039:
                     info["icc"] = f.read(size)
                     f.seek(size % 2, 1)
+                elif rid == 1057 and size >= 5:
+                    # The version info: its fifth byte says whether the merged
+                    # picture is the real one ("Maximize compatibility") or a white
+                    # page with a notice.
+                    version_info = f.read(size)
+                    info["merged"] = bool(version_info[4])
+                    f.seek(size % 2, 1)
                 else:
                     f.seek(size + size % 2, 1)
             f.seek(end)
+            info["layers"] = end
             if version == 1:
                 (n,) = struct.unpack(">I", f.read(4))
             else:
@@ -375,7 +401,34 @@ def _profile_gamma(profile: bytes) -> Optional[float]:
     return float(np.mean(np.log(y[good]) / np.log(v[good])))
 
 
-def _tone_of_profile(profile: bytes) -> Optional[str]:
+def _profile_matrix(profile: bytes) -> Optional[np.ndarray]:
+    """The profile's primaries as a 3x3 from its linear values to linear sRGB, or
+    ``None`` with no matrix or one that is sRGB's own."""
+    if len(profile) < 132 or profile[16:20] != b"RGB ":
+        return None
+    (count,) = struct.unpack(">I", profile[128:132])
+    tags = {}
+    for i in range(min(count, 200)):
+        sig, at, size = struct.unpack(">4sII", profile[132 + 12 * i:144 + 12 * i])
+        tags[sig] = profile[at:at + size]
+    columns = []
+    for sig in (b"rXYZ", b"gXYZ", b"bXYZ"):
+        data = tags.get(sig)
+        if not data or len(data) < 20 or data[:4] != b"XYZ ":
+            return None
+        columns.append([v / 65536.0 for v in struct.unpack(">3i", data[8:20])])
+    primaries = np.array(columns).T
+    if abs(np.linalg.det(primaries)) < 1e-6:
+        return None
+    matrix = _SRGB_FROM_D50 @ primaries
+    if np.abs(matrix - np.eye(3)).max() < 0.02:
+        return None
+    return matrix.astype(np.float32)
+
+
+def _colour_of_profile(profile: bytes) -> dict:
+    """``tone`` ("linear", "display" or ``None``), the ``gamma`` to decode a managed
+    file with (see below), and the ``matrix`` to sRGB primaries; cached."""
     key = hashlib.sha1(profile).hexdigest()
     with _TONE_LOCK:
         if key in _TONE_BY_PROFILE:
@@ -386,9 +439,66 @@ def _tone_of_profile(profile: bytes) -> Optional[str]:
         logger.debug(f"Unreadable ICC profile: {e}")
         gamma = None
     tone = None if gamma is None else ("linear" if abs(gamma - 1.0) <= _LINEAR_SLACK else "display")
+    try:
+        matrix = _profile_matrix(profile)
+    except Exception as e:
+        logger.debug(f"No primaries in the ICC profile: {e}")
+        matrix = None
+    # A display-encoded file in other primaries, or with another gamma, is turned
+    # into sRGB through true linear light (as Photoshop's own conversion would) and
+    # then read as a JPEG is: "gamma" is set for it. Otherwise the app's curve.
+    managed = tone == "display" and (matrix is not None or abs(gamma - _DISPLAY_GAMMA) > _DISPLAY_SLACK)
+    colour = {"tone": tone, "gamma": gamma if managed else None, "matrix": matrix}
     with _TONE_LOCK:
-        _TONE_BY_PROFILE[key] = tone
-    return tone
+        _TONE_BY_PROFILE[key] = colour
+    return colour
+
+
+def _tone_of_profile(profile: bytes) -> Optional[str]:
+    return _colour_of_profile(profile)["tone"]
+
+
+def _gamma_and_matrix(profile: Optional[bytes]) -> tuple:
+    if not profile:
+        return None, None
+    colour = _colour_of_profile(profile)
+    return colour["gamma"], colour["matrix"]
+
+
+_AS_JPEG = None
+
+
+def _as_jpeg_table() -> np.ndarray:
+    """True linear light (0..1, 65536 steps) to the app's linear, as an sRGB JPEG of
+    it would be read: encoded with sRGB's curve, decoded with the app's."""
+    global _AS_JPEG
+    if _AS_JPEG is None:
+        from adjust.render import decode
+
+        v = np.linspace(0.0, 1.0, 65536)
+        srgb = np.where(v <= 0.0031308, 12.92 * v, 1.055 * np.power(v, 1 / 2.4) - 0.055)
+        _AS_JPEG = decode(srgb.astype(np.float32))
+    return _AS_JPEG
+
+
+def _to_working(rgb: np.ndarray, matrix: Optional[np.ndarray], managed: bool) -> np.ndarray:
+    """Linear light in the profile's primaries to sRGB's (``matrix``), clipped at
+    zero; ``managed``, from true linear to the app's linear as well (the light of a
+    JPEG of the same picture). In place, by strips."""
+    if matrix is None and not managed:
+        return rgb
+    rgb = np.ascontiguousarray(rgb, dtype=np.float32)
+    if managed:
+        from export.psd_layers import lut
+    step = max(1, (1 << 22) // max(rgb.shape[1], 1))
+    for top in range(0, rgb.shape[0], step):
+        strip = rgb[top:top + step]
+        if matrix is not None and strip.ndim == 3 and strip.shape[2] == 3:
+            strip[...] = strip @ matrix.T
+        np.maximum(strip, 0.0, out=strip)
+        if managed:
+            strip[...] = lut(strip, _as_jpeg_table())
+    return rgb
 
 
 def _tone(profile: Optional[bytes], is_float: bool) -> str:
@@ -429,8 +539,16 @@ def _decode_table(levels: int) -> np.ndarray:
     return table
 
 
-def _to_float(arr: np.ndarray, tone: str) -> Optional[np.ndarray]:
-    """Integer or float samples to scene-linear float32, 1.0 = the file's white."""
+def _to_float(arr: np.ndarray, tone: str, gamma: Optional[float] = None) -> Optional[np.ndarray]:
+    """Integer or float samples to scene-linear float32, 1.0 = the file's white;
+    display-encoded values with the app's curve, or with ``gamma`` when given."""
+    if gamma is not None and tone == "display":
+        if arr.dtype in (np.uint8, np.uint16):
+            levels = 256 if arr.dtype == np.uint8 else 65536
+            table = (np.arange(levels, dtype=np.float64) / (levels - 1)) ** gamma
+            return table.astype(np.float32)[arr]
+        out = np.clip(np.nan_to_num(arr.astype(np.float32)), 0.0, None)
+        return np.ascontiguousarray(np.power(out, np.float32(gamma)), dtype=np.float32)
     if arr.dtype in (np.uint8, np.uint16):
         levels = 256 if arr.dtype == np.uint8 else 65536
         if tone == "display":
@@ -505,31 +623,46 @@ def _read_tiff(path: Path, max_resolution: int, shallow: bool = False) -> Option
         arr = arr[..., 2::-1]
     tone = _tone(info["icc"], np.issubdtype(arr.dtype, np.floating)) if info else \
         ("linear" if np.issubdtype(arr.dtype, np.floating) else "display")
-    out = _to_float(arr, tone)
+    gamma, matrix = _gamma_and_matrix(info["icc"] if info else None)
+    out = _to_float(arr, tone, gamma)
     if out is None:
         return None
     if out.ndim == 2:
         out = np.repeat(out[..., None], 3, axis=2)
+        matrix = None
+    out = _to_working(out, matrix, gamma is not None and tone == "display")
     if info:
         out = _orient(out, info["orientation"])
     return np.ascontiguousarray(out)
 
 
 def _read_psd(path: Path, max_resolution: int = 0) -> Optional[np.ndarray]:
-    """The merged picture of a PSD or PSB as scene-linear (H, W, 3) float32, or ``None``."""
+    """The picture of a PSD or PSB as scene-linear (H, W, 3) float32, or ``None``: its
+    merged picture, or, saved without "Maximize compatibility", its layers'."""
     info = _psd_layout(path)
     if not _psd_readable(info):
         return None
     wanted = 1 if info["mode"] == 1 else 3
     target = _shrunk_size(info["width"], info["height"], max_resolution)
-    planes = _psd_planes(path, info, wanted, target)
+    if info["merged"]:
+        planes = _psd_planes(path, info, wanted, target)
+    else:
+        from export import psd_layers
+
+        planes = psd_layers.composite(path, info, target)
+        if planes is None:
+            logger.warning(f"{path.name} was saved without Photoshop's \"Maximize "
+                           f"compatibility\" and its layers could not be read: no picture")
+            return None
     if planes is None:
         return None
     tone = "linear" if info["depth"] == 32 else _tone(info["icc"], False)
-    planes = [_to_float(p, tone) for p in planes]
+    gamma, matrix = _gamma_and_matrix(info["icc"])
+    planes = [_to_float(p, tone, gamma) for p in planes]
+    managed = gamma is not None and tone == "display"
     if wanted == 1:
-        planes = planes * 3
-    return np.ascontiguousarray(np.stack(planes, axis=-1))
+        return _to_working(np.stack(planes * 3, axis=-1), None, managed)
+    return _to_working(np.stack(planes, axis=-1), matrix, managed)
 
 
 def _read(path: Path, max_resolution: int, shallow: bool) -> Optional[np.ndarray]:
@@ -566,6 +699,11 @@ def read_8bit(path, max_resolution: int = 0) -> Optional[Image.Image]:
             return Image.fromarray(np.clip(np.rint(enc * 255.0), 0, 255).astype(np.uint8), "RGB")
         except Exception as e:
             logger.info(f"Scan reader could not encode {path.name}: {e}")
+    if _is_psd(path):
+        info = _psd_layout(path)
+        if info is not None and not info["merged"]:
+            # Pillow would read the white page that stands in for the picture.
+            return None
     try:
         img = Image.open(path)
         img.load()
