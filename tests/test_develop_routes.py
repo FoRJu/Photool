@@ -299,3 +299,52 @@ class TestWhiteBalance:
         settings = _edit(client, wb_kelvin=3200, wb_tint=-7)
         assert settings["wb_kelvin"] == 3200 and settings["wb_tint"] == -7
         assert "wb_tint" not in _edit(client, wb_tint=-7)
+
+
+class TestNegative:
+    def _post(self, client, **body):
+        res = client.post("/api/export/develop/negative", json={"filepaths": [PHOTO], **body})
+        assert res.status_code == 200, res.text
+        return res.json()[PHOTO]
+
+    def test_auto_and_read_back(self, client):
+        assert client.get("/api/export/develop/negative", params={"filepath": PHOTO}).json() == \
+            {"negative": None, "tone": None}
+        plain = _mean(client.get(f"/api/thumb/{PHOTO}?size=grid").content)
+        found = self._post(client, kind="auto")
+        assert found["kind"] in ("colour", "bw") and len(found["base"]) == 3
+        got = client.get("/api/export/develop/negative", params={"filepath": PHOTO}).json()
+        assert got["negative"] == found
+        # The grid draws the scene; the camera's own thumbnail stays the scan.
+        inverted = _mean(client.get(f"/api/thumb/{PHOTO}?size=grid&v=n").content)
+        assert abs(inverted - plain) > 20
+        assert abs(_mean(client.get(f"/api/thumb/{PHOTO}?size=grid&camera=1").content) - plain) < 2
+        # Nothing went into the edit.
+        assert client.get("/api/photos/edit", params={"filepath": PHOTO}).json()["settings"] == {}
+
+    def test_a_slider_does_not_measure_again(self, client):
+        found = self._post(client, kind="colour")
+        moved = self._post(client, kind="colour", contrast=40, balance=20)
+        assert moved["base"] == found["base"] and moved["range"] == found["range"]
+        assert moved["contrast"] == 40 and moved["balance"] == 20
+
+    def test_a_given_base_is_kept(self, client):
+        found = self._post(client, kind="colour", base=[0.5, 0.4, 0.3], base_from="roll")
+        assert found["base"] == [0.5, 0.4, 0.3] and found["base_from"] == "roll"
+
+    def test_base_at_bare_light_is_a_sentence(self, client, monkeypatch):
+        from adjust import negative
+
+        ok = client.post("/api/export/develop/negative/base-at",
+                         json={"filepath": PHOTO, "u": 0.5, "v": 0.08, "settings": {}, "size": 400})
+        assert ok.status_code == 200 and len(ok.json()["base"]) == 3
+        monkeypatch.setattr(negative, "CLIPPED", 0.5)     # the bright strip, as if bare light
+        res = client.post("/api/export/develop/negative/base-at",
+                          json={"filepath": PHOTO, "u": 0.5, "v": 0.08, "settings": {}, "size": 400})
+        assert res.status_code == 422
+        assert "bare light" in res.json()["detail"]
+
+    def test_kind_null_clears(self, client):
+        self._post(client, kind="bw")
+        assert self._post(client, kind=None) is None
+        assert client.get("/api/export/develop/negative", params={"filepath": PHOTO}).json()["negative"] is None

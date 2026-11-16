@@ -434,6 +434,14 @@ _MIGRATIONS = [
         updated_at TEXT DEFAULT ''
     )""",
     "CREATE INDEX IF NOT EXISTS idx_photo_edits_updated ON photo_edits(updated_at)",
+    # A scanned negative's description (adjust.negative): a fact about the
+    # photograph, kept apart from its edit so that reset, paste and looks never
+    # touch it.
+    """CREATE TABLE IF NOT EXISTS photo_negatives (
+        filepath TEXT PRIMARY KEY,
+        settings TEXT NOT NULL,
+        updated_at TEXT
+    )""",
     # Move the edits that used to live on the basket row onto the photographs
     # they describe. OR IGNORE so a photo that already has its own edit keeps it,
     # and the UPDATE blanks the source afterwards: the migration is then
@@ -664,6 +672,14 @@ _STAT_FIELDS = {
     "sharpness": 0.0,
     "dhash": "",
 }
+
+
+def _decode_negative(raw: str) -> Optional[dict]:
+    try:
+        found = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return found if isinstance(found, dict) else None
 
 
 def _decode_settings(payload: str) -> dict:
@@ -1737,6 +1753,65 @@ class CatalogDB:
                 if row:
                     return True
         return False
+
+    def set_negative(self, filepath: str, description: dict) -> None:
+        """Store a negative's description for one file."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO photo_negatives (filepath, settings, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(filepath) DO UPDATE SET
+                    settings = excluded.settings, updated_at = excluded.updated_at
+                """,
+                (filepath, json.dumps(description, sort_keys=True), datetime.now().isoformat()),
+            )
+
+    def clear_negative(self, filepath: str) -> bool:
+        with self._connect() as conn:
+            return conn.execute(
+                "DELETE FROM photo_negatives WHERE filepath = ?", (filepath,)
+            ).rowcount > 0
+
+    def get_negative(self, filepath: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT settings FROM photo_negatives WHERE filepath = ?", (filepath,)
+            ).fetchone()
+        return _decode_negative(row["settings"]) if row else None
+
+    def list_negatives(self) -> dict[str, dict]:
+        """Every stored negative description, by filepath (a small table)."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT filepath, settings FROM photo_negatives").fetchall()
+        out = {}
+        for r in rows:
+            found = _decode_negative(r["settings"])
+            if found:
+                out[r["filepath"]] = found
+        return out
+
+    def frame_negative_files(self, folder: str, base_name: str) -> list[str]:
+        """The files of this frame that carry a negative's description."""
+        prefix = f"{folder}/{base_name}." if folder else f"{base_name}."
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT filepath FROM photo_negatives WHERE substr(filepath, 1, ?) = ?",
+                (len(prefix), prefix),
+            ).fetchall()
+        return [r["filepath"] for r in rows]
+
+    def frame_negative(self, folder: str, base_name: str) -> Optional[dict]:
+        """The negative's description for any file of this frame (a RAW+JPEG pair is
+        one frame: marking either marks the frame), or ``None``."""
+        prefix = f"{folder}/{base_name}." if folder else f"{base_name}."
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT settings FROM photo_negatives WHERE substr(filepath, 1, ?) = ? "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (len(prefix), prefix),
+            ).fetchone()
+        return _decode_negative(row["settings"]) if row else None
 
     def list_photo_edits(self, folder: Optional[str] = None) -> dict[str, dict]:
         """Every stored edit, or the ones under one folder, by filepath.

@@ -1004,6 +1004,60 @@ built from tables, without a matrix, is read as if its colours were sRGB's.
 A large scan is opened at a reduced size for the preview (a 100-megapixel scan
 is never built at full size for it), and at full size for an export.
 
+### Negatives
+
+A scan of a negative shows dark where the scene was bright, and a colour negative
+is orange all over. **Film negative** in the develop view (just above White
+balance) turns it back into the scene (`adjust/negative.py`): choose **Colour
+negative** or **Black & white negative**. Any file can be a negative: a TIFF or
+PSD from a scanner, a RAW of a negative photographed with a camera, a JPEG.
+
+Being a negative belongs to the photograph, not to its edit. It is kept in the
+catalog and in the sidecar (`crs:PhotoolNegative`) apart from the edit, and the
+frame is inverted where it is decoded, so everything after it (white balance,
+Auto, the grey picker, masks, the depth map, the loupe, looks, the export) works
+on the scene as on any photograph. Reset, copy and paste, presets and looks never
+turn a photograph back into a negative, nor carry one roll's film base onto a
+digital photograph. The grid shows the scene; the camera's own thumbnail (what
+Develop shows while it opens) still shows the scan.
+
+**The film base** is what black looked like on that film through that scanner:
+unexposed film, for a colour negative the orange mask plus fog. Every pixel is
+divided by it, which takes the mask away and makes black neutral. It is found
+three ways, and the panel says which:
+
+- **from the film's border**: the flat, unclipped film round the picture (or the
+  gap between frames), outside the crop or, with none, outside the frame inset by
+  6%. Bare light and sprocket holes (clipped white in the scan) and the scanner's
+  holder (darker than any film) are left out. This is the best calibration there is.
+- **from the darkest part of the picture**, when there is no border: right when the
+  frame has a true black in it, a little dark and tinted when it has not.
+- **picked by you**: **Pick film base**, then click unexposed film. The scan is
+  shown as it is while you pick.
+
+One frame's base is good for the whole roll: same film, same development, same
+scanner settings. **Give to the roll** gives this frame's base, kind, Contrast and
+Layer balance to the selected photos, or to the other scans in the folder (it says
+how many first); each then measures its own range. That is the cure for a frame
+with no border.
+
+**Crop, then measure again.** The picture is measured inside the edit's crop, so
+crop off the holder and the border and press **Measure again**. A base you picked
+or gave is kept; to find the base afresh, choose Not a negative and then the kind
+again.
+
+**Contrast** is the film's contrast, and also what corrects a scan read with the
+wrong curve: a linear scan read as gamma-encoded, or the reverse, comes out with
+more or less contrast and the right colours. **Layer balance** evens out the three
+colour layers, which a scanner does not see with the same contrast, so blacks and
+whites come out neutral. Bring it down for a scene that really was all one colour,
+a sunset or a tungsten-lit room, to keep its warmth.
+
+Auto measures a negative inside its crop: the holder and the sprocket holes, once
+inverted, are far brighter than the picture. Not yet done for a negative: the face
+scan, smart search and the measuring pass read the plain thumbnail, which is still
+the scan.
+
 ## Culling a burst
 
 A school concert produces forty frames of the same three seconds. Choosing between
