@@ -163,6 +163,10 @@ class AdjustmentParams(BaseModel):
     highlight_sat: int = 0     # 0 .. 100
     # Framing. A crop is the kept rectangle as fractions of the whole frame after
     # the turn; all four or none. `angle` is degrees clockwise (-45..45).
+    # `turn` is a quarter turn clockwise (0, 90, 180, 270) and `flip` (1) a mirror,
+    # both applied before the level and the crop, which are measured after them.
+    turn: int = 0
+    flip: int = 0
     angle: float = 0.0
     crop_x: Optional[float] = None
     crop_y: Optional[float] = None
@@ -2674,6 +2678,24 @@ async def restore_photo_edits(req: PhotoEditRestoreRequest, request: Request):
     return {"ok": True, "restored": restored}
 
 
+class PhotoTurnRequest(BaseModel):
+    filepaths: list[str] = []
+    by: int = 90            # degrees clockwise: 90 right, -90 (or 270) left, 180
+    mirror: bool = False    # then mirror left to right
+
+
+@router.post("/photos/turn")
+async def turn_photos(req: PhotoTurnRequest, request: Request):
+    """Turn a selection a quarter (or mirror it), crop and level with it. Each
+    photo's edit from before comes back as ``previous``, for an undo
+    (``/photos/edit/restore``)."""
+    if req.by % 90:
+        raise HTTPException(status_code=400, detail="A turn is a multiple of 90 degrees")
+    catalog = _get_catalog(request)
+    result = await _run_blocking(catalog.turn_photos, req.filepaths, req.by, req.mirror)
+    return {"ok": True, **result}
+
+
 @router.post("/photos/edit/burst")
 async def set_burst_edit(req: PhotoEditBurstRequest, request: Request):
     """Put one frame's edit on that frame and on the rest of its burst.
@@ -3633,14 +3655,18 @@ async def develop_white_point(req: WhitePointRequest, request: Request):
 # (adjust.negative): these routes never touch the edit or its history.
 
 def _crop_area(settings: dict) -> Optional[tuple]:
-    """The edit's crop as (left, top, right, bottom) fractions, or ``None``."""
-    from adjust.geometry import normalize_geometry
+    """The edit's crop as (left, top, right, bottom) fractions of the frame as
+    scanned (before a quarter turn), or ``None``."""
+    from adjust.geometry import from_turned, normalize_geometry
 
     geo = normalize_geometry(settings)
     if "crop_x" not in geo:
         return None
     x, y = geo.get("crop_x", 0.0), geo.get("crop_y", 0.0)
-    return (x, y, x + geo.get("crop_w", 1.0), y + geo.get("crop_h", 1.0))
+    w, h = geo.get("crop_w", 1.0), geo.get("crop_h", 1.0)
+    corners = [from_turned(geo, *c) for c in ((x, y), (x + w, y + h))]
+    xs, ys = [c[0] for c in corners], [c[1] for c in corners]
+    return (min(xs), min(ys), max(xs), max(ys))
 
 
 @router.get("/export/develop/negative")

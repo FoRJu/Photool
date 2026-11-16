@@ -41,6 +41,9 @@ _MEANING = {
     "shadow_sat": "Split toning: how strongly the shadows are tinted",
     "highlight_hue": "Split toning: the hue tinting the highlights (0-360). Needs highlight_sat",
     "highlight_sat": "Split toning: how strongly the highlights are tinted",
+    "turn": "Quarter turn clockwise, 0/90/180/270, applied first (before level and crop): for a frame "
+            "the camera did not stand up. Crop and angle are measured on the turned picture",
+    "flip": "1 mirrors the picture left to right, after the turn",
     "angle": "Straighten, degrees clockwise",
     "crop_x": "Crop: left edge of the kept rectangle, as a fraction of the levelled frame. All four crop keys or none",
     "crop_y": "Crop: top edge, as a fraction",
@@ -178,8 +181,8 @@ def controls() -> list[dict]:
     out.append({"key": develop.BLUR_OUTLINE_KEY, "min": None, "max": None, "default": None,
                 "meaning": _BLUR_OUTLINE_MEANING})
     for key in GEOMETRY_KEYS:
-        low, high = (-MAX_ANGLE, MAX_ANGLE) if key == "angle" else (0.0, 1.0)
-        out.append({"key": key, "min": low, "max": high, "default": 0 if key == "angle" else None,
+        low, high = {"angle": (-MAX_ANGLE, MAX_ANGLE), "turn": (0, 270), "flip": (0, 1)}.get(key, (0.0, 1.0))
+        out.append({"key": key, "min": low, "max": high, "default": 0 if key in ("angle", "turn", "flip") else None,
                     "meaning": _MEANING.get(key, "")})
     return out
 
