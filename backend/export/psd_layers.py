@@ -147,7 +147,8 @@ def read_records(path: Path, info: dict) -> Optional[list]:
 # ── Channels ─────────────────────────────────────────────────────────
 
 def _channel(f, where: tuple, h: int, w: int, depth: int, psb: bool) -> Optional[np.ndarray]:
-    """One channel of a layer, ``h`` by ``w``, as float32 0..1 (32-bit: as stored)."""
+    """One channel of a layer, ``h`` by ``w``, as the file holds it: native-endian
+    uint8 or uint16, or float32 (see :func:`_unit_range`)."""
     at, length = where
     if length < 2 or h <= 0 or w <= 0:
         return None
@@ -183,12 +184,21 @@ def _channel(f, where: tuple, h: int, w: int, depth: int, psb: bool) -> Optional
         else:
             # Each row delta-coded, sample by sample, wrapping as the integers do.
             arr = np.frombuffer(raw, dtype=dtype, count=h * w).reshape(h, w)
-            arr = np.cumsum(arr.astype(dtype.newbyteorder("=")), axis=1, dtype=dtype.newbyteorder("="))
+            return np.cumsum(arr, axis=1, dtype=dtype.newbyteorder("="))
     else:
         return None
     if depth == 32:
         return np.nan_to_num(arr.astype(np.float32))
-    return arr.astype(np.float32) / np.float32(255 if depth == 8 else 65535)
+    return arr.astype(dtype.newbyteorder("="), copy=False)
+
+
+def _unit_range(plane: np.ndarray) -> np.ndarray:
+    """Samples to float32 0..1 (a float plane is already in its own units)."""
+    if plane.dtype == np.uint8:
+        return plane.astype(np.float32) * np.float32(1 / 255)
+    if plane.dtype == np.uint16:
+        return plane.astype(np.float32) * np.float32(1 / 65535)
+    return plane
 
 
 # ── The canvas ───────────────────────────────────────────────────────
@@ -255,7 +265,10 @@ class _Reader:
         ct, cl, cb, cr = canvas.box(rect)
         if cb <= ct or cr <= cl:
             return None
-        return _fit(plane, cb - ct, cr - cl)
+        # Shrunk while still the file's integers, and only then made float: a
+        # preview of a 100-megapixel layer converts a tenth of the samples, and
+        # moving memory, not arithmetic, is what limits several reads at once.
+        return _unit_range(_fit(plane, cb - ct, cr - cl))
 
     def mask(self, canvas: _Canvas, L: _Layer):
         """The layer mask on a canvas-size plane, or ``None`` with no mask in use."""

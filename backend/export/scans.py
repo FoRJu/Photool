@@ -649,6 +649,13 @@ def _read_psd(path: Path, max_resolution: int = 0) -> Optional[np.ndarray]:
     else:
         from export import psd_layers
 
+        # Built at the size asked for, not twice it: every layer is shrunk with
+        # INTER_AREA as it is read, so the margin left for a resize in linear light
+        # buys nothing here, and on a 5600-pixel scan it meant blending, masking
+        # and curving every layer at 4800 pixels for a 2400-pixel thumbnail.
+        if max_resolution > 0 and max(info["width"], info["height"]) > max_resolution:
+            ratio = max_resolution / max(info["width"], info["height"])
+            target = (max(1, round(info["width"] * ratio)), max(1, round(info["height"] * ratio)))
         planes = psd_layers.composite(path, info, target)
         if planes is None:
             logger.warning(f"{path.name} was saved without Photoshop's \"Maximize "
