@@ -629,16 +629,20 @@ async def get_thumb(
         if size != "full" and not camera:
             # A frame with an edit shows it. The client's ``v`` only busts the
             # browser's copy; whether to draw the edit is the catalog's call.
-            from export.engine import resolve_export_source
+            from export.engine import negative_stamp, resolve_export_source
             from thumbnails.edited import get_edited_thumbnail
 
             catalog = _get_catalog(request)
             settings = await _run_blocking(catalog.edit_of, folder_path, None if ver < 0 else ver)
-            if settings:
-                develop_source = resolve_export_source(full_path, config.export_prefer_raw)
+            develop_source = resolve_export_source(full_path, config.export_prefer_raw)
+            # A negative with no edit is drawn as its scene too; the camera's own
+            # thumbnail (``camera``) stays the scan as it is.
+            stamp = await _run_blocking(negative_stamp, develop_source)
+            if settings or stamp:
                 thumb_data = await loop.run_in_executor(
                     None,
-                    lambda: get_edited_thumbnail(develop_source, settings, cache, thumb_size),
+                    lambda: get_edited_thumbnail(develop_source, settings, cache, thumb_size,
+                                                 stamp),
                 )
                 edited = thumb_data is not None
         if thumb_data is None:
@@ -893,18 +897,21 @@ async def catalog_photos(
     edits = await _run_blocking(catalog.photo_edits, folder_path)
     edited = await _run_blocking(catalog.edited_filepaths, folder_path)
     versions = await _run_blocking(catalog.version_info, [p.filepath for p in photos])
+    negatives = await _run_blocking(catalog.negative_stamps)
     return {
         "photos": [
             _photo_row(p, tag_map.get(p.filepath, []), edits.get(p.filepath, {}), p.filepath in edited,
-                       versions.get(p.filepath))
+                       versions.get(p.filepath), negatives.get((p.folder, p.base_name), ""))
             for p in photos
         ],
     }
 
 
-def _photo_row(p, tags: list, edit: dict, edited: bool, versions: Optional[dict] = None) -> dict:
+def _photo_row(p, tags: list, edit: dict, edited: bool, versions: Optional[dict] = None,
+               negative: str = "") -> dict:
     """One photo as the grid draws it. ``versions`` is its entry of
-    ``catalog.version_info``: how many virtual copies, and which is its cover."""
+    ``catalog.version_info``: how many virtual copies, and which is its cover.
+    ``negative``: the frame's negative stamp (catalog.negative_stamps), or ``""``."""
     versions = versions or {}
     return {
         "filepath": p.filepath,
@@ -932,6 +939,7 @@ def _photo_row(p, tags: list, edit: dict, edited: bool, versions: Optional[dict]
         "copies": versions.get("copies", 0),
         "cover": versions.get("cover", 0),
         "cover_edit": versions.get("cover_edit", {}),
+        "negative": negative,
     }
 
 
@@ -1019,10 +1027,12 @@ def _year_rows(catalog, photos: list) -> list:
     """Search Photos (pairs merged) as the grid draws them, edits and covers included."""
     edits = catalog.photo_edits() if any(p.edited for p in photos) else {}
     versions = catalog.version_info([p.record.filepath for p in photos]) if photos else {}
+    negatives = catalog.negative_stamps() if photos else {}
     rows = []
     for photo in photos:
         row = _photo_row(photo.record, sorted(photo.tags), edits.get(photo.record.filepath, {}), photo.edited,
-                         versions.get(photo.record.filepath))
+                         versions.get(photo.record.filepath),
+                         negatives.get((photo.record.folder, photo.record.base_name), ""))
         row.update(rating=photo.rating, flag=photo.flag, color_label=photo.label)
         rows.append(row)
     return rows
@@ -1506,7 +1516,7 @@ def _open_previews(request: Request, filepaths: list[str]) -> tuple[list, list[s
 
 def _shown_preview(request: Request, filepath: str) -> Optional[bytes]:
     """A photograph's preview as the grid shows it: its cover's edit drawn when it has one."""
-    from export.engine import resolve_export_source
+    from export.engine import negative_stamp, resolve_export_source
     from thumbnails.edited import get_edited_thumbnail
 
     config = request.app.state.config
@@ -1515,9 +1525,11 @@ def _shown_preview(request: Request, filepath: str) -> Optional[bytes]:
     if not full_path.exists():
         return None
     settings = _get_catalog(request).edit_of(filepath)
-    if settings:
-        data = get_edited_thumbnail(resolve_export_source(full_path, config.export_prefer_raw),
-                                    settings, cache, ThumbnailSize.PREVIEW)
+    develop_source = resolve_export_source(full_path, config.export_prefer_raw)
+    stamp = negative_stamp(develop_source)
+    if settings or stamp:
+        data = get_edited_thumbnail(develop_source, settings, cache, ThumbnailSize.PREVIEW,
+                                    stamp)
         if data:
             return data
     return get_thumbnail(full_path, cache, ThumbnailSize.PREVIEW)
@@ -3532,14 +3544,20 @@ class MaskImageRequest(FrameGeometry):
     areas: list = []             # people: the parts of them (adjust.parts.AREAS), none for all
 
 
-def _mask_frame(config, filepath: str, size: int, geometry: FrameGeometry):
+def _mask_frame(config, filepath: str, size: int, geometry: FrameGeometry,
+                as_decoded: bool = False):
     """The frame a mask is drawn on in the develop view: the preview's decode,
     with its lens corrected and its perspective transformed as the edit asks.
-    ``None`` if it cannot be read."""
-    from export.engine import linear_base, resolve_export_source
+    ``as_decoded``: the file as decoded, a negative not inverted (picking its film
+    base). ``None`` if it cannot be read."""
+    from export.engine import frame_of, linear_base, resolve_export_source, scan_as_decoded
 
     source = resolve_export_source(_library_file(config, filepath), config.export_prefer_raw)
-    frame = linear_base(source, size)
+    if as_decoded:
+        rgb = scan_as_decoded(source, size)
+        frame = None if rgb is None else frame_of(source, rgb)
+    else:
+        frame = linear_base(source, size)
     transform = {k: getattr(geometry, k) for k in ("tf_vertical", "tf_horizontal", "tf_aspect")
                  if getattr(geometry, k)}
     if frame is not None and (geometry.lens_profile or geometry.distortion or transform):
@@ -3607,6 +3625,141 @@ async def develop_white_point(req: WhitePointRequest, request: Request):
     if found is None:
         raise HTTPException(status_code=404, detail="Could not read this frame")
     return {"kelvin": found[0], "tint": found[1]}
+
+
+# ── A scanned negative ──────────────────────────────────────────────
+#
+# Being a negative is a fact about the photograph, kept apart from its edit
+# (adjust.negative): these routes never touch the edit or its history.
+
+def _crop_area(settings: dict) -> Optional[tuple]:
+    """The edit's crop as (left, top, right, bottom) fractions, or ``None``."""
+    from adjust.geometry import normalize_geometry
+
+    geo = normalize_geometry(settings)
+    if "crop_x" not in geo:
+        return None
+    x, y = geo.get("crop_x", 0.0), geo.get("crop_y", 0.0)
+    return (x, y, x + geo.get("crop_w", 1.0), y + geo.get("crop_h", 1.0))
+
+
+@router.get("/export/develop/negative")
+async def develop_negative(filepath: str, request: Request):
+    """Whether this photograph is a negative, and how a scan's values are read."""
+    from export import scans
+    from export.engine import resolve_export_source
+
+    config = request.app.state.config
+    catalog = _get_catalog(request)
+
+    def read():
+        source = resolve_export_source(_library_file(config, filepath), config.export_prefer_raw)
+        tone = scans.tone_of(source) if scans.is_scan(source) else None
+        return {"negative": catalog.frame_negative_of(filepath), "tone": tone}
+
+    return await _run_blocking(read)
+
+
+class NegativeRequest(BaseModel):
+    filepaths: list[str]
+    kind: Optional[str] = None          # "colour", "bw", "auto"; None clears
+    base: Optional[list[float]] = None
+    base_from: Optional[str] = None
+    contrast: Optional[float] = None
+    balance: Optional[float] = None
+    remeasure: bool = False
+
+
+@router.post("/export/develop/negative")
+async def develop_set_negative(req: NegativeRequest, request: Request):
+    """Mark photographs as negatives, change how they are inverted, or clear it. A
+    file with no description yet, ``remeasure`` or a given ``base`` is measured on
+    the scan as decoded, inside its edit's crop; otherwise only the kind, Contrast
+    and Layer balance are replaced. Returns ``{filepath: description | null}``."""
+    from adjust import negative
+    from config import is_video
+    from export.engine import negative_changed, resolve_export_source, scan_as_decoded
+
+    config = request.app.state.config
+    catalog = _get_catalog(request)
+    if req.kind not in (None, "colour", "bw", "auto"):
+        raise HTTPException(status_code=400, detail="kind is colour, bw, auto or null")
+
+    def one(filepath: str):
+        if is_video(Path(filepath).suffix):
+            raise ValueError("A video is not developed")
+        source = resolve_export_source(_library_file(config, filepath), config.export_prefer_raw)
+        if req.kind is None:
+            catalog.clear_negative(filepath)
+            negative_changed(source)
+            return None
+        old = catalog.frame_negative_of(filepath)
+        kind = None if req.kind == "auto" else req.kind
+        if old is None or req.remeasure or req.base is not None:
+            rgb = scan_as_decoded(source, negative.MEASURE_SIZE)
+            if rgb is None:
+                raise ValueError(f"Could not read {Path(filepath).name}")
+            base = req.base
+            base_from = req.base_from
+            if base is None and req.remeasure and old is not None and old["base_from"] in ("picked", "roll"):
+                # Measuring again keeps a base the person chose; it measures the range.
+                base, base_from = old["base"], old["base_from"]
+            if kind is None and old is not None and req.kind != "auto":
+                kind = old["kind"]
+            found = negative.measure(rgb, kind, _crop_area(catalog.edit_of(filepath)),
+                                     base, base_from)
+            for key in ("contrast", "balance"):
+                value = getattr(req, key)
+                if value is not None:
+                    found[key] = value
+                elif old is not None:
+                    found[key] = old[key]
+        else:
+            found = dict(old)
+            if kind is not None:
+                found["kind"] = kind
+            for key in ("contrast", "balance"):
+                value = getattr(req, key)
+                if value is not None:
+                    found[key] = value
+        stored = catalog.set_negative(filepath, found)
+        negative_changed(source)
+        return stored
+
+    def run():
+        return {filepath: one(filepath) for filepath in req.filepaths}
+
+    try:
+        return await _run_blocking(run)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/export/develop/negative/base-at")
+async def develop_negative_base_at(req: WhitePointRequest, request: Request):
+    """The film base at a point of the frame, on the scan as decoded. Stores nothing:
+    the panel posts it to /export/develop/negative with base_from "picked". 422 with a
+    sentence when the point is not film."""
+    from adjust import negative
+    from adjust.develop import normalize
+    from adjust.geometry import source_point
+
+    config = request.app.state.config
+
+    def read():
+        frame = _mask_frame(config, req.filepath, req.size, req, as_decoded=True)
+        if frame is None:
+            return None
+        u, v = source_point(normalize(req.settings), req.u, req.v, *frame.size)
+        return negative.base_at(frame.rgb, u, v)
+
+    try:
+        found = await _run_blocking(read)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Could not read this frame")
+    return {"base": found}
 
 
 @router.get("/export/develop/second")
@@ -4313,7 +4466,7 @@ async def develop_auto(req: AutoToneRequest, request: Request):
     the file the export will develop rather than the half that was basked.
     """
     from adjust.render import auto_develop
-    from export.engine import linear_base, resolve_export_source
+    from export.engine import linear_base, negative_of, resolve_export_source
 
     config = request.app.state.config
     source = resolve_export_source(
@@ -4326,6 +4479,17 @@ async def develop_auto(req: AutoToneRequest, request: Request):
         frame = linear_base(source, req.size)
         if frame is None:
             return None
+        area = _crop_area(_get_catalog(request).edit_of(req.filepath)) if negative_of(source) else None
+        if area is not None:
+            # A negative's scan holds the holder and the sprocket holes, many stops
+            # brighter than the picture once inverted: Auto measures inside the crop.
+            from adjust.render import LinearFrame
+
+            h, w = frame.rgb.shape[:2]
+            left, top, right, bottom = area
+            box = frame.rgb[int(top * h):max(int(top * h) + 1, int(bottom * h)),
+                            int(left * w):max(int(left * w) + 1, int(right * w))]
+            frame = LinearFrame(box)
         return auto_develop(frame)
 
     settings = await loop.run_in_executor(None, _measure)

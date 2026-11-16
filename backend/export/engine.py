@@ -104,6 +104,10 @@ def camera_image(source: Path, max_resolution: int = 0) -> Optional[Image.Image]
     decode, which is still the frame, resized. The resize is done here rather than
     by the caller so the export and the export preview show the same picture.
     """
+    if negative_of(source) is not None:
+        # Its JPEG, embedded or beside it, is a negative too: the scene is the
+        # linear decode's own rendering.
+        return _scene_image(source, max_resolution)
     img = None
     if source.suffix.lower() in _RAW_EXTENSIONS:
         sibling = _sibling_jpeg_path(source)
@@ -240,7 +244,7 @@ def preview_base(source: Path, size: int) -> Optional[Image.Image]:
     # The mtime and size are part of the key so an edit to the file on disk —
     # a sidecar written by another program, a re-import — is never served from
     # a stale frame.
-    key = (str(source), int(size), stat.st_mtime_ns, stat.st_size)
+    key = (str(source), int(size), stat.st_mtime_ns, stat.st_size, negative_stamp(source))
 
     with _PREVIEW_LOCK:
         cached = _PREVIEW_CACHE.get(key)
@@ -248,7 +252,10 @@ def preview_base(source: Path, size: int) -> Optional[Image.Image]:
             _PREVIEW_CACHE.move_to_end(key)
             return cached
 
-    img = _load_image(source, size)
+    if negative_of(source) is not None:
+        img = _scene_image(source, size)
+    else:
+        img = _load_image(source, size)
     if img is None:
         return None
     img = _resize_image(img, size)
@@ -523,7 +530,34 @@ def _load_raw_linear(source: Path, max_resolution: int = 0, mosaic=None):
 
 
 def _load_linear(source: Path, max_resolution: int = 0):
-    """Decode any supported file to scene-linear float32 (H, W, 3), or ``None``."""
+    """Decode any supported file to scene-linear float32 (H, W, 3), or ``None``: the
+    scene, for a negative (see :func:`negative_of`), inverted at the size decoded."""
+    rgb = _decoded_linear(source, max_resolution)
+    return None if rgb is None else _as_scene(source, rgb)
+
+
+def scan_as_decoded(source: Path, size: int):
+    """The file as decoded, never inverted, at ``size`` on its long side: the
+    negative itself, for measuring it and picking its film base. Not kept."""
+    from adjust.render import resize_linear
+
+    rgb = _decoded_linear(source, size)
+    return None if rgb is None else resize_linear(rgb, size)
+
+
+def _scene_image(source: Path, size: int) -> Optional[Image.Image]:
+    """A negative's scene as an 8-bit picture: its linear decode's own rendering, for
+    the roads that would otherwise show the camera's (negative) picture."""
+    from adjust.render import resize_linear
+
+    rgb = _load_linear(source, size)
+    if rgb is None:
+        return None
+    return frame_of(source, resize_linear(rgb, size)).encoded()
+
+
+def _decoded_linear(source: Path, max_resolution: int = 0):
+    """:func:`_load_linear` before a negative is inverted."""
     from adjust.render import linear_from_image
 
     if source.suffix.lower() in _RAW_EXTENSIONS:
@@ -1705,6 +1739,81 @@ def _is_edited(source: Path) -> bool:
         return True
 
 
+# ── Negatives ─────────────────────────────────────────────────────
+#
+# Being a negative is a fact about the photograph, kept by the catalog apart from its
+# edit (adjust.negative). It is inverted where the file is decoded (_load_linear and
+# _denoised_decode), so every consumer of a decoded frame gets the scene, and every
+# cache that holds pixels carries negative_stamp in its key.
+
+_NEGATIVE_LOOKUP: Optional[Callable[[Path], Optional[dict]]] = None
+_NEGATIVES: "OrderedDict[str, Optional[dict]]" = OrderedDict()
+_NEGATIVES_LIMIT = 4096
+_NEGATIVES_LOCK = threading.Lock()
+
+
+def set_negative_lookup(lookup: Optional[Callable[[Path], Optional[dict]]]) -> None:
+    """How to find a photograph's negative description (the catalog knows)."""
+    global _NEGATIVE_LOOKUP
+    _NEGATIVE_LOOKUP = lookup
+    with _NEGATIVES_LOCK:
+        _NEGATIVES.clear()
+
+
+def negative_of(source: Path) -> Optional[dict]:
+    """This photograph's negative description, cleaned, or ``None``. Kept by path."""
+    if _NEGATIVE_LOOKUP is None:
+        return None
+    key = str(source)
+    with _NEGATIVES_LOCK:
+        if key in _NEGATIVES:
+            return _NEGATIVES[key]
+    from adjust.negative import clean
+
+    try:
+        found = clean(_NEGATIVE_LOOKUP(Path(source)))
+    except Exception as e:
+        logger.warning(f"Could not tell whether {Path(source).name} is a negative: {e}")
+        return None
+    with _NEGATIVES_LOCK:
+        _NEGATIVES[key] = found
+        while len(_NEGATIVES) > _NEGATIVES_LIMIT:
+            _NEGATIVES.popitem(last=False)
+    return found
+
+
+def negative_changed(source: Path) -> None:
+    """Forget what was kept for this photograph (every file of its frame: a RAW+JPEG
+    pair is one negative)."""
+    source = Path(source)
+    with _NEGATIVES_LOCK:
+        for key in list(_NEGATIVES):
+            other = Path(key)
+            if other.parent == source.parent and other.stem == source.stem:
+                del _NEGATIVES[key]
+
+
+def negative_stamp(source: Path) -> str:
+    """``""``, or a short hash of the negative's description: in the key of every
+    cache that holds pixels made from the decode."""
+    found = negative_of(source)
+    if found is None:
+        return ""
+    import hashlib
+    import json
+
+    return hashlib.sha1(json.dumps(found, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def _as_scene(source: Path, rgb):
+    found = negative_of(source)
+    if found is None:
+        return rgb
+    from adjust.negative import positive
+
+    return positive(rgb, found)
+
+
 def relearn_look(source: Path, size: int = 1000):
     """Learn this photograph's look afresh, whatever is kept, and draw it from that."""
     clear_preview_cache()
@@ -1866,6 +1975,10 @@ def camera_look_for(source: Path, rgb, relearn: bool = False):
     """
     if source.suffix.lower() not in _RAW_EXTENSIONS:
         return None
+    if negative_of(source) is not None:
+        # Its JPEG is a negative too: a look learned from that pair would undo the
+        # inversion.
+        return None
     try:
         stat = source.stat()
     except OSError:
@@ -1927,7 +2040,9 @@ def _denoised_decode(source: Path, size: int, wait: bool):
     mosaic = noise.mosaic_for(source, wait=wait)
     if mosaic is None:
         return None
-    return _load_raw_linear(source, size, mosaic)
+    rgb = _load_raw_linear(source, size, mosaic)
+    # The same picture as the plain decode, pixel for pixel: inverted too.
+    return None if rgb is None else _as_scene(source, rgb)
 
 
 def _with_denoiser(source: Path, frame, size: int) -> None:
@@ -2000,7 +2115,7 @@ def frame_of(source: Path, rgb):
     frame = LinearFrame(rgb)
     try:
         stat = source.stat()
-        frame.source_key = (str(source), stat.st_mtime_ns, stat.st_size)
+        frame.source_key = (str(source), stat.st_mtime_ns, stat.st_size, negative_stamp(source))
     except OSError:
         pass
     side = _source_long_side(source)
@@ -2023,8 +2138,8 @@ def lens_profile(source: Path, rgb) -> Optional[dict]:
     """How the camera corrected this frame's lens distortion (adjust.lens), from
     its own JPEG registered onto ``rgb`` (any decode of it), or ``None``: a file
     that is not a RAW is the camera's corrected picture already, and a RAW with no
-    JPEG that matches it has nothing to learn from."""
-    if source.suffix.lower() not in _RAW_EXTENSIONS:
+    JPEG that matches it has nothing to learn from; nor has a negative."""
+    if source.suffix.lower() not in _RAW_EXTENSIONS or negative_of(source) is not None:
         return None
     try:
         stat = source.stat()
@@ -2076,7 +2191,7 @@ def linear_base(source: Path, size: int, relearn: bool = False):
         stat = source.stat()
     except OSError:
         return None
-    key = (str(source), int(size), stat.st_mtime_ns, stat.st_size)
+    key = (str(source), int(size), stat.st_mtime_ns, stat.st_size, negative_stamp(source))
 
     with _PREVIEW_LOCK:
         cached = _LINEAR_CACHE.get(key)
@@ -2205,10 +2320,11 @@ def starter_base(source: Path, size: int) -> tuple:
         stat = source.stat()
     except OSError:
         return None, False
-    key = (str(source), int(size), stat.st_mtime_ns, stat.st_size)
+    key = (str(source), int(size), stat.st_mtime_ns, stat.st_size, negative_stamp(source))
     with _PREVIEW_LOCK:
         cached = _LINEAR_CACHE.get(key)
-    if cached is not None or source.suffix.lower() not in _RAW_EXTENSIONS or look_is_kept(source):
+    if (cached is not None or source.suffix.lower() not in _RAW_EXTENSIONS
+            or negative_of(source) is not None or look_is_kept(source)):
         return cached if cached is not None else linear_base(source, size), False
     held = key + ("starter",)
     with _PREVIEW_LOCK:
@@ -2244,7 +2360,7 @@ def starter_base(source: Path, size: int) -> tuple:
 def learn_look_ahead(source: Path, size: int) -> bool:
     """Learn this frame's look if it needs it, without holding on to the decode. True
     when it was learned."""
-    if look_is_kept(source):
+    if negative_of(source) is not None or look_is_kept(source):
         return False
     rgb = _load_linear(source, size)
     if rgb is None:
@@ -2269,7 +2385,7 @@ def _full_linear(source: Path):
         stat = source.stat()
     except OSError:
         return None
-    key = (str(source), stat.st_mtime_ns, stat.st_size)
+    key = (str(source), stat.st_mtime_ns, stat.st_size, negative_stamp(source))
     with _FULL_LOCK:
         cached = _FULL_CACHE.get(key)
         if cached is not None:
@@ -2295,7 +2411,7 @@ def _full_denoised(source: Path):
         stat = source.stat()
     except OSError:
         return None
-    key = (str(source), stat.st_mtime_ns, stat.st_size)
+    key = (str(source), stat.st_mtime_ns, stat.st_size, negative_stamp(source))
     with _FULL_LOCK:
         cached = _FULL_DENOISED.get(key)
         if cached is not None:
@@ -2319,7 +2435,7 @@ def warm_denoised(source: Path) -> None:
         stat = source.stat()
     except OSError:
         return
-    key = (str(source), stat.st_mtime_ns, stat.st_size)
+    key = (str(source), stat.st_mtime_ns, stat.st_size, negative_stamp(source))
     with _PREVIEW_LOCK:
         if key in _FULL_DENOISED or key in _WARMING:
             return
@@ -2736,7 +2852,8 @@ def export_photo(
         logger.info(f"Exported {source.name} as it stands, resized")
         return output_path
 
-    if develop or source.suffix.lower() in _RAW_EXTENSIONS:
+    negative = negative_of(source) is not None
+    if develop or negative or source.suffix.lower() in _RAW_EXTENSIONS:
         # A hand edit is made in linear light, from a decode with headroom: that
         # is what lets exposure, highlights and shadows rescue a frame instead
         # of re-scaling one that has already been clipped. Resized in linear
@@ -2750,6 +2867,9 @@ def export_photo(
         img = _develop_linear(source, template, develop, match)
 
     if img is None:
+        if negative:
+            # The 8-bit road below would write the negative itself.
+            raise RuntimeError(f"Could not develop the negative {source.name}")
         img = _load_image(source, template.max_resolution)
         if img is None:
             raise RuntimeError(f"Could not load {source.name}")

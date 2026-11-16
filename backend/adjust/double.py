@@ -162,11 +162,12 @@ def _picture(path: str, longest: float) -> Optional[np.ndarray]:
             _warned.add(path)
             logger.warning("[double] the second exposure %s is not there; drawing without it", path)
         return None
-    from export.engine import _load_linear, resolve_export_source
+    from export.engine import _load_linear, negative_stamp, resolve_export_source
 
     size = _READ_SIZE if longest <= _READ_SIZE else 0
-    return _kept((str(file), file.stat().st_mtime_ns, size), path,
-                 lambda: _load_linear(resolve_export_source(file), size))
+    source = resolve_export_source(file)
+    return _kept((str(file), file.stat().st_mtime_ns, size, negative_stamp(source)), path,
+                 lambda: _load_linear(source, size))
 
 
 def _kept(key: tuple, path: str, read) -> Optional[np.ndarray]:
@@ -220,7 +221,10 @@ def _finished(second: dict, longest: float) -> Optional[np.ndarray]:
         picture = develop_frame(frame, edit)
         return decode(np.asarray(picture, dtype=np.float32) / 255.0).astype(np.float32)
 
-    return _kept((str(file), file.stat().st_mtime_ns, size, second_to_text(edit)), path, read)
+    from export.engine import negative_stamp, resolve_export_source
+
+    return _kept((str(file), file.stat().st_mtime_ns, size, second_to_text(edit),
+                  negative_stamp(resolve_export_source(file))), path, read)
 
 
 def place(second_rgb: np.ndarray, shape: tuple, window: tuple, second: dict) -> tuple:

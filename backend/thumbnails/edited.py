@@ -40,17 +40,21 @@ _QUALITY = {ThumbnailSize.GRID: 80, ThumbnailSize.PREVIEW: 90}
 _SLOTS = threading.BoundedSemaphore(2)
 
 
-def edit_variant(settings: Optional[dict]) -> str:
-    """The cache variant for an edit, or ``""`` when the frame is not edited.
+def edit_variant(settings: Optional[dict], stamp: str = "") -> str:
+    """The cache variant for an edit, or ``""`` when the frame is not edited and is
+    not a negative.
 
     Derived from the settings themselves, so two frames with the same edit share
     nothing by accident (their sources differ) but one frame whose edit changes
-    always gets a new key.
+    always gets a new key. ``stamp`` is the negative's (export.engine.negative_stamp):
+    a negative with no edit still has a variant of its own, drawn as its scene.
     """
     clean = normalize(settings)
-    if not clean:
+    if not clean and not stamp:
         return ""
     blob = json.dumps(clean, sort_keys=True, separators=(",", ":"))
+    if stamp:
+        blob += f"|n{stamp}"
     return f"e{RENDER_VERSION}-{hashlib.sha1(blob.encode()).hexdigest()[:16]}"
 
 
@@ -77,14 +81,14 @@ def render_edited(source: Path, settings: dict, size: ThumbnailSize) -> Optional
 
 
 def get_edited_thumbnail(
-    source: Path, settings: dict, cache, size: ThumbnailSize
+    source: Path, settings: dict, cache, size: ThumbnailSize, stamp: str = ""
 ) -> Optional[bytes]:
     """Cached edited thumbnail, rendered and stored on a miss.
 
     ``None`` when the frame is not edited or cannot be rendered; the caller then
     serves the camera's own thumbnail, which is a better answer than an error.
     """
-    variant = edit_variant(settings)
+    variant = edit_variant(settings, stamp)
     if not variant or size not in _QUALITY:
         return None
     cached = cache.get(source, size, variant)

@@ -171,6 +171,16 @@ async def lifespan(app: FastAPI):
 
     set_edit_check(is_edited)
 
+    # A scanned negative is inverted where it is decoded (adjust.negative); the
+    # catalog knows which photographs are negatives, by frame as for an edit.
+    from export.engine import set_negative_lookup
+
+    def negative_for(source: Path):
+        folder = source.relative_to(Path(config.library_root)).parent.as_posix()
+        return db.frame_negative("" if folder == "." else folder, source.stem)
+
+    set_negative_lookup(negative_for)
+
     # Initialize thumbnail queue manager
     queue_manager = ThumbnailQueueManager(
         db=db,

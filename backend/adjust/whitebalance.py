@@ -217,8 +217,14 @@ def of_source(path) -> Optional[WhiteBalance]:
     Kept by path and modification time."""
     from export.engine import _RAW_EXTENSIONS, _srgb_from_camera
 
+    from export.engine import negative_of
+
     path = Path(path)
     if path.suffix.lower() not in _RAW_EXTENSIONS:
+        return None
+    if negative_of(path) is not None:
+        # The scene's Kelvin is not the scanner lamp's (or the copy light's): a
+        # negative's white balance works as a JPEG's does.
         return None
     try:
         key = (str(path), path.stat().st_mtime_ns)

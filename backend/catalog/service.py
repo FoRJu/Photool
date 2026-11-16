@@ -23,6 +23,20 @@ from .xmp import read_xmp, write_xmp
 
 logger = logging.getLogger(__name__)
 
+# The sidecar attribute a negative's description is kept in, as JSON.
+NEGATIVE_ATTR = "crs:PhotoolNegative"
+
+
+def _negative_from_attr(value: str) -> Optional[dict]:
+    import json
+
+    from adjust.negative import clean
+
+    try:
+        return clean(json.loads(value))
+    except (TypeError, ValueError):
+        return None
+
 
 def is_export_folder(folder: str) -> bool:
     """Whether a library folder is the export folder or inside it (export.jobs)."""
@@ -111,6 +125,7 @@ class CatalogService:
         tags_from_xmp: dict[str, list[str]] = {}
         edits_from_xmp: dict[str, dict] = {}
         copies_from_file: dict[str, list] = {}
+        negatives_from_xmp: dict[str, dict] = {}
         known_copies = self.db.version_counts(folder)
 
         from adjust.develop import from_crs
@@ -164,6 +179,13 @@ class CatalogService:
             edit = from_crs(xmp.develop) if xmp.develop else {}
             if edit and edit != stored_edits.get(rel_path, {}):
                 edits_from_xmp[rel_path] = edit
+
+            # A negative the sidecar records is adopted when the catalog has none
+            # for this photograph, so a rebuilt catalog still knows its negatives.
+            if xmp.develop.get(NEGATIVE_ATTR):
+                found = _negative_from_attr(xmp.develop[NEGATIVE_ATTR])
+                if found and self.db.get_negative(rel_path) is None:
+                    negatives_from_xmp[rel_path] = found
 
             # Virtual copies are adopted from their file only when the catalog has
             # none for this photograph: the file is the durable copy, the catalog
@@ -230,6 +252,9 @@ class CatalogService:
 
         for rel_path, edit in edits_from_xmp.items():
             self.db.set_photo_edit(rel_path, edit)
+
+        for rel_path, found in negatives_from_xmp.items():
+            self.db.set_negative(rel_path, found)
 
         for rel_path, copies in copies_from_file.items():
             for c in copies:
@@ -797,6 +822,92 @@ class CatalogService:
         self.db.set_photo_edit(filepath, clean)
         self._write_edit_to_sidecar(filepath, clean)
         return clean
+
+    # ── Negatives ────────────────────────────────────────────────
+    #
+    # Being a negative is a fact about the photograph, not part of its edit
+    # (adjust.negative): kept in its own table and in one sidecar attribute of its
+    # own, so that saving or clearing an edit leaves it alone and setting or
+    # clearing it leaves the edit alone.
+
+    def set_negative(self, filepath: str, description: dict) -> dict:
+        """Mark a photograph as a negative, in the catalog and its sidecar; returns
+        the description as stored."""
+        from adjust.negative import clean
+
+        if is_video(filepath):
+            raise ValueError("A video is not developed")
+        found = clean(description)
+        if found is None:
+            raise ValueError("Not a negative's description")
+        # One description per frame: a RAW+JPEG pair is one negative.
+        for other in self._frame_negative_files(filepath):
+            if other != filepath:
+                self.db.clear_negative(other)
+                self._write_negative_to_sidecar(other, None)
+        self.db.set_negative(filepath, found)
+        self._write_negative_to_sidecar(filepath, found)
+        return found
+
+    def clear_negative(self, filepath: str) -> bool:
+        """No longer a negative: every file of the frame, in the catalog and the sidecar."""
+        removed = False
+        for other in set(self._frame_negative_files(filepath)) | {filepath}:
+            removed = self.db.clear_negative(other) or removed
+            self._write_negative_to_sidecar(other, None)
+        return removed
+
+    def negative_stamps(self) -> dict[tuple, str]:
+        """A short key per negative frame, ``(folder, base_name) -> stamp``, that changes
+        with its description: the grid puts it in a thumbnail's address."""
+        import hashlib
+        import json
+
+        from adjust.negative import clean
+
+        out = {}
+        for filepath, found in self.db.list_negatives().items():
+            d = clean(found)
+            if d is None:
+                continue
+            folder, _, name = filepath.rpartition("/")
+            out[(folder, Path(name).stem)] = hashlib.sha1(
+                json.dumps(d, sort_keys=True).encode()).hexdigest()[:10]
+        return out
+
+    def frame_negative_of(self, filepath: str) -> Optional[dict]:
+        """The negative's description of this file's frame (either file of a pair)."""
+        from adjust.negative import clean
+
+        folder, _, name = filepath.rpartition("/")
+        return clean(self.db.frame_negative(folder, Path(name).stem))
+
+    def _frame_negative_files(self, filepath: str) -> list[str]:
+        folder, _, name = filepath.rpartition("/")
+        return self.db.frame_negative_files(folder, Path(name).stem)
+
+    def negative_of(self, filepath: str) -> Optional[dict]:
+        from adjust.negative import clean
+
+        return clean(self.db.get_negative(filepath))
+
+    def _write_negative_to_sidecar(self, filepath: str, description: Optional[dict]) -> bool:
+        import json
+
+        from catalog.xmp import sidecar_path, sync_develop_to_xmp
+
+        abs_path = self.library_root / filepath
+        if not abs_path.exists():
+            return False
+        if description is None and not sidecar_path(abs_path).exists():
+            return True
+        try:
+            value = {NEGATIVE_ATTR: json.dumps(description, sort_keys=True)} if description else {}
+            sync_develop_to_xmp(abs_path, value, owned=(NEGATIVE_ATTR,))
+            return True
+        except OSError as e:
+            logger.warning(f"Cannot write negative to XMP for {filepath}: {e}")
+            return False
 
     def clear_photo_edit(self, filepath: str) -> bool:
         """Take this app's edit off a photograph, in the catalog and the file.
