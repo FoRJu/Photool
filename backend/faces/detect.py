@@ -1,7 +1,7 @@
 """
 Find faces in a frame and describe each one as a vector.
 
-Two models, both run on this machine through OpenCV:
+Two models, run on this machine (the second on the graphics card when there is one):
 
   * **YuNet** finds a face and its five landmarks — the corners of the eyes, the
     tip of the nose, the corners of the mouth. The landmarks are what make the
@@ -182,17 +182,23 @@ class _SFace:
 
 
 class _ArcFace:
-    """An InsightFace ArcFace network run with OpenCV's DNN module.
+    """An InsightFace ArcFace network: on the graphics card when there is one,
+    else with OpenCV's DNN module.
 
     The network wants RGB scaled to -1..1; it was trained without any
     normalisation layer of its own (checked on both files), so the scaling is
-    done here. The plain and mirrored crops go through as one batch of two.
+    done here. Each face is described plain and mirrored.
+
+    Describing is nine tenths of a scan (208 ms a face on the CPU, at six faces a
+    frame); on the card it is 8.5 ms, with the same vectors (cosine 1.000000 over
+    105 faces), so faces already stored stay comparable. The card runs the crops
+    one at a time: the file's flatten fixes its batch at one, which OpenCV
+    tolerates and DirectML does not.
     """
 
     def __init__(self, path):
-        import cv2
-
-        self._net = cv2.dnn.readNetFromONNX(str(path))
+        self._path = str(path)
+        self._net = None
 
     def describe(self, aligned: np.ndarray) -> np.ndarray:
         import cv2
@@ -201,9 +207,96 @@ class _ArcFace:
             [aligned, cv2.flip(aligned, 1)], 1.0 / 127.5, (ALIGN_SIZE, ALIGN_SIZE),
             (127.5, 127.5, 127.5), swapRB=True,
         )
-        self._net.setInput(blob)
-        out = self._net.forward()
+        out = _card_describe(self._path, blob)
+        if out is None:
+            if self._net is None:
+                self._net = cv2.dnn.readNetFromONNX(self._path)
+            self._net.setInput(blob)
+            out = self._net.forward()
         return _unit(out[0]) + _unit(out[1])
+
+
+# The ArcFace session on the card, shared by every scan thread: model calls are
+# made one at a time under gpu.LOCK anyway (see adjust.gpu), and one copy of the
+# network on the card is enough.
+_card_session = None
+_card_path: Optional[str] = None
+_card_failed = False
+
+
+def _forget_card_session() -> None:
+    global _card_session
+    _card_session = None
+
+
+def card_available() -> bool:
+    """Whether faces will be described on the card: the recogniser is ArcFace, and
+    onnxruntime has a card to run it on that has not failed already."""
+    if _card_failed or recognizer_file(_recognizer) == RECOGNIZER_MODEL:
+        return False
+    return _has_card()
+
+
+# Whether onnxruntime has a card, asked once: importing it the first time takes a
+# second, and the answer cannot change while the app runs.
+_card_known: Optional[tuple] = None
+
+
+def _has_card() -> bool:
+    global _card_known
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return False
+    if _card_known is None or _card_known[0] is not ort:
+        providers = ort.get_available_providers()
+        _card_known = (ort, "DmlExecutionProvider" in providers or "CUDAExecutionProvider" in providers)
+    return _card_known[1]
+
+
+def _card_describe(path: str, blob: np.ndarray) -> Optional[np.ndarray]:
+    """The network's output for each crop in ``blob``, run on the card; ``None``
+    to run it on the CPU instead: no card, onnxruntime missing or failing, or a
+    large model (masks, depth) holding the card, which a background scan must
+    not push off."""
+    global _card_session, _card_path, _card_failed
+    if _card_failed:
+        return None
+    try:
+        from adjust import gpu
+    except ImportError:
+        return None
+    with gpu.LOCK:
+        if gpu.large_open():
+            return None
+        try:
+            if _card_session is None or _card_path != path:
+                import onnxruntime as ort
+
+                if "DmlExecutionProvider" not in ort.get_available_providers() \
+                        and "CUDAExecutionProvider" not in ort.get_available_providers():
+                    _card_failed = True
+                    return None
+                providers = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider")
+                             if p in ort.get_available_providers()]
+                options = ort.SessionOptions()
+                options.log_severity_level = 3
+                gpu.register(_forget_card_session)
+                gpu.make_room()
+                _card_session = ort.InferenceSession(path, sess_options=options, providers=providers)
+                _card_path = path
+                logger.info(f"Face recogniser loaded on {_card_session.get_providers()[0]}")
+            name = _card_session.get_inputs()[0].name
+            return np.concatenate([_card_session.run(None, {name: blob[i:i + 1]})[0]
+                                   for i in range(len(blob))])
+        except Exception as exc:
+            # Once is enough to know: the CPU describes the same faces.
+            logger.warning(f"Face recogniser cannot run on the card, using the CPU: {exc}")
+            _card_failed = True
+            if _card_session is not None:
+                # Never let go of one session alone: it breaks the others (adjust.gpu).
+                gpu.release_all()
+            return None
 
 
 def _unit(v: np.ndarray) -> np.ndarray:

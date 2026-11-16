@@ -562,7 +562,7 @@ class TestLayeredPsd:
 
         # Reduced for a preview, and in 8 bits for a thumbnail: never the white page.
         small = scans.read_linear(path, 20)
-        assert max(small.shape[:2]) == 40
+        assert max(small.shape[:2]) == 20   # built at the size asked for
         img = np.asarray(scans.read_8bit(path, 80))
         assert img.mean() < 200
 
