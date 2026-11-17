@@ -87,6 +87,11 @@ def _gaussian(plane: np.ndarray, sigma: float) -> np.ndarray:
     return out
 
 
+# The most sharpening anywhere: the slider's top, which a mask's sharpness on top
+# of the edit's own amount does not go past (adjust.render).
+MAX_AMOUNT = 150.0
+
+
 def sharpen(enc: np.ndarray, settings: dict, scale: float = 1.0,
             amount_map: Optional[np.ndarray] = None) -> np.ndarray:
     """``enc`` (H, W, 3 display-encoded, 0..1) sharpened by ``settings``.

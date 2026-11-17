@@ -610,6 +610,13 @@ class TestSharpness:
         assert np.abs(none - plain).max() <= 1
 
 
+    def test_with_the_global_it_stops_at_the_sliders_top(self):
+        frame = self._edge()
+        most = _px(develop_frame(frame, {"exposure": 0.1, "sharpen": 150}))
+        over = _px(develop_frame(frame, {"exposure": 0.1, "sharpen": 150,
+                                         "masks": [{**WHOLE, "sharpness": 100}]}))
+        assert np.abs(over - most).max() <= 1
+
 class TestAmount:
     CONTROLS = {"exposure": 1.0, "contrast": 40, "highlights": -30, "whites": 20, "blacks": -20,
                 "temperature": 40, "tint": 20, "hue": 30, "saturation": 60, "clarity": 20, "sharpness": 40,
