@@ -3,8 +3,8 @@
 A LUT gives one colour out for each colour in. So it holds what an edit does to a
 pixel by its colour alone: exposure and the relative white balance, the tone
 sliders, presence, fade and toning, the curves, the colour mixer and black and
-white. Nothing that depends on the pixels round it (clarity, sharpening, noise
-reduction, lens blur), on where it is in the frame (grain, the vignette, lens
+white. Nothing that depends on the pixels round it (clarity, texture, dehaze,
+sharpening, noise reduction, lens blur), on where it is in the frame (grain, the vignette, lens
 corrections), or on the RAW file (a learned style, the camera's look, an
 absolute white balance, which is worked out from one file's own white) can be in
 it. Those are left out and named, never an error, unless nothing is left.
@@ -52,6 +52,8 @@ LEFT_OUT = (
     ("Camera look", ("flat",)),
     ("Style", ("style", "style_fade")),
     ("Clarity", ("clarity",)),
+    ("Texture", ("texture",)),
+    ("Dehaze", ("dehaze",)),
     ("Noise reduction", ("nr_luma", "nr_color")),
     ("Sharpening", ("sharpen", "sharpen_radius", "sharpen_detail", "sharpen_masking")),
     ("Lens blur", ("lens_blur", "blur_focus", "blur_sharp", "blur_outline")),

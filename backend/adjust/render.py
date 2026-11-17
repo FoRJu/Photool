@@ -99,6 +99,20 @@ COMPRESS_SQUEEZE = 0.62         # +100 keeps this fraction less of the scene's r
 COMPRESS_PIVOT = -0.8           # stops from grey that the squeeze holds still
 COMPRESS_DETAIL = 0.35          # extra local contrast that comes with a squeeze
 CLARITY_DETAIL = 0.9            # +100 clarity: detail gain in the mid-tones
+# Texture is the detail layer's middle band: what a Gaussian of TEXTURE_FINE
+# pixels keeps and one of TEXTURE_COARSE pixels smooths away, at full size (scaled
+# by the frame's scale, so a preview shows the band an export changes). That passes
+# features about 2 to 12 pixels across: weave, bark, stone, pores. Finer is noise
+# and sharpening's; coarser is clarity's.
+TEXTURE_FINE = 1.0
+TEXTURE_COARSE = 6.0
+TEXTURE_GAIN = 1.0              # +100: the band twice as strong; -100: gone
+# The band is eased off where it is large: texture is small swings, and a swing of
+# more than about this many stops is an edge, which is left to clarity.
+TEXTURE_EDGE = 0.35
+# And off in the deepest shadows, where the band is mostly noise: none at
+# TEXTURE_DARK[0] stops under grey, all of it from TEXTURE_DARK[1].
+TEXTURE_DARK = (-6.5, -4.0)
 
 # Smallest slope the tone curve may have, in output stops per input stop. Below
 # this a stack of extreme controls would flatten (or invert) a range of the
@@ -375,6 +389,12 @@ class LinearFrame:
     _spread: Optional[tuple] = field(default=None, repr=False)
     # This frame with a second exposure on it, by its settings (adjust.double.exposed).
     _exposed: Optional[tuple] = field(default=None, repr=False)
+    # The haze of this whole frame, its airlight and guided-filter coefficients
+    # (adjust.dehaze.estimate), and this frame dehazed, by the amount.
+    _haze: Optional[dict] = field(default=None, repr=False)
+    _dehazed: Optional[tuple] = field(default=None, repr=False)
+    # The texture band of the detail layer, by the scale it was cut at (texture_band).
+    _texture: Optional[tuple] = field(default=None, repr=False)
     # How the camera corrects this frame's lens distortion: a callable
     # ``() -> model or None`` (export.engine.lens_profile, adjust.lens), None for a
     # frame that cannot know.
@@ -424,6 +444,25 @@ class LinearFrame:
         that changes nothing" are the same picture.
         """
         return to_image(_display(self, self.rgb, 0.0), dither=False)
+
+
+def texture_band(frame: "LinearFrame") -> np.ndarray:
+    """The middle band of the frame's detail layer, in stops (see TEXTURE_FINE), kept."""
+    import cv2
+
+    scale = float(frame.scale)
+    if frame._texture is not None and frame._texture[0] == scale:
+        return frame._texture[1]
+    detail = np.ascontiguousarray(frame.layers()[2])
+
+    def blurred(sigma):
+        if sigma < 0.3:
+            return detail            # finer than a pixel: the pixel itself
+        return cv2.GaussianBlur(detail, (0, 0), sigmaX=sigma, borderType=cv2.BORDER_REFLECT)
+
+    band = (blurred(TEXTURE_FINE * scale) - blurred(TEXTURE_COARSE * scale)).astype(np.float32)
+    frame._texture = (scale, band)
+    return band
 
 
 def region_frame(small: "LinearFrame", region: np.ndarray, box: tuple) -> "LinearFrame":
@@ -1139,11 +1178,14 @@ def _linear_gain_of_encoded(change: Optional[dict]) -> Optional[dict]:
     }
 
 
-_TONAL_KEYS = ("highlights", "lights", "darks", "shadows", "whites", "blacks", "contrast", "compress", "clarity")
+_TONAL_KEYS = ("highlights", "lights", "darks", "shadows", "whites", "blacks", "contrast", "compress", "clarity",
+               "texture")
 # Everything the first two stages read. The rest of an edit — curve, mixer,
-# black and white, the look, effects — starts from their result.
+# black and white, the look, effects — starts from their result. Dehaze is done
+# on the frame before them (adjust.dehaze) and is named here so that a cached
+# result can never be taken for a dehazed one.
 _LIGHT_AND_TONE_KEYS = ("exposure", "temperature", "tint", "wb_kelvin", "wb_tint", "flat", "style", "style_fade",
-                        "masks") + _TONAL_KEYS
+                        "masks", "dehaze") + _TONAL_KEYS
 # A gradient's controls that act through the tone curve on the base.
 _MASK_TONE_KEYS = ("contrast", "highlights", "lights", "darks", "shadows", "whites", "blacks")
 # A mask's controls that act after the light and tone (on the finished colour,
@@ -1284,9 +1326,12 @@ def _light_and_tone(frame: LinearFrame, clean: dict, change: Optional[dict]) -> 
         local_clarity = [mask.get("clarity", 0) / 100.0 for mask, _ in mask_tone]
         compress_gain = np.float32(1.0 + COMPRESS_DETAIL * clean.get("compress", 0) / 100.0)
         clarity = clean.get("clarity", 0) / 100.0
+        texture = np.float32(TEXTURE_GAIN * clean.get("texture", 0) / 100.0)
         ev_is_map = isinstance(ev_map, np.ndarray)
 
         def toned(rgb, log_luma, base, detail, *maps):
+            if texture:
+                band, maps = maps[0], maps[1:]
             ev_here, weights = (maps[0], maps[1:]) if ev_is_map else (ev_map, maps)
             x = base + ev_here - LOG_MID
             stops = np.interp(x, _CURVE_X, curve) + LOG_MID
@@ -1306,10 +1351,18 @@ def _light_and_tone(frame: LinearFrame, clean: dict, change: Optional[dict]) -> 
                     amount = amount + w * np.float32(local)
                 detail_gain = detail_gain + CLARITY_DETAIL * amount * mid
             target = stops + detail * detail_gain
+            if texture:
+                # On top of the detail's own gain: Texture adds to or takes from the
+                # middle band only, where it is not an edge and not the deepest shadow.
+                dark = np.clip((x - TEXTURE_DARK[0]) / (TEXTURE_DARK[1] - TEXTURE_DARK[0]), 0.0, 1.0)
+                dark = dark * dark * (3.0 - 2.0 * dark)
+                soft = band / (1.0 + (band * np.float32(1.0 / TEXTURE_EDGE)) ** 2)
+                target = target + texture * soft * dark
             # Gain from the unedited frame to the edited one, exposure included.
             return rgb * np.exp2(target - log_luma)[..., None]
 
-        maps = ([ev_map] if ev_is_map else []) + [w for _, w in mask_tone]
+        maps = ([texture_band(frame)] if texture else []) + ([ev_map] if ev_is_map else []) \
+            + [w for _, w in mask_tone]
         rgb = in_strips(toned, rgb, *frame.layers(), *maps)
     elif isinstance(ev_map, np.ndarray):
         rgb = rgb * np.exp2(ev_map)[..., None]
@@ -1412,6 +1465,12 @@ def develop_frame(
         if defocus.wanted(clean["masks"]):
             # A mask's blur beside the lens blur, on linear light and before the light and tone.
             frame = defocus.defocused(frame, clean["masks"], mask_reach)
+    if "dehaze" in clean:
+        # On linear light, after the blurs (the air is in front of what is blurred)
+        # and before a second exposure and the glow, which happen in the camera.
+        from adjust.dehaze import dehazed
+
+        frame = dehazed(frame, clean.pop("dehaze"))
     finished_second = None
     if "second" in clean:
         from adjust.double import developed, exposed

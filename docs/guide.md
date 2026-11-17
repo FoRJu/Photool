@@ -221,7 +221,7 @@ that:
 | Group | Controls |
 |-------|----------|
 | **Light** | Exposure (±5 EV), Contrast, Highlights, **Lights**, **Darks**, Shadows, Whites, Blacks, **Squeeze** |
-| **Presence** | **Clarity** |
+| **Presence** | **Clarity**; **Texture** (detail about 2 to 12 pixels across: cloth, bark, stone, skin; edges and the deepest shadows left alone, and scaled to the picture so the preview shows what the export gives); **Dehaze** (haze, flare and a flat distant view taken out by how far off they look, up to 85% of the haze found at 100, from the dark channel of the whole frame refined against its own edges; left lays an even haze of the sky's colour on) |
 | **Colour** | Warmth, Tint, **Vibrance**, **Saturation** |
 | **Look** | **Fade**, **colour grading** (hue and strength for the shadows, the mid-tones and the highlights, and a **Balance** that moves where the shadows' tint hands over to the highlights': left gives the shadows more of the range) |
 | **Effects** | **Vignette**, with **Size** (left reaches further in, a spotlight; right keeps to the corners) and **Feather** (left a harder edge, right softer); the middle of the picture is never touched |
@@ -288,7 +288,7 @@ display-encoded Rec. 709 in and out), for a video editor or another photo app. A
 LUT gives one colour out for each colour in, so it holds what the look does to a
 pixel by its colour alone: exposure and the relative temperature and tint, the
 tone sliders, presence, fade, toning, the curves, the colour mixer and black and
-white. It cannot hold what depends on the pixels round it (clarity, sharpening,
+white. It cannot hold what depends on the pixels round it (clarity, texture, dehaze, sharpening,
 noise reduction, lens blur, halation and bloom), on where a pixel is in the frame (grain, vignette,
 lens corrections), or on the RAW file (a learned style, the camera's look, a
 white balance in Kelvin, which is worked out from one file's own white). Those

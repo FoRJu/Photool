@@ -34,6 +34,11 @@ _MEANING = {
     "flat": "How far to leave the camera's own rendering behind. 0 is the camera's look, 100 the plain decode",
     "compress": "Squeeze a wide scene into the picture's range while keeping local detail (HDR to a normal picture)",
     "clarity": "Mid-tone local contrast. Positive crisper, negative softer",
+    "dehaze": ("Haze, backlight flare and a flat distant view taken out (positive, up to 85% of the haze found "
+               "at 100) or an even haze of the sky's colour laid on (negative). Grows with distance, which "
+               "contrast and clarity do not"),
+    "texture": ("Detail about 2 to 12 pixels across (cloth, bark, stone, skin): positive brings it out, "
+                "negative softens it, edges and the deepest shadows left alone. Finer than clarity"),
     "vibrance": "Saturation that favours the flat colours and spares skin",
     "saturation": "All colours alike",
     "fade": "Lifted blacks and eased whites: the matte look",

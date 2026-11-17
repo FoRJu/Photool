@@ -122,6 +122,10 @@ TONE_SLIDERS = ("contrast", "highlights", "shadows", "whites", "blacks")
 #                   each end of the range and for the middle of it
 #   tone_balance    -100..100  where the shadows' tint hands over to the
 #                   highlights': left gives the shadows more of the range
+#   dehaze          -100..100  haze taken out (right) or an even haze laid on
+#                   (left), by the dark channel of the scene (adjust.dehaze)
+#   texture         -100..100  detail about 2 to 12 pixels across: cloth, bark,
+#                   stone; not the edges, not the noise
 #   style_fade      0..100   with a ``style`` (the id of a learned style, see
 #                   adjust.styles), how far to fade it back towards the camera's
 #                   own look: 0 is the whole style
@@ -133,7 +137,7 @@ LOOK_SLIDERS = (
     "lights", "darks",
     "flat", "style_fade", "compress", "clarity", "vibrance", "saturation", "fade",
     "shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat",
-    "midtone_hue", "midtone_sat", "tone_balance",
+    "midtone_hue", "midtone_sat", "tone_balance", "dehaze", "texture",
 )
 # The colour mixer: hue, saturation and luminance for each of eight bands of
 # hue, -100..100 like Lightroom's HSL panel. The bands and their centres (in
@@ -798,7 +802,7 @@ def describe_settings(settings: Optional[dict]) -> str:
         )
     looks = [
         f"{key} {clean[key]:+d}"
-        for key in ("compress", "clarity", "vibrance", "saturation", "fade")
+        for key in ("compress", "clarity", "texture", "dehaze", "vibrance", "saturation", "fade")
         if key in clean
     ]
     if "shadow_sat" in clean or "highlight_sat" in clean or "midtone_sat" in clean:
@@ -875,6 +879,10 @@ _LOOK_CRS = {
     "midtone_hue": "crs:ColorGradeMidtoneHue",
     "midtone_sat": "crs:ColorGradeMidtoneSat",
     "tone_balance": "crs:SplitToningBalance",
+    # Lightroom's Dehaze and Texture are -100..100 too. The methods are each their
+    # own, but the meaning and the reach are the same, as with Clarity.
+    "dehaze": "crs:Dehaze",
+    "texture": "crs:Texture",
     "style_fade": "crs:PhotoolStyleFade",
 }
 # The colour mixer under Lightroom's own names (crs:HueAdjustmentRed, …): the

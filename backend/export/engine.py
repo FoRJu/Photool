@@ -2599,6 +2599,14 @@ def loupe_image(
         # Done here, on the wider cut: the patch's own develop does not blur again.
         clean["masks"] = [{k: val for k, val in m.items() if k != "blur"} for m in clean["masks"]]
     patch = patch[top - y0:top - y0 + side, left - x0:left - x0 + side]
+    if clean.get("dehaze"):
+        # After the blurs and before a second exposure and the glow, as in develop_frame:
+        # the patch takes the whole frame's haze, and is toned from the preview dehazed.
+        from adjust.dehaze import dehazed, pixels as dehazed_pixels
+
+        amount = clean.pop("dehaze")
+        patch = dehazed_pixels(small, patch, (left / fw, top / fh, (left + side) / fw, (top + side) / fh), amount)
+        small = dehazed(small, amount)
     if second:
         from adjust.double import exposed, pixels
 
