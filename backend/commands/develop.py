@@ -37,10 +37,14 @@ _MEANING = {
     "vibrance": "Saturation that favours the flat colours and spares skin",
     "saturation": "All colours alike",
     "fade": "Lifted blacks and eased whites: the matte look",
-    "shadow_hue": "Split toning: the hue tinting the shadows (0-360). Needs shadow_sat",
-    "shadow_sat": "Split toning: how strongly the shadows are tinted",
-    "highlight_hue": "Split toning: the hue tinting the highlights (0-360). Needs highlight_sat",
-    "highlight_sat": "Split toning: how strongly the highlights are tinted",
+    "shadow_hue": "Colour grading: the hue tinting the shadows (0-360). Needs shadow_sat",
+    "shadow_sat": "Colour grading: how strongly the shadows are tinted",
+    "highlight_hue": "Colour grading: the hue tinting the highlights (0-360). Needs highlight_sat",
+    "highlight_sat": "Colour grading: how strongly the highlights are tinted",
+    "midtone_hue": "Colour grading: the hue tinting the mid-tones (0-360), never black or white. Needs midtone_sat",
+    "midtone_sat": "Colour grading: how strongly the mid-tones are tinted; where most film and cinema looks put their colour",
+    "tone_balance": ("Colour grading: where the shadows' tint hands over to the highlights'. Negative gives the "
+                     "shadows' tint more of the range, positive the highlights'. Needs shadow_sat or highlight_sat"),
     "turn": "Quarter turn clockwise, 0/90/180/270, applied first (before level and crop): for a frame "
             "the camera did not stand up. Crop and angle are measured on the turned picture",
     "flip": "1 mirrors the picture left to right, after the turn",
@@ -62,6 +66,9 @@ _MEANING = {
     "glow_threshold": ("How bright something must be to glow: negative, windows and pale walls too; positive, "
                        "only the brightest lights. Needs halation or bloom"),
     "vignette": "Corners of the picture as cropped: negative darker, positive lighter",
+    "vignette_size": ("How far in the vignette reaches: 0 as it always was, negative further in (a spotlight), "
+                      "positive only the corners. Needs vignette"),
+    "vignette_feather": "How soft the vignette's edge is: negative a harder edge, positive softer. Needs vignette",
     "nr_luma": ("Noise reduction, RAW only: how much of the luminance noise (grain) a learned denoiser "
                 "takes out, 0 none to 100 all. 50-80 keeps a fine, natural grain. The first use on a "
                 "photograph runs the model (~10 s), later changes are instant"),

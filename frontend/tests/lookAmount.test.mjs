@@ -103,3 +103,11 @@ test("the newer mask controls scale with a look, and a mask's own Amount is kept
   assert.equal(lookMasksLive([{ ...m, look: "L", amount: 80 }], "L", [m], 100), false);
   assert.equal(lookMasksLive([{ ...m, look: "L" }], "L", [m], 100), true);
 });
+
+test("colour grading scales its strengths, its hues, balance and the vignette's shape are kept", () => {
+  const values = { midtone_hue: 30, midtone_sat: 40, tone_balance: -30, shadow_sat: 20,
+    vignette: -40, vignette_size: -50, vignette_feather: 30 };
+  const out = scaleLook(values, 50);
+  assert.deepEqual(out, { midtone_hue: 30, midtone_sat: 20, tone_balance: -30, shadow_sat: 10,
+    vignette: -20, vignette_size: -50, vignette_feather: 30 });
+});

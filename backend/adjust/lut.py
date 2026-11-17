@@ -38,7 +38,8 @@ from adjust.render import (
 
 SIZES = (17, 33, 65)
 
-SPLIT_KEYS = ("shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat")
+SPLIT_KEYS = ("shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat", "midtone_hue", "midtone_sat",
+              "tone_balance")
 POINT_KEYS = frozenset(
     ("exposure", "temperature", "tint", "contrast", "highlights", "lights", "darks", "shadows",
      "whites", "blacks", "compress", "vibrance", "saturation", "fade")
@@ -57,13 +58,13 @@ LEFT_OUT = (
     ("Lens corrections", ("lens_profile", "distortion")),
     # It depends on the pixels round each one, so no LUT can hold it.
     ("Halation & bloom", HALATION_KEYS),
-    ("Vignette", ("vignette",)),
+    ("Vignette", ("vignette", "vignette_size", "vignette_feather")),
     ("Grain", ("grain", "grain_size")),
     # A look's masks find a subject, a sky or a distance on each photo: a place
     # in the picture, which a colour in, colour out table has none of.
     ("Masks", ("masks",)),
 )
-_LOOK_STEP_KEYS = ("vibrance", "saturation", "fade", "shadow_sat", "highlight_sat")
+_LOOK_STEP_KEYS = ("vibrance", "saturation", "fade", "shadow_sat", "highlight_sat", "midtone_sat")
 
 
 def split(settings: Optional[dict]) -> tuple[dict, list[str]]:

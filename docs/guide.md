@@ -216,14 +216,15 @@ that:
 3. **Display.** Values above white are rolled off with a smooth shoulder instead
    of being cut, then encoded, dithered by half a level and rounded **once** — a
    shadow lifted by three stops would otherwise show steps.
-4. **Look.** Vibrance, saturation, fade and split toning, on the finished tones.
+4. **Look.** Vibrance, saturation, fade and colour grading, on the finished tones.
 
 | Group | Controls |
 |-------|----------|
 | **Light** | Exposure (±5 EV), Contrast, Highlights, **Lights**, **Darks**, Shadows, Whites, Blacks, **Squeeze** |
 | **Presence** | **Clarity** |
 | **Colour** | Warmth, Tint, **Vibrance**, **Saturation** |
-| **Look** | **Fade**, **split toning** (hue and strength for the shadows and the highlights) |
+| **Look** | **Fade**, **colour grading** (hue and strength for the shadows, the mid-tones and the highlights, and a **Balance** that moves where the shadows' tint hands over to the highlights': left gives the shadows more of the range) |
+| **Effects** | **Vignette**, with **Size** (left reaches further in, a spotlight; right keeps to the corners) and **Feather** (left a harder edge, right softer); the middle of the picture is never touched |
 
 **The panel.** Its top stays in view: the versions, the histogram, *Auto* and
 *Reset*, and the ways an edit goes from one photo to another: *Copy*, *Paste*,
@@ -256,13 +257,13 @@ to the photo they were made on.
 
 Putting a look on shows an **Amount** under the looks, 0 to 150 and starting at
 100. It scales what the look does by strength: the light and tone sliders,
-presence, fade, the toning and mixer strengths, grain, vignette, halation and
+presence, fade, the toning and mixer strengths (the mid-tones' too), grain, vignette, halation and
 bloom. Below 100 a
 curve bends less and a style fades toward the camera's own look (0 is the
 camera's picture, with the style still named); above 100 the curve and the style
 stay as saved, because stretching a curve can stop it rising. What is a choice
 rather than a strength stays as it is at any amount: black and white, which
-style, a white balance in Kelvin, a toning hue, the grain's size, the glow's
+style, a white balance in Kelvin, a toning hue and the toning's balance, the grain's size, the vignette's size and feather, the glow's
 size, threshold and colour, noise
 reduction, sharpening and lens corrections. Double-click the slider to go back to
 100. One drag is one step of undo. The Amount stays while the look's own controls

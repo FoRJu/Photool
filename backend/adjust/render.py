@@ -28,7 +28,7 @@ Here the frame is decoded to scene-linear float with headroom above white
      like a surface is not touched by a control that moves a region's level.
   3. **Display.** Values above white are rolled off smoothly instead of being
      cut, then encoded to the display curve.
-  4. **Look.** Vibrance, saturation, fade and split toning, on the finished
+  4. **Look.** Vibrance, saturation, fade and colour grading, on the finished
      tonality, where a photographer judges them.
 
 Detail cannot be invented. A pixel the sensor clipped holds no information, so
@@ -737,7 +737,7 @@ def _hue_rgb(hue: float) -> np.ndarray:
 
 def _apply_look(enc: np.ndarray, s: dict, local_saturation: Optional[np.ndarray] = None,
                 local_hue: Optional[np.ndarray] = None) -> np.ndarray:
-    """Vibrance, saturation, fade and split toning on display-encoded colour.
+    """Vibrance, saturation, fade and colour grading on display-encoded colour.
 
     ``local_saturation`` is the gradients' saturation over these pixels, (H, W)
     on the slider's scale divided by 100: added to the edit's own, so the
@@ -786,6 +786,12 @@ def _turn_hue(enc: np.ndarray, degrees: np.ndarray) -> np.ndarray:
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
+# Tone balance ±100 bends the brightness the shadows' and highlights' tints are
+# weighed by with a power of 2 to this many stops: at -100 they hand over at about
+# 78% of the way to white instead of half way, at +100 at about 14%.
+GRADE_BALANCE_STOPS = 1.5
+
+
 def _look_of(enc: np.ndarray, s: dict, local_saturation=0.0) -> np.ndarray:
     luma = (enc @ LUMA)[..., None]
 
@@ -809,14 +815,25 @@ def _look_of(enc: np.ndarray, s: dict, local_saturation=0.0) -> np.ndarray:
         hi = 1.0 - 0.05 * fade
         enc = lo + enc * (hi - lo)
 
-    for end in ("shadow", "highlight"):
+    # Colour grading. The shadows' and the highlights' tints hand over at mid grey;
+    # the balance moves that hand-over by bending the brightness both are weighed
+    # by, so at 0 the weights are exactly the old split toning's. The mid-tones' tint
+    # is weighed by how far a tone is from both ends, so it never reaches black or
+    # white.
+    balance = s.get("tone_balance", 0) / 100.0
+    for end in ("shadow", "highlight", "midtone"):
         amount = s.get(f"{end}_sat", 0) / 100.0
         if not amount:
             continue
         tint = _hue_rgb(s.get(f"{end}_hue", 0))
         tint = tint - tint.mean()          # a colour shift, not a brightness one
         y = np.clip((enc @ LUMA)[..., None], 0.0, 1.0)
-        weight = (1.0 - y) ** 1.5 if end == "shadow" else y ** 1.5
+        if end == "midtone":
+            weight = (4.0 * y * (1.0 - y)) ** 1.5
+        else:
+            if balance:
+                y = y ** np.float32(2.0 ** (-GRADE_BALANCE_STOPS * balance))
+            weight = (1.0 - y) ** 1.5 if end == "shadow" else y ** 1.5
         enc = enc + weight * (0.30 * amount) * tint
     return np.clip(enc, 0.0, 1.0)
 
@@ -1006,6 +1023,15 @@ GRAIN_SIZE_RANGE = 1.3          # ±100 size: this many stops coarser or finer
 GRAIN_AMPLITUDE = 0.16          # grain 100, in display units, at mid-grey
 GRAIN_SEED = 1729
 VIGNETTE_REACH = 0.85           # ±100: how far the corners move toward black or white
+# The vignette's ramp runs from VIGNETTE_START of the way out (on the ellipse that
+# fits the picture) to the corners. Size ±100 moves the start by VIGNETTE_SIZE;
+# feather ±100 narrows or widens the ramp about its middle by a power of 2 to
+# VIGNETTE_FEATHER_STOPS. The ramp never starts nearer the centre than
+# VIGNETTE_CLEAR, so the middle of the picture is never touched.
+VIGNETTE_START = 0.35
+VIGNETTE_SIZE = 0.30
+VIGNETTE_FEATHER_STOPS = 1.5
+VIGNETTE_CLEAR = 0.03
 
 
 @lru_cache(maxsize=4)
@@ -1047,7 +1073,25 @@ def _grain(enc: np.ndarray, amount: float, size: float, window: tuple) -> np.nda
     return enc + delta[..., None]
 
 
-def _vignette(enc: np.ndarray, amount: float, window: tuple) -> np.ndarray:
+def _vignette_ramp(size: float, feather: float) -> tuple:
+    """Where the vignette's ramp starts and how wide it is, on the radius."""
+    if not size and not feather:
+        return 0.35, 0.65                # as it always was
+    start = VIGNETTE_START + VIGNETTE_SIZE * size / 100.0
+    width = 1.0 - start
+    if feather:
+        middle = start + width / 2.0
+        width *= 2.0 ** (VIGNETTE_FEATHER_STOPS * feather / 100.0)
+        start = middle - width / 2.0
+    if start < VIGNETTE_CLEAR:
+        # A soft ramp would reach the middle: it is cut there, its far end kept.
+        width -= VIGNETTE_CLEAR - start
+        start = VIGNETTE_CLEAR
+    return start, max(width, 1e-3)
+
+
+def _vignette(enc: np.ndarray, amount: float, window: tuple, size: float = 0.0,
+              feather: float = 0.0) -> np.ndarray:
     h, w = enc.shape[:2]
     left, top, right, bottom = window
     xs = np.linspace(left, right, w, dtype=np.float32) * 2.0 - 1.0
@@ -1055,7 +1099,8 @@ def _vignette(enc: np.ndarray, amount: float, window: tuple) -> np.ndarray:
     # Measured on an ellipse that fits the picture, so the corners of a long
     # frame darken as much as those of a square one.
     r = np.sqrt(xs[None, :] ** 2 + ys[:, None] ** 2) / math.sqrt(2.0)
-    t = np.clip((r - 0.35) / 0.65, 0.0, 1.0)
+    start, width = _vignette_ramp(size, feather)
+    t = np.clip((r - start) / width, 0.0, 1.0)
     falloff = (t * t * (3.0 - 2.0 * t))[..., None]
     a = VIGNETTE_REACH * amount / 100.0
     if a < 0:
@@ -1067,7 +1112,7 @@ def _finish(img: Image.Image, s: dict, window: tuple) -> Image.Image:
     """Vignette and grain on the framed 8-bit picture."""
     enc = np.asarray(img, dtype=np.float32) / 255.0
     if s.get("vignette"):
-        enc = _vignette(enc, s["vignette"], window)
+        enc = _vignette(enc, s["vignette"], window, s.get("vignette_size", 0), s.get("vignette_feather", 0))
     if s.get("grain"):
         enc = _grain(enc, s["grain"], s.get("grain_size", 0), window)
     return to_image(np.clip(enc, 0.0, 1.0))
@@ -1413,7 +1458,8 @@ def develop_frame(
     # A mask's hue turns the colour it reaches; a grey picture has none to turn.
     local_hue = None if mono else _mask_map(frame, clean.get("masks"), "hue")
     if local_saturation is not None or local_hue is not None or any(
-            key in clean for key in ("vibrance", "saturation", "fade", "shadow_sat", "highlight_sat")):
+            key in clean for key in ("vibrance", "saturation", "fade", "shadow_sat", "highlight_sat",
+                                         "midtone_sat")):
         enc = _apply_look(enc, clean, local_saturation, local_hue)
 
     local_sharpness = _mask_map(frame, clean.get("masks"), "sharpness")
