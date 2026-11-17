@@ -453,3 +453,206 @@ class TestPortable:
         plain = {"masks": [{**TOP_DOWN, "exposure": 1.0}]}
         tagged = {"masks": [{**TOP_DOWN, "exposure": 1.0, "look": "Sky drama"}]}
         assert np.array_equal(develop_frame(frame, normalize(plain)), develop_frame(frame, normalize(tagged)))
+
+
+# -- The controls added later: tint, whites, blacks, hue, sharpness, amount --
+
+WHOLE = {"kind": "linear", "x1": 0.5, "y1": -2.0, "x2": 0.5, "y2": -1.0, "invert": True}  # whole everywhere
+
+
+def _textured(seed=7, h=64, w=96):
+    rng = np.random.default_rng(seed)
+    y, x = np.mgrid[0:h, 0:w].astype(np.float32)
+    base = np.stack([0.02 + 0.7 * x / w, 0.03 + 0.5 * y / h, 0.05 + 0.3 * (x + y) / (h + w)], -1)
+    return LinearFrame((base * (0.8 + 0.4 * rng.random((h, w, 3)))).astype(np.float32))
+
+
+def _px(img):
+    return np.asarray(img, np.float32)
+
+
+class TestOldEditsRenderAsBefore:
+    """An edit saved before these controls existed renders bit for bit as it
+    did: the hashes were taken with the code before the change."""
+
+    EDITS = [
+        ({"masks": [{"kind": "linear", "x1": 0.5, "y1": 0.0, "x2": 0.5, "y2": 0.6, "exposure": 0.7,
+                     "contrast": 40, "highlights": -30, "lights": 20, "darks": -15, "shadows": 35,
+                     "temperature": 37, "saturation": 60, "clarity": 25}]},
+         "e4c7c0eb4af2bf525bf982a7fb66d56fb53ec60722d504d4a6b1179de28cfdb6"),
+        ({"exposure": 0.3, "temperature": -20, "saturation": -40, "sharpen": 60, "sharpen_radius": 5,
+          "masks": [{"kind": "radial", "cx": 0.4, "cy": 0.5, "rx": 0.3, "ry": 0.25, "feather": 60,
+                     "temperature": -100, "saturation": -150, "contrast": -50},
+                    {"kind": "linear", "x1": 0.0, "y1": 0.5, "x2": 1.0, "y2": 0.5, "temperature": 100, "blur": 20},
+                    {"kind": "linear", "x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 1.0, "temperature": 1,
+                     "exposure": -0.4}]},
+         "05a7e5914e2783a4aa4f05378014c0e5d8aa57bf918fb37ecc571c795d0918a8"),
+        ({"mono": True, "masks": [{"kind": "linear", "x1": 0.5, "y1": 0.0, "x2": 0.5, "y2": 1.0,
+                                   "exposure": -1.0, "saturation": 100, "temperature": 55}]},
+         "49a0458d89ef885d3f133477020c37cd1adba3b499a02aceb085c0eddd1ae6ee"),
+    ]
+
+    def test_the_same_bytes(self):
+        import hashlib
+
+        for edit, digest in self.EDITS:
+            got = hashlib.sha256(np.asarray(develop_frame(_textured(), edit)).tobytes()).hexdigest()
+            assert got == digest, edit
+
+
+class TestWhiteBalance:
+    def test_within_100_it_is_the_global_sliders_gain(self):
+        from adjust.develop import point_of
+        from adjust.render import _mask_white_balance
+
+        for t in (1, 4, 37, -60, 100, -100):
+            local = point_of({"temperature": t}) or {}
+            want = np.log2(np.array([local.get("wb_r", 1.0), local.get("wb_g", 1.0), local.get("wb_b", 1.0)],
+                                    np.float32))
+            assert np.array_equal(_mask_white_balance(t, 0), want), t
+
+    def test_200_is_twice_the_stops_of_100(self):
+        from adjust.render import _mask_white_balance
+
+        for t, n in ((1, 0), (0, 1)):
+            one = _mask_white_balance(100 * t, 100 * n)
+            two = _mask_white_balance(200 * t, 200 * n)
+            assert np.allclose(two, 2 * one, atol=1e-7) and np.abs(one).max() > 0.05
+            assert np.allclose(_mask_white_balance(-200 * t, -200 * n),
+                               2 * _mask_white_balance(-100 * t, -100 * n), atol=1e-7)
+
+    def test_temperature_reaches_200_and_tint_moves_green_where_the_mask_is(self):
+        clean = normalize({"masks": [{**TOP_DOWN, "temperature": 500, "tint": -500}]})["masks"][0]
+        assert clean["temperature"] == 200 and clean["tint"] == -200
+        frame = _grey()
+        warm = _px(develop_frame(frame, {"masks": [{**TOP_DOWN, "temperature": 100}]}))
+        warmer = _px(develop_frame(frame, {"masks": [{**TOP_DOWN, "temperature": 200}]}))
+        cast = lambda a: a[0, :, 0].mean() - a[0, :, 2].mean()  # noqa: E731
+        assert cast(warmer) > 1.5 * cast(warm) > 0
+        magenta = _px(develop_frame(frame, {"masks": [{**TOP_DOWN, "tint": 100}]}))
+        green = _px(develop_frame(frame, {"masks": [{**TOP_DOWN, "tint": -100}]}))
+        plain = _px(develop_frame(frame, {}))
+        assert magenta[0, :, 1].mean() < plain[0, :, 1].mean() - 3
+        assert green[0, :, 1].mean() > plain[0, :, 1].mean() + 3
+        assert np.abs(magenta[-1] - plain[-1]).max() <= 1 and np.abs(green[-1] - plain[-1]).max() <= 1
+
+
+class TestWhitesAndBlacks:
+    def test_whites_move_the_bright_end_and_blacks_the_dark_where_the_mask_is(self):
+        rgb = np.zeros((60, 90, 3), np.float32)
+        rgb[:, :45] = 0.9        # bright on the left
+        rgb[:, 45:] = 0.004      # dark on the right
+        frame = LinearFrame(rgb)
+        plain = _luma(develop_frame(frame, {}))
+        whites = _luma(develop_frame(frame, {"masks": [{**TOP_DOWN, "whites": -100}]}))
+        blacks = _luma(develop_frame(frame, {"masks": [{**TOP_DOWN, "blacks": 100}]}))
+        assert whites[0, :45].mean() < plain[0, :45].mean() - 3
+        assert blacks[0, 45:].mean() > plain[0, 45:].mean() + 3
+        assert np.abs(whites[-1] - plain[-1]).max() <= 1 and np.abs(blacks[-1] - plain[-1]).max() <= 1
+
+
+class TestHue:
+    def test_120_turns_pure_red_to_green_and_leaves_grey(self):
+        from adjust.render import _turn_hue
+
+        enc = np.array([[[1.0, 0.0, 0.0], [0.5, 0.5, 0.5], [0.8, 0.8, 0.8]]], np.float32)
+        out = _turn_hue(enc, np.full((1, 3), 120.0, np.float32))
+        red = out[0, 0]
+        assert red[1] > 0.15 and red[0] < 1e-6 and red[2] < 1e-6          # green
+        assert np.allclose(out[0, 1:], enc[0, 1:], atol=1e-6)            # grey stays
+        assert abs(float(red @ LUMA) - float(enc[0, 0] @ LUMA)) < 0.01   # as bright as the red was
+        assert np.allclose(_turn_hue(enc, np.zeros((1, 3), np.float32)), enc, atol=1e-6)
+
+    def test_a_mask_turns_colour_only_where_it_reaches_and_not_on_black_and_white(self):
+        frame = _textured()
+        plain = _px(develop_frame(frame, {}))
+        turned = _px(develop_frame(frame, {"masks": [{**TOP_DOWN, "hue": 90}]}))
+        assert np.abs(turned[:3] - plain[:3]).mean() > 5
+        assert np.abs(turned[-10:] - plain[-10:]).max() <= 1      # the full pipeline against none
+        mono = {"mono": True, "masks": [{**TOP_DOWN, "exposure": 0.5}]}
+        assert np.array_equal(np.asarray(develop_frame(frame, mono)),
+                              np.asarray(develop_frame(frame, {**mono, "masks": [{**mono["masks"][0], "hue": 90}]})))
+        assert normalize({"masks": [{**TOP_DOWN, "hue": 400}]})["masks"][0]["hue"] == 180
+
+    def test_hue_and_sharpness_do_not_redo_the_light_and_tone(self):
+        frame = _textured()
+        develop_frame(frame, {"masks": [{**TOP_DOWN, "exposure": 0.5, "hue": 30}]})
+        toned = frame._toned
+        develop_frame(frame, {"masks": [{**TOP_DOWN, "exposure": 0.5, "hue": 60, "sharpness": 50}]})
+        assert frame._toned is toned
+
+
+class TestSharpness:
+    def _edge(self):
+        rgb = np.full((64, 96, 3), 0.05, dtype=np.float32)
+        rgb[:, 48:] = 0.4
+        return LinearFrame(rgb)
+
+    def test_with_the_global_at_0_it_sharpens_only_where_the_mask_is(self):
+        frame = self._edge()
+        plain = _px(develop_frame(frame, {"exposure": 0.1}))
+        sharp = _px(develop_frame(frame, {"exposure": 0.1, "masks": [{**TOP_DOWN, "sharpness": 100}]}))
+        step = lambda a, r: a[r, 48, 1] - a[r, 47, 1]  # noqa: E731
+        assert step(sharp, 0) > step(plain, 0) + 5
+        assert np.array_equal(sharp[-20:], plain[-20:])
+
+    def test_100_over_none_is_the_global_at_100(self):
+        frame = self._edge()
+        mask = _px(develop_frame(frame, {"exposure": 0.1, "masks": [{**WHOLE, "sharpness": 100}]}))
+        glob = _px(develop_frame(frame, {"exposure": 0.1, "sharpen": 100}))
+        assert np.abs(mask - glob).max() <= 1
+
+    def test_negative_takes_the_global_away_and_no_further(self):
+        frame = self._edge()
+        plain = _px(develop_frame(frame, {"exposure": 0.1}))
+        none = _px(develop_frame(frame, {"exposure": 0.1, "sharpen": 40,
+                                         "masks": [{**WHOLE, "sharpness": -100}]}))
+        assert np.abs(none - plain).max() <= 1
+
+
+class TestAmount:
+    CONTROLS = {"exposure": 1.0, "contrast": 40, "highlights": -30, "whites": 20, "blacks": -20,
+                "temperature": 40, "tint": 20, "hue": 30, "saturation": 60, "clarity": 20, "sharpness": 40,
+                "blur": 20}
+
+    def test_it_is_kept_as_set_and_dropped_at_100(self):
+        assert normalize_mask({**TOP_DOWN, "exposure": 1, "amount": 50})["amount"] == 50
+        assert "amount" not in normalize_mask({**TOP_DOWN, "exposure": 1, "amount": 100})
+        assert "amount" not in normalize_mask({**TOP_DOWN, "exposure": 1})
+        assert normalize_mask({**TOP_DOWN, "exposure": 1, "amount": 900})["amount"] == 200
+        assert normalize_mask({**TOP_DOWN, "exposure": 1, "amount": -5})["amount"] == 0
+        clean = normalize({"masks": [{**TOP_DOWN, "exposure": 1, "amount": 50}]})
+        assert from_crs(to_crs(clean)) == clean
+        assert clean["masks"][0]["exposure"] == 1          # the slider keeps its value
+
+    def test_50_is_every_control_halved(self):
+        half = {k: v / 2 for k, v in self.CONTROLS.items()}
+        at_half = develop_frame(_textured(), {"masks": [{**TOP_DOWN, **self.CONTROLS, "amount": 50}]})
+        halved = develop_frame(_textured(), {"masks": [{**TOP_DOWN, **half}]})
+        plain = develop_frame(_textured(), {})
+        assert np.array_equal(np.asarray(at_half), np.asarray(halved))
+        assert not np.array_equal(np.asarray(at_half), np.asarray(plain))
+
+    def test_0_makes_the_mask_inactive(self):
+        from adjust.masks import active
+
+        mask = {**TOP_DOWN, **self.CONTROLS, "amount": 0}
+        assert active(normalize_masks([mask])) == []
+        assert portable(mask) is None
+        assert np.array_equal(np.asarray(develop_frame(_textured(), {"masks": [mask]})),
+                              np.asarray(develop_frame(_textured(), {})))
+
+    def test_200_doubles_within_each_range(self):
+        from adjust.masks import effective
+
+        m = effective(normalize_mask({**TOP_DOWN, "exposure": 3, "temperature": 150, "blur": 70,
+                                      "hue": 50, "amount": 200}))
+        assert m == {**TOP_DOWN, "exposure": 4.0, "temperature": 200.0, "blur": 100.0, "hue": 100.0}
+
+    def test_skin_and_blur_read_the_mask_at_its_amount(self):
+        from adjust import defocus, skin
+
+        masks = normalize_masks([{"kind": "people", "smooth": 40, "blur": 30, "amount": 50}])
+        assert skin.wanted(masks)[0]["smooth"] == 20
+        assert defocus.wanted(masks)[0]["blur"] == 15
+        assert masks[0]["smooth"] == 40 and masks[0]["blur"] == 30

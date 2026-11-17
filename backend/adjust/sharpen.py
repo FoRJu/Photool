@@ -33,6 +33,7 @@ crisper than a full-size one shrunk, which is what output sharpening is for.
 """
 
 import math
+from typing import Optional
 
 import numpy as np
 
@@ -86,15 +87,26 @@ def _gaussian(plane: np.ndarray, sigma: float) -> np.ndarray:
     return out
 
 
-def sharpen(enc: np.ndarray, settings: dict, scale: float = 1.0) -> np.ndarray:
+def sharpen(enc: np.ndarray, settings: dict, scale: float = 1.0,
+            amount_map: Optional[np.ndarray] = None) -> np.ndarray:
     """``enc`` (H, W, 3 display-encoded, 0..1) sharpened by ``settings``.
 
     ``scale`` is this picture's pixels per pixel of the whole photograph (1.0
     for a full-size render or a 1:1 loupe patch).
+
+    ``amount_map``, (H, W) on the amount's 0..150 scale, is how much at each
+    pixel in place of the edit's one amount: the global amount with the masks'
+    sharpness added where they reach. The radius, detail and masking stay the
+    edit's own.
     """
-    amount = float(settings.get("sharpen", 0))
-    if amount <= 0:
-        return enc
+    if amount_map is not None:
+        if not amount_map.any():
+            return enc
+        amount = amount_map
+    else:
+        amount = float(settings.get("sharpen", 0))
+        if amount <= 0:
+            return enc
     sigma = max(MIN_SIGMA, radius_px(settings.get("sharpen_radius", 0)) * float(scale))
     detail = min(100.0, max(0.0, detail_of(settings.get("sharpen_detail", 0)))) / 100.0
     masking = float(settings.get("sharpen_masking", 0)) / 100.0
@@ -104,7 +116,10 @@ def sharpen(enc: np.ndarray, settings: dict, scale: float = 1.0) -> np.ndarray:
     high = luma - blurred
     limit = _DETAIL_LIMIT_LOW + (_DETAIL_LIMIT_HIGH - _DETAIL_LIMIT_LOW) * detail ** 1.5
     high = limit * np.tanh(high / limit)
-    boost = np.float32(GAIN_PER_100 * amount / 100.0) * high
+    if amount_map is None:
+        boost = np.float32(GAIN_PER_100 * amount / 100.0) * high
+    else:
+        boost = (np.float32(GAIN_PER_100 / 100.0) * amount_map).astype(np.float32) * high
 
     if masking > 0:
         # Edge strength from the blurred picture, so noise and fine texture do

@@ -92,3 +92,14 @@ test("a look's masks are live while they read what it gives", () => {
   assert.equal(lookMasksLive([own], "L", look, 100), false);
   assert.equal(lookMasksLive([own, { ...look[0], exposure: -1 }], "L", look, 100), false);
 });
+
+test("the newer mask controls scale with a look, and a mask's own Amount is kept", () => {
+  const m = { kind: "sky", temperature: 180, tint: -40, whites: 20, blacks: -10, hue: 120, sharpness: 30, amount: 60 };
+  const [half] = scaleMasks([m], 50);
+  assert.deepEqual(half, { kind: "sky", temperature: 90, tint: -20, whites: 10, blacks: -5, hue: 60,
+    sharpness: 15, amount: 60 });
+  const [more] = scaleMasks([m], 150);
+  assert.deepEqual([more.temperature, more.hue], [200, 180]);
+  assert.equal(lookMasksLive([{ ...m, look: "L", amount: 80 }], "L", [m], 100), false);
+  assert.equal(lookMasksLive([{ ...m, look: "L" }], "L", [m], 100), true);
+});
