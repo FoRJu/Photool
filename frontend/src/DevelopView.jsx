@@ -215,8 +215,12 @@ const GROUPS = [
     id: "presence",
     title: "Presence",
     sliders: [
+      { key: "texture", label: "Texture", min: -100, max: 100, step: 1, format: signed,
+        title: "Fine detail about 2 to 12 pixels across: cloth, bark, stone, skin. Right brings it out, left softens it; edges and the deepest shadows are left alone." },
       { key: "clarity", label: "Clarity", min: -100, max: 100, step: 1, format: signed,
         title: "Mid-tone local contrast: punch and texture without darkening the shadows or crunching the sky." },
+      { key: "dehaze", label: "Dehaze", min: -100, max: 100, step: 1, format: signed,
+        title: "Right takes out haze, flare and a flat distant view, more the further off it looks. Left lays an even haze of the sky's colour over the picture." },
       { key: "vibrance", label: "Vibrance", min: -100, max: 100, step: 1, format: signed,
         title: "Saturation that favours flat colours and spares skin tones." },
       { key: "saturation", label: "Saturation", min: -100, max: 100, step: 1, format: signed,
@@ -226,7 +230,7 @@ const GROUPS = [
   {
     id: "toning",
     title: "Fade & toning",
-    hint: "The matte lift and the split tone: a colour in the shadows and another in the highlights.",
+    hint: "The matte lift and colour grading: a colour in the shadows, one in the mid-tones and one in the highlights. Balance moves where the shadows' colour hands over to the highlights'.",
     sliders: [
       { key: "shadow_hue", label: "Shadow hue", min: 0, max: 360, step: 1, format: (v) => `${v}°`,
         hue: true, title: "The colour tint in the dark end." },
@@ -236,6 +240,12 @@ const GROUPS = [
         hue: true, title: "The colour tint in the bright end." },
       { key: "highlight_sat", label: "Light tint", min: 0, max: 100, step: 1, format: (v) => `${v}`,
         title: "How strongly the highlights take that colour." },
+      { key: "midtone_hue", label: "Mid hue", min: 0, max: 360, step: 1, format: (v) => `${v}°`,
+        hue: true, title: "The colour tint in the mid-tones, where most film and cinema looks put their colour." },
+      { key: "midtone_sat", label: "Mid tint", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+        title: "How strongly the mid-tones take that colour. Black and white are never tinted." },
+      { key: "tone_balance", label: "Balance", min: -100, max: 100, step: 1, format: signed,
+        title: "Where the shadows' tint hands over to the highlights': left gives the shadows' tint more of the range, right the highlights'. Needs a shadow or light tint." },
       { key: "fade", label: "Fade", min: 0, max: 100, step: 1, format: (v) => `${v}`,
         title: "Lift the blacks and ease the whites: the matte, filmic look." },
     ],
@@ -247,6 +257,10 @@ const GROUPS = [
     sliders: [
       { key: "vignette", label: "Vignette", min: -100, max: 100, step: 1, format: signed,
         title: "Darken (left) or lighten (right) the corners of the picture as cropped." },
+      { key: "vignette_size", label: "Vignette size", min: -100, max: 100, step: 1, format: signed,
+        title: "How far in the vignette reaches: left further in, a spotlight; right only the corners. The middle is never touched. Needs a vignette." },
+      { key: "vignette_feather", label: "Vignette feather", min: -100, max: 100, step: 1, format: signed,
+        title: "How soft the vignette's edge is: left a harder edge, right softer. Needs a vignette." },
       { key: "grain", label: "Grain", min: 0, max: 100, step: 1, format: (v) => `${v}`,
         title: "Film grain, strongest in the mid-tones as on film. Check it at 1:1 with the loupe (L)." },
       { key: "grain_size", label: "Grain size", min: -100, max: 100, step: 1, format: signed,
@@ -299,8 +313,10 @@ const BW_FILTERS = [
     mix: { bw_red: 20, bw_yellow: 60, bw_green: 90, bw_aqua: 10, bw_blue: -80, bw_purple: -40 } },
 ];
 
-// Toning on the grey, made with split toning: a hue and a strength at each end.
-const SPLIT_KEYS = ["shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat"];
+// Toning on the grey, made with colour grading: a hue and a strength at each end
+// and in the middle, and where the ends hand over.
+const SPLIT_KEYS = ["shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat",
+  "midtone_hue", "midtone_sat", "tone_balance"];
 const BW_TONES = [
   { name: "None", note: "Neutral grey", tone: {} },
   { name: "Sepia", note: "Warm brown throughout",
@@ -532,7 +548,7 @@ const LIGHT_KEYS = ["exposure", "highlights", "lights", "darks", "shadows", "whi
 // picking a colour look after a black-and-white one gives a colour picture.
 const LOOK_KEYS = [
   "contrast", "clarity", "vibrance", "saturation", "fade",
-  ...SPLIT_KEYS, ...BW_KEYS, "grain", "grain_size", "vignette",
+  ...SPLIT_KEYS, ...BW_KEYS, "grain", "grain_size", "vignette", "vignette_size", "vignette_feather",
   "halation", "halation_colour", "bloom", "glow_size", "glow_threshold",
 ];
 
@@ -549,11 +565,11 @@ const COPY_SECTIONS = [
   { id: "sharpen", label: "Sharpening", keys: ["sharpen", "sharpen_radius", "sharpen_detail", "sharpen_masking"] },
   { id: "blur", label: "Lens blur", keys: ["lens_blur", "blur_focus", "blur_sharp"] },
   { id: "lens", label: "Lens corrections", keys: ["lens_profile", "distortion"] },
-  { id: "presence", label: "Presence", keys: ["clarity", "vibrance", "saturation"] },
+  { id: "presence", label: "Presence", keys: ["texture", "clarity", "dehaze", "vibrance", "saturation"] },
   { id: "curve", label: "Tone curve", keys: CURVE_KEYS },
   { id: "mixer", label: "Colour mixer / B&W mix", keys: [...HSL_KEYS, ...BW_MIX_KEYS] },
   { id: "toning", label: "Fade & toning", keys: ["fade", ...SPLIT_KEYS] },
-  { id: "effects", label: "Effects", keys: ["vignette", "grain", "grain_size",
+  { id: "effects", label: "Effects", keys: ["vignette", "vignette_size", "vignette_feather", "grain", "grain_size",
     "halation", "halation_colour", "bloom", "glow_size", "glow_threshold"] },
   { id: "masks", label: "Gradients & brushes", keys: ["masks"] },
   { id: "transform", label: "Transform", keys: TRANSFORM_KEYS, framing: true },
@@ -599,6 +615,18 @@ const MAX_MASKS = 16;
 function withLookMasks(masks, add) {
   const own = (masks || []).filter((m) => !m.look);
   return { masks: [...own, ...add].slice(0, MAX_MASKS), left: Math.max(0, own.length + add.length - MAX_MASKS) };
+}
+// An edit with a look put on: the keys the look owns set to its values and the
+// rest left as they are, and its masks beside the photo's own. The one rule, used
+// by a click on a look and by the look browser's pictures of it.
+function withLook(settings, keys, values, masks = []) {
+  const next = { ...settings };
+  for (const key of keys) next[key] = ZERO[key];
+  Object.assign(next, values);
+  if (!masks.length) return { next, left: 0 };
+  const merged = withLookMasks(settings.masks, masks);
+  next.masks = merged.masks;
+  return { next, left: merged.left };
 }
 // Tied to where things are in the frame: not put on a frame turned the other way.
 const PLACED_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "spots"];
@@ -3203,6 +3231,76 @@ function stylePreviewText(p) {
 // moved meanwhile shows in the big preview, not here, until it is reopened.
 const GALLERY_SIZE = 260;
 
+// The look browser: this frame through every look, built in and saved, each put
+// on the present edit by the rule a click uses (withLook). Drawn small, two at a
+// time, as the Style gallery's are; a picture is kept while its edit is the same,
+// so putting a look on redraws only the pictures it changes. Closing the sheet
+// stops what is still being drawn.
+const LOOK_BROWSER_SIZE = 320;
+
+function LookBrowser({ looks, filepath, settings, on }) {
+  const [tiles, setTiles] = useState({});
+  const kept = useRef({});            // look id → { edit (with the photo), url }
+  const made = useRef([]);
+  const wanted = looks.map((l) => {
+    const { next } = withLook(settings, l.keys, l.values, l.masks);
+    return { id: l.id, adjustment: activeOnly(next) };
+  });
+  const wantKey = JSON.stringify(wanted);
+  useEffect(() => () => made.current.forEach((u) => URL.revokeObjectURL(u)), []);
+  useEffect(() => {
+    const ctl = new AbortController();
+    const todo = wanted.filter((w) => kept.current[w.id]?.edit !== filepath + JSON.stringify(w.adjustment));
+    setTiles(Object.fromEntries(wanted.filter((w) => !todo.includes(w))
+      .map((w) => [w.id, kept.current[w.id].url])));
+    let next = 0;
+    const worker = async () => {
+      while (next < todo.length && !ctl.signal.aborted) {
+        const { id, adjustment } = todo[next++];
+        try {
+          const res = await fetch(`${API}/export/preview`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.signal,
+            body: JSON.stringify({ filepath, linear: true, size: LOOK_BROWSER_SIZE, adjustment }),
+          });
+          const url = res.ok ? URL.createObjectURL(await res.blob()) : "";
+          if (url) {
+            made.current.push(url);
+            kept.current[id] = { edit: filepath + JSON.stringify(adjustment), url };
+          }
+          if (!ctl.signal.aborted) setTiles((t) => ({ ...t, [id]: url || "failed" }));
+        } catch {
+          if (!ctl.signal.aborted) setTiles((t) => ({ ...t, [id]: "failed" }));
+        }
+      }
+    };
+    // A moment's wait, so a slider being dragged does not start a sheet of pictures
+    // at every step.
+    const start = setTimeout(() => { worker(); worker(); }, 300);
+    return () => { clearTimeout(start); ctl.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filepath, wantKey]);
+
+  return (
+    <div className="grid grid-cols-2 gap-1.5 pt-1" data-testid="look-browser">
+      {looks.map((l) => {
+        const tile = tiles[l.id];
+        const chosen = l.id === on;
+        return (
+          <button key={l.id} onClick={l.use} title={l.note} data-testid="look-tile"
+            className={`text-left rounded overflow-hidden border ${chosen ? "border-sky-400" : "border-neutral-800 hover:border-neutral-500"}`}>
+            <div className="aspect-[3/2] bg-neutral-800 flex items-center justify-center">
+              {tile && tile !== "failed"
+                ? <img src={tile} alt="" className="w-full h-full object-contain" />
+                : <span className="text-[10px] text-neutral-500 px-1 text-center">{tile === "failed" ? "could not render" : l.name}</span>}
+            </div>
+            <div className={`px-1 py-0.5 text-[10px] truncate ${chosen ? "text-sky-300" : "text-neutral-400"}`}>{l.name}</div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function StyleGallery({ styles, value, onChange, filepath, edit }) {
   const [tiles, setTiles] = useState({});
   const editKey = JSON.stringify(edit);
@@ -3777,6 +3875,8 @@ export default function DevelopView({ filepath, startVersion = 0, photos, picked
   const [lookRefresh, setLookRefresh] = useState(0);
   const [presets, setPresets] = useState([]);
   const [activePreset, setActivePreset] = useState("");
+  // The look browser: this frame through every look at once (LookBrowser).
+  const [browsingLooks, setBrowsingLooks] = useState(false);
   // The look last put on, { name, keys, values, own }, and how much of it. It is
   // shown while the frame still reads what it gives (lookShown, on render).
   const [activeLook, setActiveLook] = useState(null);
@@ -5265,21 +5365,16 @@ ${known.license}
   // photo's own, in place of those an earlier look put on.
   const applyLook = useCallback((name, keys, values, own, masks = []) => {
     const label = own ? `Look “${name}”` : name;
-    let left = 0;
-    if (masks.length) {
-      const merged = withLookMasks(settingsRef.current.masks, masks);
-      left = merged.left;
-      setMaskSel(-1);
-      applyGroup(keys, { ...values, masks: merged.masks }, label);
-    } else {
-      applyGroup(keys, values, label);
-    }
+    const { next, left } = withLook(settingsRef.current, keys, values, masks);
+    if (masks.length) setMaskSel(-1);
+    setActivePreset("");
+    applySettings(next, label);
     if (left) setNote(`${label} · ${left} of its masks left out: a photo holds ${MAX_MASKS}`);
     if (own) setActivePreset(name);
     // The masks that went on are the look's here, for its Amount.
     setActiveLook({ name, keys, values, own, masks: masks.slice(0, masks.length - left) });
     setLookAmount(100);
-  }, [applyGroup]);
+  }, [applySettings]);
 
   // A look of your own sets the sections it carries and leaves the rest.
   const applyPreset = useCallback((name) => {
@@ -6132,7 +6227,26 @@ ${known.license}
           <Fold id="looks" title="Looks" open={folds.includes("looks")} onToggle={toggleFold}
             summary={activePreset ? `“${activePreset}”` : camerasLook && !toneEdited ? `★ ${camerasLook.name}` : ""}
             hint="Starting points for the styling, built in or saved from your own edits. Each sets only the sections it carries, so pick one before fine-tuning those.">
-            <div className="text-[11px] text-neutral-500">Built in · contrast, colour, toning, grain and vignette</div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] text-neutral-500">Built in · contrast, colour, toning, grain and vignette</div>
+              <button onClick={() => setBrowsingLooks((b) => !b)} data-testid="look-browser-toggle"
+                title="See this frame through every look at once, built in and your own, and click one to use it"
+                className={`shrink-0 text-[10px] px-1 rounded border ${browsingLooks ? "border-sky-500 text-sky-300" : "border-neutral-800 text-neutral-500 hover:text-neutral-300"}`}>
+                ▦ Browse
+              </button>
+            </div>
+            {browsingLooks && (
+              <LookBrowser filepath={filepath} settings={settings} looks={[
+                ...LOOKS.map((r) => ({ id: `built:${r.name}`, name: r.name, note: r.note, keys: LOOK_KEYS,
+                  values: r.settings, masks: [], use: () => applyLook(r.name, LOOK_KEYS, r.settings, false) })),
+                ...SCENE_LOOKS.map((r) => ({ id: `scene:${r.name}`, name: r.name, note: r.note, keys: [], values: {},
+                  masks: asLookMasks(r.masks, r.name),
+                  use: () => applyLook(r.name, [], {}, false, asLookMasks(r.masks, r.name)) })),
+                ...presets.map((p) => ({ id: `own:${p.name}`, ...lookOfPreset(p), note: "Yours",
+                  use: () => applyPreset(p.name) })),
+              ]} on={lookShown == null || !activeLook ? "" : activeLook.own ? `own:${activeLook.name}`
+                : `${activeLook.keys.length ? "built" : "scene"}:${activeLook.name}`} />
+            )}
             <div className="flex flex-wrap gap-1">
               {LOOKS.map((r) => (
                 <button key={r.name} title={r.note}

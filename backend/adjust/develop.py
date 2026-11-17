@@ -117,9 +117,15 @@ TONE_SLIDERS = ("contrast", "highlights", "shadows", "whites", "blacks")
 #   vibrance        -100..100  saturation that favours the flat colours
 #   saturation      -100..100  all colours alike
 #   fade            0..100   lift the blacks, ease the whites: the matte look
-#   shadow_hue / shadow_sat, highlight_hue / highlight_sat
-#                   split toning: a hue (0..360) and a strength (0..100) for
-#                   each end of the range
+#   shadow_hue / shadow_sat, highlight_hue / highlight_sat, midtone_hue / midtone_sat
+#                   colour grading: a hue (0..360) and a strength (0..100) for
+#                   each end of the range and for the middle of it
+#   tone_balance    -100..100  where the shadows' tint hands over to the
+#                   highlights': left gives the shadows more of the range
+#   dehaze          -100..100  haze taken out (right) or an even haze laid on
+#                   (left), by the dark channel of the scene (adjust.dehaze)
+#   texture         -100..100  detail about 2 to 12 pixels across: cloth, bark,
+#                   stone; not the edges, not the noise
 #   style_fade      0..100   with a ``style`` (the id of a learned style, see
 #                   adjust.styles), how far to fade it back towards the camera's
 #                   own look: 0 is the whole style
@@ -131,6 +137,7 @@ LOOK_SLIDERS = (
     "lights", "darks",
     "flat", "style_fade", "compress", "clarity", "vibrance", "saturation", "fade",
     "shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat",
+    "midtone_hue", "midtone_sat", "tone_balance", "dehaze", "texture",
 )
 # The colour mixer: hue, saturation and luminance for each of eight bands of
 # hue, -100..100 like Lightroom's HSL panel. The bands and their centres (in
@@ -149,13 +156,15 @@ BW_SLIDERS = ("mono",) + tuple(f"bw_{band}" for band in HSL_BANDS)
 # Effects on the finished, framed picture. ``grain`` 0..100 is film grain and
 # ``grain_size`` -100..100 its size (0 is a 35 mm film's grain, finer to the
 # left); ``vignette`` -100..100 darkens (left) or lightens (right) the corners of
-# the picture as cropped. ``halation`` 0..100 is film's red-orange fringe round bright
-# light and ``bloom`` 0..100 a wider glow in the light's own colour (adjust.halation,
+# the picture as cropped, ``vignette_size`` -100..100 how far in it reaches (0 is
+# as it always was, left further in, right only the corners) and
+# ``vignette_feather`` -100..100 how soft its edge is (left harder). ``halation``
+# 0..100 is film's red-orange fringe round bright light and ``bloom`` 0..100 a wider glow in the light's own colour (adjust.halation,
 # put on the linear light before the tone, not on the finished picture);
 # ``halation_colour`` -100..100 turns the fringe deep red (left) or nearly neutral
 # (right), ``glow_size`` -100..100 how far both spread (0 is a 35 mm film's) and
 # ``glow_threshold`` -100..100 how bright something must be to glow.
-EFFECT_SLIDERS = ("grain", "grain_size", "vignette",
+EFFECT_SLIDERS = ("grain", "grain_size", "vignette", "vignette_size", "vignette_feather",
                   "halation", "halation_colour", "bloom", "glow_size", "glow_threshold")
 
 # Noise reduction (adjust.noise), 0..100 each: how much of the luminance noise
@@ -218,6 +227,8 @@ SLIDER_RANGES = {
     "highlight_sat": (0.0, 100.0),
     "shadow_hue": (0.0, 360.0),
     "highlight_hue": (0.0, 360.0),
+    "midtone_sat": (0.0, 100.0),
+    "midtone_hue": (0.0, 360.0),
     "mono": (0.0, 1.0),
     "grain": (0.0, 100.0),
     "halation": (0.0, 100.0),
@@ -238,8 +249,9 @@ _STYLE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 
 # A setting that means nothing without another: a hue without its strength, a
 # grain size without any grain. It is dropped when the other is at 0.
-HUE_OF = {"shadow_hue": "shadow_sat", "highlight_hue": "highlight_sat", "grain_size": "grain",
-          "halation_colour": "halation",
+HUE_OF = {"shadow_hue": "shadow_sat", "highlight_hue": "highlight_sat", "midtone_hue": "midtone_sat",
+          "grain_size": "grain", "halation_colour": "halation",
+          "vignette_size": "vignette", "vignette_feather": "vignette",
           "sharpen_radius": "sharpen", "sharpen_detail": "sharpen", "sharpen_masking": "sharpen",
           "blur_focus": "lens_blur", "blur_sharp": "lens_blur"}
 
@@ -513,6 +525,9 @@ def normalize(settings: Optional[dict]) -> dict:
     for hue, strength in HUE_OF.items():
         if hue in clean and strength not in clean:
             del clean[hue]
+    # The balance moves the hand-over between the shadows' tint and the highlights'.
+    if "shadow_sat" not in clean and "highlight_sat" not in clean:
+        clean.pop("tone_balance", None)
     # A glow's size and threshold need a glow.
     if "halation" not in clean and "bloom" not in clean:
         clean.pop("glow_size", None)
@@ -787,11 +802,11 @@ def describe_settings(settings: Optional[dict]) -> str:
         )
     looks = [
         f"{key} {clean[key]:+d}"
-        for key in ("compress", "clarity", "vibrance", "saturation", "fade")
+        for key in ("compress", "clarity", "texture", "dehaze", "vibrance", "saturation", "fade")
         if key in clean
     ]
-    if "shadow_sat" in clean or "highlight_sat" in clean:
-        looks.append("split tone")
+    if "shadow_sat" in clean or "highlight_sat" in clean or "midtone_sat" in clean:
+        looks.append("colour grading")
     if any(key in clean for key in CURVE_KEYS):
         looks.append("tone curve")
     if any(key in clean for key in HSL_SLIDERS):
@@ -860,6 +875,14 @@ _LOOK_CRS = {
     "shadow_sat": "crs:SplitToningShadowSaturation",
     "highlight_hue": "crs:SplitToningHighlightHue",
     "highlight_sat": "crs:SplitToningHighlightSaturation",
+    # Lightroom's Color Grading mid-tones and its balance, on the same scales.
+    "midtone_hue": "crs:ColorGradeMidtoneHue",
+    "midtone_sat": "crs:ColorGradeMidtoneSat",
+    "tone_balance": "crs:SplitToningBalance",
+    # Lightroom's Dehaze and Texture are -100..100 too. The methods are each their
+    # own, but the meaning and the reach are the same, as with Clarity.
+    "dehaze": "crs:Dehaze",
+    "texture": "crs:Texture",
     "style_fade": "crs:PhotoolStyleFade",
 }
 # The colour mixer under Lightroom's own names (crs:HueAdjustmentRed, …): the
@@ -883,6 +906,10 @@ _LOOK_CRS.update({
     "glow_size": "crs:PhotoolGlowSize",
     "glow_threshold": "crs:PhotoolGlowThreshold",
     "vignette": "crs:PostCropVignetteAmount",
+    # Lightroom's midpoint and feather are 0..100 about a shape of its own; these
+    # are about this app's, so they are not passed off as Lightroom's.
+    "vignette_size": "crs:PhotoolVignetteSize",
+    "vignette_feather": "crs:PhotoolVignetteFeather",
 })
 # Noise reduction under names of this app's own. Lightroom's LuminanceSmoothing and
 # ColorNoiseReduction are not this denoiser, and Lightroom writes a colour amount
@@ -936,6 +963,7 @@ _WB_KELVIN_CRS = "crs:WBKelvin"
 _WB_TINT_CRS = "crs:WBTint"
 # Written without a sign: they are 0..100 / 0..360, never negative.
 _UNSIGNED = {"flat", "style_fade", "compress", "fade", "shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat",
+             "midtone_hue", "midtone_sat",
              "grain", "halation", "bloom", "nr_luma", "nr_color", "sharpen", "sharpen_masking", "lens_profile",
              "lens_blur", "blur_focus", "blur_sharp"}
 

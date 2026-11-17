@@ -2,13 +2,14 @@
 // with 100 the look as saved. Plain functions, so Node can test them.
 //
 // Strengths are scaled; choices and places are kept as they are at any amount
-// (black and white, a style's name, a white balance, a toning hue, a grain's
-// size, noise reduction, sharpening, lens corrections).
+// (black and white, a style's name, a white balance, a toning hue and the
+// toning's balance, a grain's size, a vignette's size and feather, noise
+// reduction, sharpening, lens corrections).
 
 const SCALED = new Set([
   "exposure", "highlights", "lights", "darks", "shadows", "whites", "blacks", "compress",
-  "contrast", "clarity", "vibrance", "saturation", "fade", "shadow_sat", "highlight_sat",
-  "vignette", "grain", "halation", "bloom", "flat", "temperature", "tint",
+  "contrast", "clarity", "texture", "dehaze", "vibrance", "saturation", "fade", "shadow_sat", "highlight_sat",
+  "midtone_sat", "vignette", "grain", "halation", "bloom", "flat", "temperature", "tint",
 ]);
 const SCALED_PREFIXES = ["hue_", "sat_", "lum_", "bw_"];
 export const LOOK_CURVE_KEYS = ["curve", "curve_r", "curve_g", "curve_b"];

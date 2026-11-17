@@ -216,14 +216,15 @@ that:
 3. **Display.** Values above white are rolled off with a smooth shoulder instead
    of being cut, then encoded, dithered by half a level and rounded **once** — a
    shadow lifted by three stops would otherwise show steps.
-4. **Look.** Vibrance, saturation, fade and split toning, on the finished tones.
+4. **Look.** Vibrance, saturation, fade and colour grading, on the finished tones.
 
 | Group | Controls |
 |-------|----------|
 | **Light** | Exposure (±5 EV), Contrast, Highlights, **Lights**, **Darks**, Shadows, Whites, Blacks, **Squeeze** |
-| **Presence** | **Clarity** |
+| **Presence** | **Clarity**; **Texture** (detail about 2 to 12 pixels across: cloth, bark, stone, skin; edges and the deepest shadows left alone, and scaled to the picture so the preview shows what the export gives); **Dehaze** (haze, flare and a flat distant view taken out by how far off they look, up to 85% of the haze found at 100, from the dark channel of the whole frame refined against its own edges; left lays an even haze of the sky's colour on) |
 | **Colour** | Warmth, Tint, **Vibrance**, **Saturation** |
-| **Look** | **Fade**, **split toning** (hue and strength for the shadows and the highlights) |
+| **Look** | **Fade**, **colour grading** (hue and strength for the shadows, the mid-tones and the highlights, and a **Balance** that moves where the shadows' tint hands over to the highlights': left gives the shadows more of the range) |
+| **Effects** | **Vignette**, with **Size** (left reaches further in, a spotlight; right keeps to the corners) and **Feather** (left a harder edge, right softer); the middle of the picture is never touched |
 
 **The panel.** Its top stays in view: the versions, the histogram, *Auto* and
 *Reset*, and the ways an edit goes from one photo to another: *Copy*, *Paste*,
@@ -254,15 +255,24 @@ to begin with where the edit has changes; putting one on a photo sets only those
 sections. A look never carries the crop, the level, spots or masks, which belong
 to the photo they were made on.
 
+**▦ Browse**, beside the built-in row, opens a sheet of small pictures of this
+frame, one for each look, built in and your own, each drawn as the photo would
+be with that look put on now (the same rule a click uses, so a look that sets
+only masks is drawn on top of the rest of the edit). Click one to use it; the
+sheet stays open, and only the pictures the new edit changes are drawn again.
+They are drawn two at a time, at 320 pixels on the long side, and closing the
+sheet stops the rest. A look that finds a subject, the sky or people may take a
+moment the first time: its name shows on a grey tile until its picture comes.
+
 Putting a look on shows an **Amount** under the looks, 0 to 150 and starting at
 100. It scales what the look does by strength: the light and tone sliders,
-presence, fade, the toning and mixer strengths, grain, vignette, halation and
+presence, fade, the toning and mixer strengths (the mid-tones' too), grain, vignette, halation and
 bloom. Below 100 a
 curve bends less and a style fades toward the camera's own look (0 is the
 camera's picture, with the style still named); above 100 the curve and the style
 stay as saved, because stretching a curve can stop it rising. What is a choice
 rather than a strength stays as it is at any amount: black and white, which
-style, a white balance in Kelvin, a toning hue, the grain's size, the glow's
+style, a white balance in Kelvin, a toning hue and the toning's balance, the grain's size, the vignette's size and feather, the glow's
 size, threshold and colour, noise
 reduction, sharpening and lens corrections. Double-click the slider to go back to
 100. One drag is one step of undo. The Amount stays while the look's own controls
@@ -287,7 +297,7 @@ display-encoded Rec. 709 in and out), for a video editor or another photo app. A
 LUT gives one colour out for each colour in, so it holds what the look does to a
 pixel by its colour alone: exposure and the relative temperature and tint, the
 tone sliders, presence, fade, toning, the curves, the colour mixer and black and
-white. It cannot hold what depends on the pixels round it (clarity, sharpening,
+white. It cannot hold what depends on the pixels round it (clarity, texture, dehaze, sharpening,
 noise reduction, lens blur, halation and bloom), on where a pixel is in the frame (grain, vignette,
 lens corrections), or on the RAW file (a learned style, the camera's look, a
 white balance in Kelvin, which is worked out from one file's own white). Those
