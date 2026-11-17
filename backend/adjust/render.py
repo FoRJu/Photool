@@ -1526,12 +1526,14 @@ def develop_frame(
         # Last on the colour, before framing and grain: it sharpens the picture
         # as finished, and the grain laid on after is not sharpened with it. A
         # mask's sharpness adds to the edit's amount where it reaches, so a mask
-        # can sharpen eyes on a picture that is not sharpened at all.
-        from adjust.sharpen import sharpen
+        # can sharpen eyes on a picture that is not sharpened at all. The two
+        # together stop where the slider does: past it an edge only grows a halo.
+        from adjust.sharpen import MAX_AMOUNT, sharpen
 
         amount = None
         if local_sharpness is not None:
-            amount = np.maximum(np.float32(clean.get("sharpen", 0)) + local_sharpness, np.float32(0.0))
+            amount = np.clip(np.float32(clean.get("sharpen", 0)) + local_sharpness,
+                             np.float32(0.0), np.float32(MAX_AMOUNT))
         enc = sharpen(enc, clean, frame.scale, amount)
 
     if finished_second is not None:
