@@ -23,6 +23,9 @@ def fresh(monkeypatch):
     monkeypatch.setattr(background, "_last_use", 0.0)
     monkeypatch.setattr(background, "QUIET_SECONDS", 0.3)
     monkeypatch.setattr(background, "_POLL_SECONDS", 0.02)
+    # Work that other tests' apps started (camera clocks, places) can still be
+    # waiting its turn in this process: each test counts only its own waiters.
+    monkeypatch.setattr(background, "_waiting", {})
     background.resume()
     yield
     background.resume()
@@ -149,7 +152,11 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
-def test_through_the_api(client):
+def test_through_the_api(client, monkeypatch):
+    from places import routes as places_routes
+
+    # A folder another test indexed may still be queued for its locations.
+    monkeypatch.setattr(places_routes, "auto_idle", lambda: True)
     background._last_use = 0.0
     assert client.get("/api/background").json()["yielding"] is False
     client.get("/api/activity")                        # polling is not use

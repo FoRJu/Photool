@@ -106,9 +106,13 @@ def wait_turn(name: str = "", should_stop: Optional[Callable[[], bool]] = None) 
         return not (should_stop and should_stop())
     finally:
         with _lock:
-            _waiting[name] -= 1
-            if _waiting[name] <= 0:
-                del _waiting[name]
+            # Taken off however the list was kept meanwhile: a fresh list (the
+            # tests start each from one) must not fail a waiter from before it.
+            left = _waiting.get(name, 0) - 1
+            if left > 0:
+                _waiting[name] = left
+            else:
+                _waiting.pop(name, None)
 
 
 def status() -> dict:
