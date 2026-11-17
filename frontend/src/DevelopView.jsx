@@ -616,6 +616,18 @@ function withLookMasks(masks, add) {
   const own = (masks || []).filter((m) => !m.look);
   return { masks: [...own, ...add].slice(0, MAX_MASKS), left: Math.max(0, own.length + add.length - MAX_MASKS) };
 }
+// An edit with a look put on: the keys the look owns set to its values and the
+// rest left as they are, and its masks beside the photo's own. The one rule, used
+// by a click on a look and by the look browser's pictures of it.
+function withLook(settings, keys, values, masks = []) {
+  const next = { ...settings };
+  for (const key of keys) next[key] = ZERO[key];
+  Object.assign(next, values);
+  if (!masks.length) return { next, left: 0 };
+  const merged = withLookMasks(settings.masks, masks);
+  next.masks = merged.masks;
+  return { next, left: merged.left };
+}
 // Tied to where things are in the frame: not put on a frame turned the other way.
 const PLACED_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "spots"];
 const chosenSections = () => {
@@ -3219,6 +3231,76 @@ function stylePreviewText(p) {
 // moved meanwhile shows in the big preview, not here, until it is reopened.
 const GALLERY_SIZE = 260;
 
+// The look browser: this frame through every look, built in and saved, each put
+// on the present edit by the rule a click uses (withLook). Drawn small, two at a
+// time, as the Style gallery's are; a picture is kept while its edit is the same,
+// so putting a look on redraws only the pictures it changes. Closing the sheet
+// stops what is still being drawn.
+const LOOK_BROWSER_SIZE = 320;
+
+function LookBrowser({ looks, filepath, settings, on }) {
+  const [tiles, setTiles] = useState({});
+  const kept = useRef({});            // look id → { edit (with the photo), url }
+  const made = useRef([]);
+  const wanted = looks.map((l) => {
+    const { next } = withLook(settings, l.keys, l.values, l.masks);
+    return { id: l.id, adjustment: activeOnly(next) };
+  });
+  const wantKey = JSON.stringify(wanted);
+  useEffect(() => () => made.current.forEach((u) => URL.revokeObjectURL(u)), []);
+  useEffect(() => {
+    const ctl = new AbortController();
+    const todo = wanted.filter((w) => kept.current[w.id]?.edit !== filepath + JSON.stringify(w.adjustment));
+    setTiles(Object.fromEntries(wanted.filter((w) => !todo.includes(w))
+      .map((w) => [w.id, kept.current[w.id].url])));
+    let next = 0;
+    const worker = async () => {
+      while (next < todo.length && !ctl.signal.aborted) {
+        const { id, adjustment } = todo[next++];
+        try {
+          const res = await fetch(`${API}/export/preview`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.signal,
+            body: JSON.stringify({ filepath, linear: true, size: LOOK_BROWSER_SIZE, adjustment }),
+          });
+          const url = res.ok ? URL.createObjectURL(await res.blob()) : "";
+          if (url) {
+            made.current.push(url);
+            kept.current[id] = { edit: filepath + JSON.stringify(adjustment), url };
+          }
+          if (!ctl.signal.aborted) setTiles((t) => ({ ...t, [id]: url || "failed" }));
+        } catch {
+          if (!ctl.signal.aborted) setTiles((t) => ({ ...t, [id]: "failed" }));
+        }
+      }
+    };
+    // A moment's wait, so a slider being dragged does not start a sheet of pictures
+    // at every step.
+    const start = setTimeout(() => { worker(); worker(); }, 300);
+    return () => { clearTimeout(start); ctl.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filepath, wantKey]);
+
+  return (
+    <div className="grid grid-cols-2 gap-1.5 pt-1" data-testid="look-browser">
+      {looks.map((l) => {
+        const tile = tiles[l.id];
+        const chosen = l.id === on;
+        return (
+          <button key={l.id} onClick={l.use} title={l.note} data-testid="look-tile"
+            className={`text-left rounded overflow-hidden border ${chosen ? "border-sky-400" : "border-neutral-800 hover:border-neutral-500"}`}>
+            <div className="aspect-[3/2] bg-neutral-800 flex items-center justify-center">
+              {tile && tile !== "failed"
+                ? <img src={tile} alt="" className="w-full h-full object-contain" />
+                : <span className="text-[10px] text-neutral-500 px-1 text-center">{tile === "failed" ? "could not render" : l.name}</span>}
+            </div>
+            <div className={`px-1 py-0.5 text-[10px] truncate ${chosen ? "text-sky-300" : "text-neutral-400"}`}>{l.name}</div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function StyleGallery({ styles, value, onChange, filepath, edit }) {
   const [tiles, setTiles] = useState({});
   const editKey = JSON.stringify(edit);
@@ -3793,6 +3875,8 @@ export default function DevelopView({ filepath, startVersion = 0, photos, picked
   const [lookRefresh, setLookRefresh] = useState(0);
   const [presets, setPresets] = useState([]);
   const [activePreset, setActivePreset] = useState("");
+  // The look browser: this frame through every look at once (LookBrowser).
+  const [browsingLooks, setBrowsingLooks] = useState(false);
   // The look last put on, { name, keys, values, own }, and how much of it. It is
   // shown while the frame still reads what it gives (lookShown, on render).
   const [activeLook, setActiveLook] = useState(null);
@@ -5281,21 +5365,16 @@ ${known.license}
   // photo's own, in place of those an earlier look put on.
   const applyLook = useCallback((name, keys, values, own, masks = []) => {
     const label = own ? `Look “${name}”` : name;
-    let left = 0;
-    if (masks.length) {
-      const merged = withLookMasks(settingsRef.current.masks, masks);
-      left = merged.left;
-      setMaskSel(-1);
-      applyGroup(keys, { ...values, masks: merged.masks }, label);
-    } else {
-      applyGroup(keys, values, label);
-    }
+    const { next, left } = withLook(settingsRef.current, keys, values, masks);
+    if (masks.length) setMaskSel(-1);
+    setActivePreset("");
+    applySettings(next, label);
     if (left) setNote(`${label} · ${left} of its masks left out: a photo holds ${MAX_MASKS}`);
     if (own) setActivePreset(name);
     // The masks that went on are the look's here, for its Amount.
     setActiveLook({ name, keys, values, own, masks: masks.slice(0, masks.length - left) });
     setLookAmount(100);
-  }, [applyGroup]);
+  }, [applySettings]);
 
   // A look of your own sets the sections it carries and leaves the rest.
   const applyPreset = useCallback((name) => {
@@ -6148,7 +6227,26 @@ ${known.license}
           <Fold id="looks" title="Looks" open={folds.includes("looks")} onToggle={toggleFold}
             summary={activePreset ? `“${activePreset}”` : camerasLook && !toneEdited ? `★ ${camerasLook.name}` : ""}
             hint="Starting points for the styling, built in or saved from your own edits. Each sets only the sections it carries, so pick one before fine-tuning those.">
-            <div className="text-[11px] text-neutral-500">Built in · contrast, colour, toning, grain and vignette</div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] text-neutral-500">Built in · contrast, colour, toning, grain and vignette</div>
+              <button onClick={() => setBrowsingLooks((b) => !b)} data-testid="look-browser-toggle"
+                title="See this frame through every look at once, built in and your own, and click one to use it"
+                className={`shrink-0 text-[10px] px-1 rounded border ${browsingLooks ? "border-sky-500 text-sky-300" : "border-neutral-800 text-neutral-500 hover:text-neutral-300"}`}>
+                ▦ Browse
+              </button>
+            </div>
+            {browsingLooks && (
+              <LookBrowser filepath={filepath} settings={settings} looks={[
+                ...LOOKS.map((r) => ({ id: `built:${r.name}`, name: r.name, note: r.note, keys: LOOK_KEYS,
+                  values: r.settings, masks: [], use: () => applyLook(r.name, LOOK_KEYS, r.settings, false) })),
+                ...SCENE_LOOKS.map((r) => ({ id: `scene:${r.name}`, name: r.name, note: r.note, keys: [], values: {},
+                  masks: asLookMasks(r.masks, r.name),
+                  use: () => applyLook(r.name, [], {}, false, asLookMasks(r.masks, r.name)) })),
+                ...presets.map((p) => ({ id: `own:${p.name}`, ...lookOfPreset(p), note: "Yours",
+                  use: () => applyPreset(p.name) })),
+              ]} on={lookShown == null || !activeLook ? "" : activeLook.own ? `own:${activeLook.name}`
+                : `${activeLook.keys.length ? "built" : "scene"}:${activeLook.name}`} />
+            )}
             <div className="flex flex-wrap gap-1">
               {LOOKS.map((r) => (
                 <button key={r.name} title={r.note}

@@ -255,6 +255,15 @@ to begin with where the edit has changes; putting one on a photo sets only those
 sections. A look never carries the crop, the level, spots or masks, which belong
 to the photo they were made on.
 
+**▦ Browse**, beside the built-in row, opens a sheet of small pictures of this
+frame, one for each look, built in and your own, each drawn as the photo would
+be with that look put on now (the same rule a click uses, so a look that sets
+only masks is drawn on top of the rest of the edit). Click one to use it; the
+sheet stays open, and only the pictures the new edit changes are drawn again.
+They are drawn two at a time, at 320 pixels on the long side, and closing the
+sheet stops the rest. A look that finds a subject, the sky or people may take a
+moment the first time: its name shows on a grey tile until its picture comes.
+
 Putting a look on shows an **Amount** under the looks, 0 to 150 and starting at
 100. It scales what the look does by strength: the light and tone sliders,
 presence, fade, the toning and mixer strengths (the mid-tones' too), grain, vignette, halation and
