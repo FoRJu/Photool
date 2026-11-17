@@ -215,8 +215,12 @@ const GROUPS = [
     id: "presence",
     title: "Presence",
     sliders: [
+      { key: "texture", label: "Texture", min: -100, max: 100, step: 1, format: signed,
+        title: "Fine detail about 2 to 12 pixels across: cloth, bark, stone, skin. Right brings it out, left softens it; edges and the deepest shadows are left alone." },
       { key: "clarity", label: "Clarity", min: -100, max: 100, step: 1, format: signed,
         title: "Mid-tone local contrast: punch and texture without darkening the shadows or crunching the sky." },
+      { key: "dehaze", label: "Dehaze", min: -100, max: 100, step: 1, format: signed,
+        title: "Right takes out haze, flare and a flat distant view, more the further off it looks. Left lays an even haze of the sky's colour over the picture." },
       { key: "vibrance", label: "Vibrance", min: -100, max: 100, step: 1, format: signed,
         title: "Saturation that favours flat colours and spares skin tones." },
       { key: "saturation", label: "Saturation", min: -100, max: 100, step: 1, format: signed,
@@ -226,7 +230,7 @@ const GROUPS = [
   {
     id: "toning",
     title: "Fade & toning",
-    hint: "The matte lift and the split tone: a colour in the shadows and another in the highlights.",
+    hint: "The matte lift and colour grading: a colour in the shadows, one in the mid-tones and one in the highlights. Balance moves where the shadows' colour hands over to the highlights'.",
     sliders: [
       { key: "shadow_hue", label: "Shadow hue", min: 0, max: 360, step: 1, format: (v) => `${v}°`,
         hue: true, title: "The colour tint in the dark end." },
@@ -236,6 +240,12 @@ const GROUPS = [
         hue: true, title: "The colour tint in the bright end." },
       { key: "highlight_sat", label: "Light tint", min: 0, max: 100, step: 1, format: (v) => `${v}`,
         title: "How strongly the highlights take that colour." },
+      { key: "midtone_hue", label: "Mid hue", min: 0, max: 360, step: 1, format: (v) => `${v}°`,
+        hue: true, title: "The colour tint in the mid-tones, where most film and cinema looks put their colour." },
+      { key: "midtone_sat", label: "Mid tint", min: 0, max: 100, step: 1, format: (v) => `${v}`,
+        title: "How strongly the mid-tones take that colour. Black and white are never tinted." },
+      { key: "tone_balance", label: "Balance", min: -100, max: 100, step: 1, format: signed,
+        title: "Where the shadows' tint hands over to the highlights': left gives the shadows' tint more of the range, right the highlights'. Needs a shadow or light tint." },
       { key: "fade", label: "Fade", min: 0, max: 100, step: 1, format: (v) => `${v}`,
         title: "Lift the blacks and ease the whites: the matte, filmic look." },
     ],
@@ -247,6 +257,10 @@ const GROUPS = [
     sliders: [
       { key: "vignette", label: "Vignette", min: -100, max: 100, step: 1, format: signed,
         title: "Darken (left) or lighten (right) the corners of the picture as cropped." },
+      { key: "vignette_size", label: "Vignette size", min: -100, max: 100, step: 1, format: signed,
+        title: "How far in the vignette reaches: left further in, a spotlight; right only the corners. The middle is never touched. Needs a vignette." },
+      { key: "vignette_feather", label: "Vignette feather", min: -100, max: 100, step: 1, format: signed,
+        title: "How soft the vignette's edge is: left a harder edge, right softer. Needs a vignette." },
       { key: "grain", label: "Grain", min: 0, max: 100, step: 1, format: (v) => `${v}`,
         title: "Film grain, strongest in the mid-tones as on film. Check it at 1:1 with the loupe (L)." },
       { key: "grain_size", label: "Grain size", min: -100, max: 100, step: 1, format: signed,
@@ -299,8 +313,10 @@ const BW_FILTERS = [
     mix: { bw_red: 20, bw_yellow: 60, bw_green: 90, bw_aqua: 10, bw_blue: -80, bw_purple: -40 } },
 ];
 
-// Toning on the grey, made with split toning: a hue and a strength at each end.
-const SPLIT_KEYS = ["shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat"];
+// Toning on the grey, made with colour grading: a hue and a strength at each end
+// and in the middle, and where the ends hand over.
+const SPLIT_KEYS = ["shadow_hue", "shadow_sat", "highlight_hue", "highlight_sat",
+  "midtone_hue", "midtone_sat", "tone_balance"];
 const BW_TONES = [
   { name: "None", note: "Neutral grey", tone: {} },
   { name: "Sepia", note: "Warm brown throughout",
@@ -532,7 +548,7 @@ const LIGHT_KEYS = ["exposure", "highlights", "lights", "darks", "shadows", "whi
 // picking a colour look after a black-and-white one gives a colour picture.
 const LOOK_KEYS = [
   "contrast", "clarity", "vibrance", "saturation", "fade",
-  ...SPLIT_KEYS, ...BW_KEYS, "grain", "grain_size", "vignette",
+  ...SPLIT_KEYS, ...BW_KEYS, "grain", "grain_size", "vignette", "vignette_size", "vignette_feather",
   "halation", "halation_colour", "bloom", "glow_size", "glow_threshold",
 ];
 
@@ -549,11 +565,11 @@ const COPY_SECTIONS = [
   { id: "sharpen", label: "Sharpening", keys: ["sharpen", "sharpen_radius", "sharpen_detail", "sharpen_masking"] },
   { id: "blur", label: "Lens blur", keys: ["lens_blur", "blur_focus", "blur_sharp"] },
   { id: "lens", label: "Lens corrections", keys: ["lens_profile", "distortion"] },
-  { id: "presence", label: "Presence", keys: ["clarity", "vibrance", "saturation"] },
+  { id: "presence", label: "Presence", keys: ["texture", "clarity", "dehaze", "vibrance", "saturation"] },
   { id: "curve", label: "Tone curve", keys: CURVE_KEYS },
   { id: "mixer", label: "Colour mixer / B&W mix", keys: [...HSL_KEYS, ...BW_MIX_KEYS] },
   { id: "toning", label: "Fade & toning", keys: ["fade", ...SPLIT_KEYS] },
-  { id: "effects", label: "Effects", keys: ["vignette", "grain", "grain_size",
+  { id: "effects", label: "Effects", keys: ["vignette", "vignette_size", "vignette_feather", "grain", "grain_size",
     "halation", "halation_colour", "bloom", "glow_size", "glow_threshold"] },
   { id: "masks", label: "Gradients & brushes", keys: ["masks"] },
   { id: "transform", label: "Transform", keys: TRANSFORM_KEYS, framing: true },

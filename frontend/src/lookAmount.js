@@ -8,7 +8,7 @@
 
 const SCALED = new Set([
   "exposure", "highlights", "lights", "darks", "shadows", "whites", "blacks", "compress",
-  "contrast", "clarity", "vibrance", "saturation", "fade", "shadow_sat", "highlight_sat",
+  "contrast", "clarity", "texture", "dehaze", "vibrance", "saturation", "fade", "shadow_sat", "highlight_sat",
   "midtone_sat", "vignette", "grain", "halation", "bloom", "flat", "temperature", "tint",
 ]);
 const SCALED_PREFIXES = ["hue_", "sat_", "lum_", "bw_"];

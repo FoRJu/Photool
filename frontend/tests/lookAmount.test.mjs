@@ -111,3 +111,8 @@ test("colour grading scales its strengths, its hues, balance and the vignette's 
   assert.deepEqual(out, { midtone_hue: 30, midtone_sat: 20, tone_balance: -30, shadow_sat: 10,
     vignette: -20, vignette_size: -50, vignette_feather: 30 });
 });
+
+test("dehaze and texture scale with a look", () => {
+  assert.deepEqual(scaleLook({ dehaze: 40, texture: -30 }, 50), { dehaze: 20, texture: -15 });
+  assert.deepEqual(scaleLook({ dehaze: 80 }, 150), { dehaze: 100 });
+});
